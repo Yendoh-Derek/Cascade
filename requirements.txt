@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+websockets
+deepgram-sdk>=3.7
+groq>=0.12
+openai>=1.54
+python-dotenv
+httpx
+pytest
+pytest-asyncio
