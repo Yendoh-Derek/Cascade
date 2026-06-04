@@ -41,7 +41,7 @@ def print_summary(results: dict, elapsed: float):
     labels = {
         "stt": "Deepgram STT     ",
         "llm": "Groq LLM         ",
-        "tts": "ElevenLabs TTS   ",
+        "tts": "Edge-TTS          ",
     }
 
     for key, label in labels.items():

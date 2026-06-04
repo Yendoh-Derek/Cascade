@@ -5,10 +5,10 @@ Central configuration module. Loads and validates all environment variables
 at startup. Any missing key raises an explicit error immediately rather than
 failing silently deep inside the pipeline.
 
-TTS provider: ElevenLabs
-  - Free tier: 10,000 characters/month (sufficient for demo)
-  - Accepts payment methods available in Ghana
-  - Streaming API compatible with Cascade's chunk-based pipeline
+TTS provider: edge-tts (Microsoft Azure Neural TTS)
+  - Completely free, no API key required
+  - Streams audio chunks compatible with Cascade's pipeline
+  - ~400-700ms first chunk latency
 """
 
 import os
@@ -22,7 +22,6 @@ load_dotenv()
 class APIKeys:
     deepgram: str
     groq: str
-    elevenlabs: str
 
 
 @dataclass(frozen=True)
@@ -36,9 +35,8 @@ class ModelConfig:
     # LLM
     groq_model: str = "llama-3.3-70b-versatile"
 
-    # TTS
-    elevenlabs_model: str = "eleven_turbo_v2_5"   # Lowest latency ElevenLabs model
-    elevenlabs_voice_id: str = ""                  # Populated from env at runtime
+    # TTS — edge-tts requires no API key
+    edge_tts_voice: str = "en-US-AriaNeural"
 
 
 @dataclass(frozen=True)
@@ -63,31 +61,19 @@ def load_api_keys() -> APIKeys:
     return APIKeys(
         deepgram=_require_env("DEEPGRAM_API_KEY"),
         groq=_require_env("GROQ_API_KEY"),
-        elevenlabs=_require_env("ELEVENLABS_API_KEY"),
     )
-
-
-def load_model_config() -> ModelConfig:
-    """
-    Load model config, injecting the ElevenLabs voice ID from environment.
-    The voice ID is kept in .env so it can be changed without touching code.
-    """
-    voice_id = _require_env("ELEVENLABS_VOICE_ID")
-    return ModelConfig(elevenlabs_voice_id=voice_id)
 
 
 # Singletons — imported directly by other modules
 try:
     api_keys = load_api_keys()
-    model_config = load_model_config()
 except EnvironmentError as e:
-    # Allow import to succeed so verification scripts can report the error cleanly
     api_keys = None
-    model_config = None
     _config_error = str(e)
 else:
     _config_error = None
 
+model_config = ModelConfig()
 server_config = ServerConfig()
 
 
@@ -99,7 +85,5 @@ def get_api_keys() -> APIKeys:
 
 
 def get_model_config() -> ModelConfig:
-    """Return validated model config or raise if config failed."""
-    if model_config is None:
-        raise EnvironmentError(_config_error)
+    """Return model configuration."""
     return model_config

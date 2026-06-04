@@ -25,7 +25,7 @@ Cascade:    [STT ██▒▒▒▒▒▒]
 ## Tech Stack
 
 | Layer     | Service              | Role                        |
-| --------- | -------------------- | --------------------------- |
+|-----------|----------------------|-----------------------------|
 | STT       | Deepgram Nova-2      | Streaming speech-to-text    |
 | LLM       | Groq + Llama 3.3 70B | High-speed token generation |
 | TTS       | OpenAI TTS (tts-1)   | Streaming text-to-speech    |
@@ -88,11 +88,11 @@ cp .env.example .env
 
 Open `.env` and fill in your three API keys:
 
-| Key                | Where to get it                          | Cost             |
-| ------------------ | ---------------------------------------- | ---------------- |
-| `DEEPGRAM_API_KEY` | console.deepgram.com                     | Free $200 credit |
-| `GROQ_API_KEY`     | console.groq.com                         | Free tier        |
-| `OPENAI_API_KEY`   | platform.openai.com → Billing → Load $10 | ~$4.50 for demo  |
+| Key                  | Where to get it                          | Cost               |
+|----------------------|------------------------------------------|--------------------|
+| `DEEPGRAM_API_KEY`   | console.deepgram.com                     | Free $200 credit   |
+| `GROQ_API_KEY`       | console.groq.com                         | Free tier          |
+| `OPENAI_API_KEY`     | platform.openai.com → Billing → Load $10 | ~$4.50 for demo    |
 
 > **Important:** After loading funds on OpenAI, set a hard usage limit of
 > $10 under **Settings → Billing → Usage Limits** to prevent overruns.
@@ -170,20 +170,20 @@ Then open: [http://localhost:8000/health](http://localhost:8000/health)
 
 ## Phases
 
-| Phase | Description                      | Status     |
-| ----- | -------------------------------- | ---------- |
-| 1     | Project setup & API verification | ✓ Complete |
-| 2     | Streaming pipeline core          | Upcoming   |
-| 3     | Tutor logic & context management | Upcoming   |
-| 4     | Frontend & latency demo UI       | Upcoming   |
+| Phase | Description                          | Status      |
+|-------|--------------------------------------|-------------|
+| 1     | Project setup & API verification     | ✓ Complete  |
+| 2     | Streaming pipeline core              | Upcoming    |
+| 3     | Tutor logic & context management     | Upcoming    |
+| 4     | Frontend & latency demo UI           | Upcoming    |
 
 ---
 
 ## Budget
 
-| Service      | Estimated Cost | Notes                   |
-| ------------ | -------------- | ----------------------- |
-| Deepgram STT | $0.86          | Covered by free credit  |
-| Groq LLM     | ~$0.30         | Covered by free tier    |
-| OpenAI TTS   | ~$4.50         | Paid from your $10 load |
-| **Total**    | **~$5.66**     | Well within $10 budget  |
+| Service      | Estimated Cost | Notes                    |
+|--------------|----------------|--------------------------|
+| Deepgram STT | $0.86          | Covered by free credit   |
+| Groq LLM     | ~$0.30         | Covered by free tier     |
+| OpenAI TTS   | ~$4.50         | Paid from your $10 load  |
+| **Total**    | **~$5.66**     | Well within $10 budget   |

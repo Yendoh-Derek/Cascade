@@ -3,8 +3,8 @@ cascade/backend/main.py
 
 FastAPI application entry point.
 
-Phase 1: Exposes a health check endpoint that confirms all three
-API keys are present and the server is running. The WebSocket
+Phase 1: Exposes a health check endpoint that confirms all API
+keys are present and the server is running. The WebSocket
 pipeline is added in Phase 2.
 
 Usage:
@@ -24,7 +24,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tightened in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,7 +54,6 @@ def health():
         key_status = {
             "deepgram": bool(keys.deepgram),
             "groq": bool(keys.groq),
-            "elevenlabs": bool(keys.elevenlabs),
         }
         all_present = all(key_status.values())
         return {
@@ -63,8 +62,7 @@ def health():
             "models": {
                 "stt": config.deepgram_model,
                 "llm": config.groq_model,
-                "tts_model": config.elevenlabs_model,
-                "tts_voice_id": config.elevenlabs_voice_id[:6] + "...",
+                "tts": config.edge_tts_voice,
             },
         }
     except EnvironmentError as e:

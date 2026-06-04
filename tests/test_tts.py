@@ -1,89 +1,38 @@
 """
 cascade/tests/test_tts.py
 
-Verifies the ElevenLabs Text-to-Speech API key, voice ID, and audio output.
+Verifies the edge-tts Text-to-Speech engine and audio output.
 
 Tests:
-  1. API key and voice ID are present in environment
-  2. A standard TTS request produces valid audio bytes
-  3. A streaming TTS request delivers audio chunks correctly
+  1. edge-tts package is importable
+  2. Requested voice is available in the voice list
+  3. Audio is generated and streamed correctly
 """
 
 import sys
 import os
+import asyncio
 import time
-import urllib.request
-import urllib.error
-import json
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from backend.config import get_api_keys, get_model_config
+from backend.config import get_model_config
 
 PROBE_TEXT = "Hello! I am your AI tutor. I am ready to help you learn."
 MIN_AUDIO_BYTES = 1024
-ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1"
 
 
-def _make_headers(api_key: str) -> dict:
-    return {
-        "xi-api-key": api_key,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg",
-    }
+async def _fetch_available_voices() -> list:
+    """Retrieve the full list of voices available from edge-tts."""
+    import edge_tts
+    voices = await edge_tts.list_voices()
+    return [v["ShortName"] for v in voices]
 
 
-def _make_payload(text: str, model_id: str) -> bytes:
-    return json.dumps({
-        "text": text,
-        "model_id": model_id,
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75,
-        },
-    }).encode("utf-8")
+async def _test_streaming_tts(voice: str) -> dict:
+    """Generate audio via edge-tts and confirm chunks stream correctly."""
+    import edge_tts
 
-
-def _test_standard_tts(api_key: str, voice_id: str, model_id: str) -> dict:
-    """Request a standard TTS audio response and validate the output."""
-    result = {
-        "success": False,
-        "audio_bytes": 0,
-        "latency_ms": None,
-        "error": None,
-    }
-    try:
-        url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}"
-        req = urllib.request.Request(
-            url,
-            data=_make_payload(PROBE_TEXT, model_id),
-            headers=_make_headers(api_key),
-            method="POST",
-        )
-        start = time.perf_counter()
-        with urllib.request.urlopen(req, timeout=30) as response:
-            audio_data = response.read()
-        elapsed = (time.perf_counter() - start) * 1000
-
-        result["audio_bytes"] = len(audio_data)
-        result["latency_ms"] = round(elapsed)
-        result["success"] = result["audio_bytes"] >= MIN_AUDIO_BYTES
-
-        if not result["success"]:
-            result["error"] = (
-                f"Audio too small: {result['audio_bytes']} bytes "
-                f"(expected >= {MIN_AUDIO_BYTES})"
-            )
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        result["error"] = f"HTTP {e.code}: {body}"
-    except Exception as e:
-        result["error"] = str(e)
-    return result
-
-
-def _test_streaming_tts(api_key: str, voice_id: str, model_id: str) -> dict:
-    """Request a streaming TTS response and confirm chunks arrive."""
     result = {
         "success": False,
         "chunk_count": 0,
@@ -92,25 +41,18 @@ def _test_streaming_tts(api_key: str, voice_id: str, model_id: str) -> dict:
         "error": None,
     }
     try:
-        url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}/stream"
-        req = urllib.request.Request(
-            url,
-            data=_make_payload(PROBE_TEXT, model_id),
-            headers=_make_headers(api_key),
-            method="POST",
-        )
+        communicate = edge_tts.Communicate(PROBE_TEXT, voice)
         start = time.perf_counter()
-        with urllib.request.urlopen(req, timeout=30) as response:
-            while True:
-                chunk = response.read(4096)
-                if not chunk:
-                    break
+
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                data = chunk["data"]
                 if result["first_chunk_ms"] is None:
                     result["first_chunk_ms"] = round(
                         (time.perf_counter() - start) * 1000
                     )
                 result["chunk_count"] += 1
-                result["total_bytes"] += len(chunk)
+                result["total_bytes"] += len(data)
 
         result["success"] = (
             result["chunk_count"] > 0
@@ -118,12 +60,9 @@ def _test_streaming_tts(api_key: str, voice_id: str, model_id: str) -> dict:
         )
         if not result["success"]:
             result["error"] = (
-                f"Streaming produced {result['chunk_count']} chunks, "
+                f"Stream produced {result['chunk_count']} chunks, "
                 f"{result['total_bytes']} bytes"
             )
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        result["error"] = f"HTTP {e.code}: {body}"
     except Exception as e:
         result["error"] = str(e)
     return result
@@ -134,40 +73,44 @@ def run() -> bool:
     Run all TTS verification checks.
     Returns True if all pass, False otherwise.
     """
-    print("\n── ElevenLabs TTS Verification ───────────────────────────")
+    print("\n── Edge-TTS Verification ─────────────────────────────────")
 
-    # Step 1: API key + voice ID
-    print("  [1/3] Checking API key and Voice ID...")
+    # Step 1: Package import
+    print("  [1/3] Checking edge-tts package...")
     try:
-        keys = get_api_keys()
-        config = get_model_config()
-        masked_key = keys.elevenlabs[:8] + "..." + keys.elevenlabs[-4:]
-        masked_voice = config.elevenlabs_voice_id[:6] + "..."
-        print(f"        ✓ API key found:  {masked_key}")
-        print(f"        ✓ Voice ID found: {masked_voice}")
-    except EnvironmentError as e:
-        print(f"        ✗ {e}")
+        import edge_tts  # noqa: F401
+        print("        ✓ edge-tts imported successfully")
+    except ImportError:
+        print("        ✗ edge-tts not installed. Run: pip install edge-tts")
         return False
 
-    # Step 2: Standard TTS
-    model = config.elevenlabs_model
-    print(f"  [2/3] Testing standard TTS (model: {model})...")
-    std = _test_standard_tts(keys.elevenlabs, config.elevenlabs_voice_id, model)
-    if not std["success"]:
-        print(f"        ✗ TTS failed: {std['error']}")
+    # Step 2: Voice availability
+    config = get_model_config()
+    voice = config.edge_tts_voice
+    print(f"  [2/3] Verifying voice '{voice}' is available...")
+    try:
+        available = asyncio.run(_fetch_available_voices())
+        if voice not in available:
+            print(f"        ✗ Voice '{voice}' not found.")
+            print(f"        Available English voices (sample):")
+            en_voices = [v for v in available if v.startswith("en-US")][:5]
+            for v in en_voices:
+                print(f"          - {v}")
+            return False
+        print(f"        ✓ Voice confirmed available")
+    except Exception as e:
+        print(f"        ✗ Could not fetch voice list: {e}")
         return False
-    print(f"        ✓ Audio received in {std['latency_ms']}ms")
-    print(f"        ✓ Audio size: {std['audio_bytes']:,} bytes")
 
-    # Step 3: Streaming TTS
-    print("  [3/3] Testing streaming TTS...")
-    stream = _test_streaming_tts(keys.elevenlabs, config.elevenlabs_voice_id, model)
-    if not stream["success"]:
-        print(f"        ✗ Streaming failed: {stream['error']}")
+    # Step 3: Streaming audio
+    print("  [3/3] Testing streaming audio generation...")
+    result = asyncio.run(_test_streaming_tts(voice))
+    if not result["success"]:
+        print(f"        ✗ Streaming failed: {result['error']}")
         return False
-    print(f"        ✓ First chunk in {stream['first_chunk_ms']}ms")
-    print(f"        ✓ {stream['chunk_count']} chunks, {stream['total_bytes']:,} bytes total")
-    print("  ✓ ElevenLabs TTS — ALL CHECKS PASSED\n")
+    print(f"        ✓ First chunk in {result['first_chunk_ms']}ms")
+    print(f"        ✓ {result['chunk_count']} chunks, {result['total_bytes']:,} bytes total")
+    print("  ✓ Edge-TTS — ALL CHECKS PASSED\n")
     return True
 
 
