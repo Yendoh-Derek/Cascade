@@ -14,7 +14,7 @@ Usage:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.config import get_api_keys, model_config, server_config
+from backend.config import get_api_keys, get_model_config, server_config
 
 app = FastAPI(
     title="Cascade — AI Voice Tutor",
@@ -50,19 +50,21 @@ def health():
     """
     try:
         keys = get_api_keys()
+        config = get_model_config()
         key_status = {
             "deepgram": bool(keys.deepgram),
             "groq": bool(keys.groq),
-            "openai": bool(keys.openai),
+            "elevenlabs": bool(keys.elevenlabs),
         }
         all_present = all(key_status.values())
         return {
             "status": "healthy" if all_present else "degraded",
             "api_keys_present": key_status,
             "models": {
-                "llm": model_config.groq_model,
-                "tts_model": model_config.openai_tts_model,
-                "tts_voice": model_config.openai_tts_voice,
+                "stt": config.deepgram_model,
+                "llm": config.groq_model,
+                "tts_model": config.elevenlabs_model,
+                "tts_voice_id": config.elevenlabs_voice_id[:6] + "...",
             },
         }
     except EnvironmentError as e:

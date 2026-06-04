@@ -41,7 +41,7 @@ def print_summary(results: dict, elapsed: float):
     labels = {
         "stt": "Deepgram STT     ",
         "llm": "Groq LLM         ",
-        "tts": "OpenAI TTS       ",
+        "tts": "ElevenLabs TTS   ",
     }
 
     for key, label in labels.items():
@@ -94,7 +94,7 @@ def run() -> bool:
         print(f"  ✗ LLM verification crashed unexpectedly: {e}\n")
         results["llm"] = False
 
-    # OpenAI TTS
+    # ElevenLabs TTS
     try:
         results["tts"] = verify_tts()
     except Exception as e:

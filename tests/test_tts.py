@@ -1,29 +1,50 @@
 """
 cascade/tests/test_tts.py
 
-Verifies the OpenAI Text-to-Speech API key, connection, and audio output.
+Verifies the ElevenLabs Text-to-Speech API key, voice ID, and audio output.
 
 Tests:
-  1. API key is present in environment
-  2. OpenAI client initialises without error
-  3. A TTS request produces valid audio bytes
-  4. Streaming TTS delivers audio chunks correctly
+  1. API key and voice ID are present in environment
+  2. A standard TTS request produces valid audio bytes
+  3. A streaming TTS request delivers audio chunks correctly
 """
 
 import sys
 import os
 import time
+import urllib.request
+import urllib.error
+import json
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from backend.config import get_api_keys, model_config
-from openai import OpenAI
+from backend.config import get_api_keys, get_model_config
 
 PROBE_TEXT = "Hello! I am your AI tutor. I am ready to help you learn."
-MIN_AUDIO_BYTES = 1024  # A valid audio response should be at least 1KB
+MIN_AUDIO_BYTES = 1024
+ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1"
 
 
-def _test_standard_tts(client: OpenAI, model: str, voice: str) -> dict:
+def _make_headers(api_key: str) -> dict:
+    return {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+
+
+def _make_payload(text: str, model_id: str) -> bytes:
+    return json.dumps({
+        "text": text,
+        "model_id": model_id,
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+        },
+    }).encode("utf-8")
+
+
+def _test_standard_tts(api_key: str, voice_id: str, model_id: str) -> dict:
     """Request a standard TTS audio response and validate the output."""
     result = {
         "success": False,
@@ -32,29 +53,36 @@ def _test_standard_tts(client: OpenAI, model: str, voice: str) -> dict:
         "error": None,
     }
     try:
-        start = time.perf_counter()
-        response = client.audio.speech.create(
-            model=model,
-            voice=voice,
-            input=PROBE_TEXT,
-            response_format="mp3",
+        url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}"
+        req = urllib.request.Request(
+            url,
+            data=_make_payload(PROBE_TEXT, model_id),
+            headers=_make_headers(api_key),
+            method="POST",
         )
+        start = time.perf_counter()
+        with urllib.request.urlopen(req, timeout=30) as response:
+            audio_data = response.read()
         elapsed = (time.perf_counter() - start) * 1000
-        audio_data = response.content
+
         result["audio_bytes"] = len(audio_data)
         result["latency_ms"] = round(elapsed)
         result["success"] = result["audio_bytes"] >= MIN_AUDIO_BYTES
+
         if not result["success"]:
             result["error"] = (
-                f"Audio response too small: {result['audio_bytes']} bytes "
+                f"Audio too small: {result['audio_bytes']} bytes "
                 f"(expected >= {MIN_AUDIO_BYTES})"
             )
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        result["error"] = f"HTTP {e.code}: {body}"
     except Exception as e:
         result["error"] = str(e)
     return result
 
 
-def _test_streaming_tts(client: OpenAI, model: str, voice: str) -> dict:
+def _test_streaming_tts(api_key: str, voice_id: str, model_id: str) -> dict:
     """Request a streaming TTS response and confirm chunks arrive."""
     result = {
         "success": False,
@@ -64,21 +92,25 @@ def _test_streaming_tts(client: OpenAI, model: str, voice: str) -> dict:
         "error": None,
     }
     try:
+        url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{voice_id}/stream"
+        req = urllib.request.Request(
+            url,
+            data=_make_payload(PROBE_TEXT, model_id),
+            headers=_make_headers(api_key),
+            method="POST",
+        )
         start = time.perf_counter()
-        with client.audio.speech.with_streaming_response.create(
-            model=model,
-            voice=voice,
-            input=PROBE_TEXT,
-            response_format="mp3",
-        ) as response:
-            for chunk in response.iter_bytes(chunk_size=4096):
-                if chunk:
-                    if result["first_chunk_ms"] is None:
-                        result["first_chunk_ms"] = round(
-                            (time.perf_counter() - start) * 1000
-                        )
-                    result["chunk_count"] += 1
-                    result["total_bytes"] += len(chunk)
+        with urllib.request.urlopen(req, timeout=30) as response:
+            while True:
+                chunk = response.read(4096)
+                if not chunk:
+                    break
+                if result["first_chunk_ms"] is None:
+                    result["first_chunk_ms"] = round(
+                        (time.perf_counter() - start) * 1000
+                    )
+                result["chunk_count"] += 1
+                result["total_bytes"] += len(chunk)
 
         result["success"] = (
             result["chunk_count"] > 0
@@ -89,6 +121,9 @@ def _test_streaming_tts(client: OpenAI, model: str, voice: str) -> dict:
                 f"Streaming produced {result['chunk_count']} chunks, "
                 f"{result['total_bytes']} bytes"
             )
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        result["error"] = f"HTTP {e.code}: {body}"
     except Exception as e:
         result["error"] = str(e)
     return result
@@ -99,47 +134,40 @@ def run() -> bool:
     Run all TTS verification checks.
     Returns True if all pass, False otherwise.
     """
-    print("\n── OpenAI TTS Verification ───────────────────────────────")
+    print("\n── ElevenLabs TTS Verification ───────────────────────────")
 
-    # Step 1: API key
-    print("  [1/4] Checking API key...")
+    # Step 1: API key + voice ID
+    print("  [1/3] Checking API key and Voice ID...")
     try:
         keys = get_api_keys()
-        masked = keys.openai[:8] + "..." + keys.openai[-4:]
-        print(f"        ✓ Key found: {masked}")
+        config = get_model_config()
+        masked_key = keys.elevenlabs[:8] + "..." + keys.elevenlabs[-4:]
+        masked_voice = config.elevenlabs_voice_id[:6] + "..."
+        print(f"        ✓ API key found:  {masked_key}")
+        print(f"        ✓ Voice ID found: {masked_voice}")
     except EnvironmentError as e:
         print(f"        ✗ {e}")
         return False
 
-    # Step 2: Client init
-    print("  [2/4] Initialising OpenAI client...")
-    try:
-        client = OpenAI(api_key=keys.openai)
-        print("        ✓ Client initialised")
-    except Exception as e:
-        print(f"        ✗ Client failed: {e}")
-        return False
-
-    # Step 3: Standard TTS
-    model = model_config.openai_tts_model
-    voice = model_config.openai_tts_voice
-    print(f"  [3/4] Testing standard TTS (model: {model}, voice: {voice})...")
-    std = _test_standard_tts(client, model, voice)
+    # Step 2: Standard TTS
+    model = config.elevenlabs_model
+    print(f"  [2/3] Testing standard TTS (model: {model})...")
+    std = _test_standard_tts(keys.elevenlabs, config.elevenlabs_voice_id, model)
     if not std["success"]:
         print(f"        ✗ TTS failed: {std['error']}")
         return False
     print(f"        ✓ Audio received in {std['latency_ms']}ms")
     print(f"        ✓ Audio size: {std['audio_bytes']:,} bytes")
 
-    # Step 4: Streaming TTS
-    print("  [4/4] Testing streaming TTS...")
-    stream = _test_streaming_tts(client, model, voice)
+    # Step 3: Streaming TTS
+    print("  [3/3] Testing streaming TTS...")
+    stream = _test_streaming_tts(keys.elevenlabs, config.elevenlabs_voice_id, model)
     if not stream["success"]:
         print(f"        ✗ Streaming failed: {stream['error']}")
         return False
     print(f"        ✓ First chunk in {stream['first_chunk_ms']}ms")
     print(f"        ✓ {stream['chunk_count']} chunks, {stream['total_bytes']:,} bytes total")
-    print("  ✓ OpenAI TTS — ALL CHECKS PASSED\n")
+    print("  ✓ ElevenLabs TTS — ALL CHECKS PASSED\n")
     return True
 
 
