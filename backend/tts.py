@@ -36,12 +36,13 @@ class TTSEngine:
         self.voice = voice
         logger.info(f"[TTS] Engine initialized with voice: {voice}")
 
-    async def synthesise(self, text: str) -> AsyncGenerator[bytes, None]:
+    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
         """
         Convert text to speech and stream audio chunks.
 
         Args:
             text: Text to synthesize (typically a complete sentence)
+            timeout_sec: Timeout for synthesis in seconds
 
         Yields:
             Raw MP3 audio bytes as chunks arrive
@@ -49,6 +50,10 @@ class TTSEngine:
         if not text or not text.strip():
             logger.warning("[TTS] Empty text provided, skipping synthesis")
             return
+
+        if len(text) > 2000:
+            logger.warning(f"[TTS] Text too long ({len(text)} chars), truncating to 2000")
+            text = text[:2000]
 
         try:
             logger.debug(f"[TTS] Synthesizing: {text[:60]}...")
@@ -59,15 +64,22 @@ class TTSEngine:
             chunk_count = 0
             byte_count = 0
 
-            # Stream audio chunks
-            async for chunk in communicate.stream():
-                # Check chunk type
-                if chunk["type"] == "audio":
-                    audio_data = chunk["data"]
-                    chunk_count += 1
-                    byte_count += len(audio_data)
-                    logger.debug(f"[TTS] Chunk {chunk_count}: {len(audio_data)} bytes")
-                    yield audio_data
+            # Stream audio chunks with timeout
+            import asyncio
+            try:
+                async for chunk in asyncio.wait_for(communicate.stream(), timeout=timeout_sec):
+                    # Check chunk type
+                    if chunk["type"] == "audio":
+                        audio_data = chunk["data"]
+                        if audio_data:  # Skip empty chunks
+                            chunk_count += 1
+                            byte_count += len(audio_data)
+                            logger.debug(f"[TTS] Chunk {chunk_count}: {len(audio_data)} bytes")
+                            yield audio_data
+
+            except asyncio.TimeoutError:
+                logger.error(f"[TTS] Synthesis timed out after {timeout_sec}s")
+                raise
 
             logger.info(f"[TTS] Audio complete: {chunk_count} chunks, {byte_count} bytes total")
 
