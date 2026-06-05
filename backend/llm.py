@@ -11,10 +11,20 @@ for natural-sounding speech; yielding word-by-word would produce choppy audio.
 """
 
 import logging
+import asyncio
+import re
 from typing import AsyncGenerator, List, Dict
 from groq import AsyncGroq
 
 logger = logging.getLogger(__name__)
+
+# Common abbreviations that end with period (excluding sentences ending with these)
+ABBREVIATIONS = {
+    "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "etc",
+    "vs", "co", "inc", "ltd", "corp", "gov", "gen", "col", "maj", "capt",
+    "fig", "vol", "no", "p", "pp", "art", "viz", "ed", "eds", "al", "eg",
+    "ie", "approx", "dept", "econ", "e.g", "i.e", "cf", "ibid", "idem",
+}
 
 
 class LLMGenerator:
@@ -47,6 +57,7 @@ class LLMGenerator:
         messages: List[Dict[str, str]],
         temperature: float = 0.3,
         max_tokens: int = 500,
+        timeout_sec: int = 30,
     ) -> AsyncGenerator[str, None]:
         """
         Stream tokens from Groq and yield complete sentences.
@@ -56,10 +67,20 @@ class LLMGenerator:
             messages: Full conversation history (list of {"role": "...", "content": "..."})
             temperature: Sampling temperature (0.0-2.0)
             max_tokens: Max tokens to generate
+            timeout_sec: Timeout for entire generation in seconds
 
         Yields:
             Complete sentence strings (including punctuation)
         """
+        # Validate inputs
+        if not transcript or not isinstance(transcript, str):
+            logger.warning("[LLM] Empty transcript, skipping generation")
+            return
+
+        if not messages or not isinstance(messages, list):
+            logger.warning("[LLM] Invalid messages, skipping generation")
+            return
+
         try:
             # Build the messages list - ensure transcript is appended
             request_messages = list(messages)
@@ -67,13 +88,16 @@ class LLMGenerator:
 
             logger.debug(f"[LLM] Requesting {len(request_messages)} messages, model={self.model}")
 
-            # Stream from Groq
-            stream = await self.client.chat.completions.create(
-                model=self.model,
-                messages=request_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
+            # Stream from Groq with timeout
+            stream = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=request_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                ),
+                timeout=timeout_sec,
             )
 
             sentence_buffer = ""
@@ -102,32 +126,74 @@ class LLMGenerator:
 
             logger.info(f"[LLM] Stream complete: {token_count} tokens total")
 
+        except asyncio.TimeoutError:
+            logger.error(f"[LLM] Generation timed out after {timeout_sec}s")
+            if sentence_buffer.strip():
+                yield sentence_buffer.strip()
+            raise
         except Exception as e:
             logger.error(f"[LLM] Error during generation: {e}")
+            if sentence_buffer.strip():
+                # Yield partial buffer on error before raising
+                logger.warning(f"[LLM] Yielding partial buffer on error")
+                yield sentence_buffer.strip()
             raise
 
-    @staticmethod
-    def _has_sentence_boundary(text: str) -> bool:
+    def _has_sentence_boundary(self, text: str) -> bool:
         """
         Check if text ends with a sentence boundary.
 
-        Looks for . ? ! followed by a space or end of string.
+        More sophisticated than simple punctuation check:
+        - Must end with . ? ! or ...
+        - If . then must not be an abbreviation
+        - Typically followed by space and capital or end-of-string
 
         Args:
             text: Text to check
 
         Returns:
-            True if text ends with sentence boundary
+            True if text ends with a likely sentence boundary
         """
         if not text:
             return False
 
-        # Find last character
-        last_char = text.rstrip()[-1] if text.rstrip() else ""
+        # Strip trailing whitespace
+        stripped = text.rstrip()
+        if not stripped:
+            return False
 
-        # Check for sentence-ending punctuation followed by space or end
-        if last_char in ".?!":
-            # Make sure there's either a space after or it's end of string
-            return text.endswith(" ") or len(text.rstrip()) == len(text)
+        # Check for ellipsis (...)
+        if stripped.endswith("..."):
+            return True
 
-        return False
+        # Check for question mark or exclamation
+        if stripped[-1] in "?!":
+            return True
+
+        # Check for period - more sophisticated logic needed
+        if not stripped.endswith("."):
+            return False
+
+        # Period at end - check if it's likely an abbreviation or sentence end
+        # Extract word before period
+        before_period = stripped[:-1].strip()
+
+        # Look for pattern: lowercase_word. or abbreviation.
+        # Real sentence ends usually have capital after or end of string
+        # and usually the word before is not a known abbreviation
+
+        # Check for common abbreviations
+        last_word = before_period.split()[-1].lower() if before_period else ""
+        if last_word in ABBREVIATIONS:
+            return False
+
+        # Check for single letter (like "A." or "I.")
+        if len(last_word) <= 2:
+            return False
+
+        # Check for decimal numbers (e.g., "3.14")
+        if re.match(r".*\d+\.$", stripped):
+            return False
+
+        # Likely a real sentence boundary
+        return True

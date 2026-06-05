@@ -12,10 +12,14 @@ Usage:
 
 import logging
 import json
+import time
+import asyncio
 from typing import Dict, Any
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_api_keys, get_model_config, server_config
 from backend.pipeline import PipelineSession
@@ -36,6 +40,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount frontend static files
+frontend_path = Path(__file__).parent.parent / "frontend"
+if frontend_path.exists():
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+
 
 
 @app.get("/", tags=["Health"])
@@ -94,7 +104,18 @@ async def websocket_endpoint(
     - Server sends: {"type": "latency", "latency_ms": int}
     - Server sends: {"type": "error", "message": str}
     - Server sends: {"type": "transcript", "text": str}
+    
+    Safety limits:
+    - Max 100MB per audio message (prevents DoS)
+    - Connection timeout: 5 minutes idle (prevents resource hoarding)
     """
+    # Validate subject parameter
+    if subject is not None:
+        if not isinstance(subject, str) or len(subject) > 200:
+            subject = None  # Ignore invalid subjects
+        elif not subject.strip():
+            subject = None
+    
     try:
         await websocket.accept()
         logger.info(f"[WS] Client connected (subject={subject})")
@@ -128,9 +149,18 @@ async def websocket_endpoint(
             subject=subject,
         )
 
-        # Initialize pipeline
+        # Initialize pipeline with timeout
         try:
-            await session.initialize()
+            await asyncio.wait_for(session.initialize(), timeout=10)
+        except asyncio.TimeoutError:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Pipeline initialization timed out",
+                }
+            )
+            await websocket.close()
+            return
         except Exception as e:
             await websocket.send_json(
                 {
@@ -141,36 +171,69 @@ async def websocket_endpoint(
             await websocket.close()
             return
 
-        # Listen for incoming messages
+        # Listen for incoming messages with idle timeout
+        idle_timeout = 300  # 5 minutes idle timeout
+        last_activity = time.time()
+        
         try:
             while True:
-                # Receive message (could be binary audio or text command)
-                message = await websocket.receive()
+                try:
+                    # Receive message with timeout
+                    message = await asyncio.wait_for(
+                        websocket.receive(),
+                        timeout=idle_timeout
+                    )
+                    last_activity = time.time()
 
-                if "bytes" in message:
-                    # Audio data from client
-                    audio_bytes = message["bytes"]
-                    await session.handle_audio(audio_bytes)
+                    if "bytes" in message:
+                        # Audio data from client
+                        audio_bytes = message["bytes"]
+                        
+                        # Safety check: max 100MB per chunk
+                        if len(audio_bytes) > 100_000_000:
+                            logger.warning(f"[WS] Audio chunk too large: {len(audio_bytes)} bytes")
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "message": "Audio chunk too large (max 100MB)",
+                                }
+                            )
+                            continue
+                        
+                        await session.handle_audio(audio_bytes)
 
-                elif "text" in message:
-                    # Text command
-                    text = message["text"]
-                    if text == "stop":
-                        logger.info("[WS] Client requested stop")
-                        break
-                    else:
-                        logger.warning(f"[WS] Unknown text message: {text}")
+                    elif "text" in message:
+                        # Text command
+                        text = message["text"]
+                        if text == "stop":
+                            logger.info("[WS] Client requested stop")
+                            break
+                        else:
+                            logger.warning(f"[WS] Unknown text message: {text}")
+
+                except asyncio.TimeoutError:
+                    logger.info("[WS] Connection idle timeout")
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Connection idle timeout (5 minutes)",
+                        }
+                    )
+                    break
 
         except WebSocketDisconnect:
             logger.info("[WS] Client disconnected")
         except Exception as e:
             logger.error(f"[WS] Error: {e}")
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "message": f"Server error: {str(e)}",
-                }
-            )
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Server error: {str(e)}",
+                    }
+                )
+            except:
+                pass  # Client may have disconnected
 
     except Exception as e:
         logger.error(f"[WS] Connection error: {e}")
@@ -186,11 +249,15 @@ async def websocket_endpoint(
 async def _send_ws_message(websocket: WebSocket, message: Dict[str, Any]):
     """Send a message over WebSocket, handling both JSON and binary."""
     try:
-        if message.get("type") == "audio":
-            # Audio message - send as JSON with hex-encoded data
-            await websocket.send_json(message)
+        if message.get("type") == "audio" and "data" in message:
+            # Audio chunks are sent as binary data directly
+            audio_data = message["data"]
+            if isinstance(audio_data, str):
+                # If hex-encoded string, convert to bytes
+                audio_data = bytes.fromhex(audio_data)
+            await websocket.send_bytes(audio_data)
         else:
-            # All other messages (latency, error, etc) as JSON
+            # All other messages (transcript, response_chunk, latency, error, etc) as JSON
             await websocket.send_json(message)
     except Exception as e:
         logger.error(f"[WS] Error sending message: {e}")

@@ -46,13 +46,33 @@ class ServerConfig:
 
 
 def _require_env(key: str) -> str:
-    """Load a required environment variable, raising clearly if missing."""
+    """
+    Load a required environment variable, raising clearly if missing.
+    
+    Args:
+        key: Environment variable name
+        
+    Returns:
+        The environment variable value (stripped)
+        
+    Raises:
+        EnvironmentError: If variable is missing or empty
+    """
     value = os.getenv(key, "").strip()
     if not value:
         raise EnvironmentError(
             f"Missing required environment variable: '{key}'\n"
-            f"  → Copy .env.example to .env and fill in your API keys."
+            f"  → Copy .env.example to .env and fill in your API keys.\n"
+            f"  → Required keys: DEEPGRAM_API_KEY, GROQ_API_KEY"
         )
+    
+    # Basic validation of key format
+    if len(value) < 10:
+        raise EnvironmentError(
+            f"Environment variable '{key}' appears invalid (too short).\n"
+            f"  → Check your .env file for correct API keys."
+        )
+    
     return value
 
 

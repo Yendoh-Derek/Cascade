@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cascade — AI Tutor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>Cascade</h1>
+            <p class="tagline">Low-latency AI Tutor</p>
+        </div>
+
+        <!-- Subject Selector -->
+        <div class="control-panel">
+            <label for="subject-select">Subject:</label>
+            <select id="subject-select">
+                <option value="">General</option>
+                <option value="Mathematics">Mathematics</option>
+                <option value="Biology">Biology</option>
+                <option value="Physics">Physics</option>
+                <option value="Chemistry">Chemistry</option>
+                <option value="History">History</option>
+            </select>
+        </div>
+
+        <!-- Status Indicator -->
+        <div class="status-container">
+            <div class="status-badge" id="status-badge">
+                <span class="status-dot" id="status-dot"></span>
+                <span class="status-text" id="status-text">Ready</span>
+            </div>
+        </div>
+
+        <!-- Session Controls -->
+        <div class="controls">
+            <button id="start-btn" class="btn btn-primary">Start Session</button>
+        </div>
+
+        <!-- Latency Display -->
+        <div class="latency-display">
+            <div class="latency-value" id="latency-value">—</div>
+            <div class="latency-label">Response Time</div>
+        </div>
+
+        <!-- Transcript Panel -->
+        <div class="transcript-panel">
+            <h3>Session Transcript</h3>
+            <div class="transcript-list" id="transcript-list">
+                <div class="transcript-item welcome">
+                    <p>Ask me a question to get started.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Debug Info (optional) -->
+        <div class="debug-info" id="debug-info" style="display: none;">
+            <small id="debug-text"></small>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

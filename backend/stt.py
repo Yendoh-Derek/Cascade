@@ -53,6 +53,7 @@ class STTHandler:
         self.connection = None
         self.transcript_buffer = ""
         self.is_open = False
+        self.is_processing_message = False  # Guard against concurrent message processing
 
     def _default_error_handler(self, error: str):
         """Default error handler logs to logger."""
@@ -104,23 +105,43 @@ class STTHandler:
             logger.warning("[STT] Connection not open, discarding audio")
             return
 
+        if not audio_bytes:
+            logger.debug("[STT] Empty audio buffer, skipping")
+            return
+
         try:
-            # The V1SocketClient has a send method for streaming audio
-            self.connection.send(audio_bytes)
+            # Run sync send in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.connection.send, audio_bytes)
         except Exception as e:
             error_msg = f"Failed to send audio: {str(e)}"
             logger.error(f"[STT] {error_msg}")
             self.on_error(error_msg)
+            # Mark connection as broken to prevent further sends
+            self.is_open = False
 
     async def close(self):
-        """Close the connection cleanly."""
-        if self.connection:
-            try:
-                self.connection.close()
-                self.is_open = False
-                logger.info("[STT] Connection closed")
-            except Exception as e:
-                logger.error(f"[STT] Error closing connection: {e}")
+        """Close the connection cleanly and prevent further processing."""
+        try:
+            if not self.is_open:
+                logger.info("[STT] Connection already closed")
+                return
+
+            self.is_open = False  # Mark closed immediately to prevent new messages
+            
+            if self.connection:
+                try:
+                    # Run sync close in executor
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, self.connection.close)
+                except Exception as e:
+                    logger.error(f"[STT] Error calling connection.close(): {e}")
+            
+            # Clear buffer
+            self.transcript_buffer = ""
+            logger.info("[STT] Connection closed")
+        except Exception as e:
+            logger.error(f"[STT] Error closing connection: {e}")
 
     async def _handle_message(self, message):
         """
@@ -128,7 +149,19 @@ class STTHandler:
 
         Message structure varies, but typically includes transcript results.
         """
+        # Guard against processing after close
+        if not self.is_open:
+            logger.debug("[STT] Ignoring message received after close")
+            return
+
+        # Guard against concurrent processing
+        if self.is_processing_message:
+            logger.debug("[STT] Message processing already in progress, skipping")
+            return
+
         try:
+            self.is_processing_message = True
+            
             if not message:
                 return
 
@@ -139,28 +172,40 @@ class STTHandler:
 
         except Exception as e:
             logger.error(f"[STT] Error processing message: {e}")
+        finally:
+            self.is_processing_message = False
 
     def _process_dict_message(self, message: dict):
-        """Process a dictionary message from Deepgram."""
+        """Process a dictionary message from Deepgram with defensive checks."""
         try:
             # Check if this is a transcript result
-            if message.get("type") != "Results":
+            msg_type = message.get("type")
+            if msg_type != "Results":
                 return
 
-            # Extract transcript from channel results
-            channel = message.get("channel", {})
-            results = channel.get("results", [])
+            # Extract transcript from channel results with defensive checks
+            channel = message.get("channel")
+            if not isinstance(channel, dict):
+                logger.debug("[STT] Invalid channel structure")
+                return
 
+            results = channel.get("results", [])
             if not results:
                 return
 
-            latest_result = results[-1]
+            latest_result = results[-1] if isinstance(results, list) else None
+            if not isinstance(latest_result, dict):
+                logger.debug("[STT] Invalid result structure")
+                return
+
             transcript_text = ""
 
-            # Extract text from alternatives
+            # Extract text from alternatives with defensive checks
             alternatives = latest_result.get("alternatives", [])
-            if alternatives:
-                transcript_text = alternatives[0].get("transcript", "").strip()
+            if alternatives and isinstance(alternatives, list):
+                first_alt = alternatives[0]
+                if isinstance(first_alt, dict):
+                    transcript_text = first_alt.get("transcript", "").strip()
 
             is_final = latest_result.get("is_final", False)
 
