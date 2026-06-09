@@ -130,23 +130,55 @@ class TutorSession:
 
     def trim_history(self, max_turns: int = 10):
         """
-        Trim conversation history to the last N turn pairs.
+        Trim conversation history to keep it manageable.
 
         This prevents the context window from growing indefinitely on long
         sessions, keeping inference fast. Earlier turns are discarded; the
         most recent turns are kept.
 
+        Also implements token-based trimming for better accuracy.
+
         Args:
             max_turns: Maximum number of turn pairs to keep (default: 10)
                        One turn = one user message + one assistant message
         """
+        # First pass: trim by turn count
         if len(self.history) > max_turns * 2:
-            # Keep only the last max_turns * 2 messages
             self.history = self.history[-(max_turns * 2) :]
             logger.info(
                 f"[TutorSession] History trimmed to last {max_turns} turns "
                 f"({len(self.history)} messages)"
             )
+
+        # Second pass: estimate token count and trim if needed
+        # Rough estimate: 1 token ≈ 4 characters for English text
+        total_tokens = self._estimate_tokens()
+        max_tokens = 4000  # Conservative limit to stay under context window
+
+        if total_tokens > max_tokens:
+            # Remove oldest messages one at a time until under limit
+            while len(self.history) > 0 and total_tokens > max_tokens:
+                self.history.pop(0)
+                total_tokens = self._estimate_tokens()
+
+            logger.info(
+                f"[TutorSession] Trimmed by token count to {len(self.history)} "
+                f"messages (~{total_tokens} tokens)"
+            )
+
+    def _estimate_tokens(self) -> int:
+        """
+        Estimate total tokens in conversation history.
+
+        Uses rough heuristic: 1 token ≈ 4 characters (for English).
+        System prompt overhead is estimated at 50 tokens.
+
+        Returns:
+            Estimated token count
+        """
+        total_chars = sum(len(msg.get("content", "")) for msg in self.history)
+        system_overhead = 50
+        return (total_chars // 4) + system_overhead
 
     def get_summary(self) -> Dict:
         """

@@ -2,26 +2,21 @@
 cascade/backend/main.py
 
 FastAPI application entry point.
-
-Phase 1: Health check endpoints
-Phase 2: WebSocket pipeline for streaming voice agent
-
-Usage:
-    uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+Handles routing for health checks, WebSocket voice pipeline, and static files.
 """
 
 import logging
 import json
 import time
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.config import get_api_keys, get_model_config, server_config
+from backend.config import get_api_keys, get_model_config
 from backend.pipeline import PipelineSession
 
 logger = logging.getLogger(__name__)
@@ -40,23 +35,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount frontend static files
-frontend_path = Path(__file__).parent.parent / "frontend"
-if frontend_path.exists():
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
-
-
-
-@app.get("/", tags=["Health"])
-def root():
-    """Root endpoint — confirms the server is alive."""
-    return {
-        "project": "Cascade",
-        "status": "running",
-        "phase": 1,
-        "message": "API server is live. Run tests/verify_all.py to verify API keys.",
-    }
 
 
 @app.get("/health", tags=["Health"])
@@ -92,7 +70,7 @@ def health():
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    subject: str = Query(default=None, description="Optional tutoring subject"),
+    subject: Optional[str] = Query(default=None, description="Optional tutoring subject"),
 ):
     """
     WebSocket endpoint for streaming voice pipeline.
@@ -104,18 +82,15 @@ async def websocket_endpoint(
     - Server sends: {"type": "latency", "latency_ms": int}
     - Server sends: {"type": "error", "message": str}
     - Server sends: {"type": "transcript", "text": str}
-    
-    Safety limits:
-    - Max 100MB per audio message (prevents DoS)
-    - Connection timeout: 5 minutes idle (prevents resource hoarding)
     """
     # Validate subject parameter
     if subject is not None:
         if not isinstance(subject, str) or len(subject) > 200:
-            subject = None  # Ignore invalid subjects
+            subject = None
         elif not subject.strip():
             subject = None
     
+    session: Optional[PipelineSession] = None
     try:
         await websocket.accept()
         logger.info(f"[WS] Client connected (subject={subject})")
@@ -125,27 +100,25 @@ async def websocket_endpoint(
             keys = get_api_keys()
             config = get_model_config()
         except EnvironmentError as e:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "message": f"API keys not configured: {str(e)}",
-                }
-            )
+            await websocket.send_json({"type": "error", "message": f"API keys not configured: {str(e)}"})
             await websocket.close()
             return
 
         # Create pipeline session
+        # Use lambda with asyncio.create_task to bridge sync callback to async WS send
+        keys_dict = {
+            "deepgram": keys.deepgram,
+            "groq": keys.groq,
+        }
+        config_dict = {
+            "deepgram_model": config.deepgram_model,
+            "groq_model": config.groq_model,
+            "edge_tts_voice": config.edge_tts_voice,
+        }
         session = PipelineSession(
-            api_keys={
-                "deepgram": keys.deepgram,
-                "groq": keys.groq,
-            },
-            model_config={
-                "deepgram_model": config.deepgram_model,
-                "groq_model": config.groq_model,
-                "edge_tts_voice": config.edge_tts_voice,
-            },
-            send_message=lambda msg: _send_ws_message(websocket, msg),
+            api_keys=keys_dict,
+            model_config=config_dict,
+            send_message=lambda msg: asyncio.create_task(_send_ws_message(websocket, msg)),
             subject=subject,
         )
 
@@ -153,97 +126,66 @@ async def websocket_endpoint(
         try:
             await asyncio.wait_for(session.initialize(), timeout=10)
         except asyncio.TimeoutError:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "message": "Pipeline initialization timed out",
-                }
-            )
+            await websocket.send_json({"type": "error", "message": "Pipeline initialization timed out"})
             await websocket.close()
             return
         except Exception as e:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "message": f"Pipeline initialization failed: {str(e)}",
-                }
-            )
+            await websocket.send_json({"type": "error", "message": f"Pipeline initialization failed: {str(e)}"})
             await websocket.close()
             return
 
         # Listen for incoming messages with idle timeout
-        idle_timeout = 300  # 5 minutes idle timeout
-        last_activity = time.time()
+        idle_timeout = 300  # 5 minutes
         
-        try:
-            while True:
-                try:
-                    # Receive message with timeout
-                    message = await asyncio.wait_for(
-                        websocket.receive(),
-                        timeout=idle_timeout
-                    )
-                    last_activity = time.time()
-
-                    if "bytes" in message:
-                        # Audio data from client
-                        audio_bytes = message["bytes"]
-                        
-                        # Safety check: max 100MB per chunk
-                        if len(audio_bytes) > 100_000_000:
-                            logger.warning(f"[WS] Audio chunk too large: {len(audio_bytes)} bytes")
-                            await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "message": "Audio chunk too large (max 100MB)",
-                                }
-                            )
-                            continue
-                        
-                        await session.handle_audio(audio_bytes)
-
-                    elif "text" in message:
-                        # Text command
-                        text = message["text"]
-                        if text == "stop":
-                            logger.info("[WS] Client requested stop")
-                            break
-                        else:
-                            logger.warning(f"[WS] Unknown text message: {text}")
-
-                except asyncio.TimeoutError:
-                    logger.info("[WS] Connection idle timeout")
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "message": "Connection idle timeout (5 minutes)",
-                        }
-                    )
-                    break
-
-        except WebSocketDisconnect:
-            logger.info("[WS] Client disconnected")
-        except Exception as e:
-            logger.error(f"[WS] Error: {e}")
+        while True:
             try:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": f"Server error: {str(e)}",
-                    }
-                )
-            except:
-                pass  # Client may have disconnected
+                # Receive message with timeout
+                message = await asyncio.wait_for(websocket.receive(), timeout=idle_timeout)
 
+                if "bytes" in message:
+                    audio_bytes = message["bytes"]
+                    # Safety check: max 10MB per chunk (more reasonable than 100MB)
+                    if len(audio_bytes) > 10_000_000:
+                        logger.warning(f"[WS] Audio chunk too large: {len(audio_bytes)} bytes")
+                        continue
+                    if len(audio_bytes) < 100:
+                        continue
+                    
+                    await session.handle_audio(audio_bytes)
+
+                elif "text" in message:
+                    text = message["text"]
+                    if text == "stop":
+                        logger.info("[WS] Client requested stop")
+                        break
+                    else:
+                        try:
+                            json.loads(text)
+                            logger.debug("[WS] Received JSON message")
+                        except json.JSONDecodeError:
+                            logger.debug(f"[WS] Received text: {text[:50]}")
+                else:
+                    logger.warning(f"[WS] Unknown message format: {list(message.keys())}")
+
+            except asyncio.TimeoutError:
+                logger.info("[WS] Connection idle timeout")
+                await websocket.send_json({"type": "error", "message": "Connection idle timeout"})
+                break
+
+    except WebSocketDisconnect:
+        logger.info("[WS] Client disconnected")
     except Exception as e:
-        logger.error(f"[WS] Connection error: {e}")
-    finally:
-        # Clean up session
+        logger.error(f"[WS] Error: {e}")
         try:
-            if "session" in locals():
+            await websocket.send_json({"type": "error", "message": f"Server error: {str(e)}"})
+        except:
+            pass
+    finally:
+        if session:
+            try:
                 await session.close()
-        except Exception as e:
-            logger.error(f"[WS] Error during cleanup: {e}")
+            except Exception as e:
+                logger.error(f"[WS] Error during session cleanup: {e}")
 
 
 async def _send_ws_message(websocket: WebSocket, message: Dict[str, Any]):
@@ -253,11 +195,17 @@ async def _send_ws_message(websocket: WebSocket, message: Dict[str, Any]):
             # Audio chunks are sent as binary data directly
             audio_data = message["data"]
             if isinstance(audio_data, str):
-                # If hex-encoded string, convert to bytes
                 audio_data = bytes.fromhex(audio_data)
             await websocket.send_bytes(audio_data)
         else:
-            # All other messages (transcript, response_chunk, latency, error, etc) as JSON
+            # All other messages as JSON
             await websocket.send_json(message)
     except Exception as e:
-        logger.error(f"[WS] Error sending message: {e}")
+        # Client likely disconnected during send
+        logger.debug(f"[WS] Failed to send message: {e}")
+
+
+# Mount frontend static files last to avoid intercepting API/WS routes
+frontend_path = Path(__file__).parent.parent / "frontend"
+if frontend_path.exists():
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

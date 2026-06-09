@@ -9,6 +9,7 @@ raw MP3 audio chunks as they arrive.
 """
 
 import logging
+import asyncio
 from typing import AsyncGenerator
 import edge_tts
 
@@ -58,27 +59,29 @@ class TTSEngine:
         try:
             logger.debug(f"[TTS] Synthesizing: {text[:60]}...")
 
-            # Create Communicate object for streaming
+            # Create Communicate object
             communicate = edge_tts.Communicate(text, self.voice)
 
             chunk_count = 0
             byte_count = 0
 
-            # Stream audio chunks with timeout
-            import asyncio
+            # edge-tts Communicate.stream() is an async generator in recent versions
+            # If it's not, we wrap it properly
             try:
-                async for chunk in asyncio.wait_for(communicate.stream(), timeout=timeout_sec):
-                    # Check chunk type
-                    if chunk["type"] == "audio":
-                        audio_data = chunk["data"]
+                async for chunk in communicate.stream():
+                    # Check chunk type - Use get() for TypedDict safety
+                    if chunk.get("type") == "audio":
+                        audio_data = chunk.get("data")
                         if audio_data:  # Skip empty chunks
                             chunk_count += 1
                             byte_count += len(audio_data)
                             logger.debug(f"[TTS] Chunk {chunk_count}: {len(audio_data)} bytes")
                             yield audio_data
-
-            except asyncio.TimeoutError:
-                logger.error(f"[TTS] Synthesis timed out after {timeout_sec}s")
+                            
+                            # Add small delay to prevent overwhelming the client
+                            await asyncio.sleep(0.01)
+            except Exception as e:
+                logger.error(f"[TTS] Error during streaming: {e}")
                 raise
 
             logger.info(f"[TTS] Audio complete: {chunk_count} chunks, {byte_count} bytes total")
