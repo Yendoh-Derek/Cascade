@@ -14,8 +14,13 @@ feeds into the LLM.
 import asyncio
 from typing import Callable, Optional
 import logging
+import contextlib
+import time
 
-from deepgram import DeepgramClient
+from deepgram import (
+    DeepgramClient,
+)
+from deepgram.core.events import EventType
 
 logger = logging.getLogger(__name__)
 
@@ -51,48 +56,166 @@ class STTHandler:
         self.on_error = on_error or self._default_error_handler
         self.client: Optional[DeepgramClient] = None
         self.connection = None
+        self._ctx: Optional[contextlib.AbstractContextManager] = None
+        self._connect_lock = asyncio.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._send_queue: Optional[asyncio.Queue[bytes]] = None
+        self._sender_task: Optional[asyncio.Task] = None
+        self._keepalive_task: Optional[asyncio.Task] = None
+        self._last_activity_monotonic = time.monotonic()
         self.transcript_buffer = ""
         self.is_open = False
-        self.is_processing_message = False  # Guard against concurrent message processing
 
     def _default_error_handler(self, error: str):
         """Default error handler logs to logger."""
         logger.error(f"[STT] {error}")
 
+    async def _cleanup(self):
+        sender_task = self._sender_task
+        keepalive_task = self._keepalive_task
+        self._sender_task = None
+        self._keepalive_task = None
+
+        for task in (sender_task, keepalive_task):
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(Exception):
+                    await task
+
+        self._send_queue = None
+
+        connection = self.connection
+        self.connection = None
+
+        ctx = self._ctx
+        self._ctx = None
+
+        self.is_open = False
+
+        if connection:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(connection.send_close_stream)
+
+        if ctx:
+            with contextlib.suppress(Exception):
+                ctx.__exit__(None, None, None)
+
+    async def _send_loop(self):
+        if not self._send_queue:
+            return
+
+        while self.is_open:
+            try:
+                audio_bytes = await self._send_queue.get()
+            except asyncio.CancelledError:
+                return
+
+            if not self.is_open or not self.connection:
+                return
+
+            try:
+                await asyncio.to_thread(self.connection.send_media, audio_bytes)
+                self._last_activity_monotonic = time.monotonic()
+            except Exception as e:
+                error_msg = f"Failed to send audio: {str(e)}"
+                logger.error(f"[STT] {error_msg}")
+                self.on_error(error_msg)
+                self.is_open = False
+                return
+
+    async def _keepalive_loop(self, interval_sec: float = 5.0):
+        while self.is_open:
+            try:
+                await asyncio.sleep(interval_sec)
+            except asyncio.CancelledError:
+                return
+
+            if not self.is_open or not self.connection:
+                return
+
+            idle_for = time.monotonic() - self._last_activity_monotonic
+            if idle_for < interval_sec:
+                continue
+
+            try:
+                await asyncio.to_thread(self.connection.send_keep_alive)
+                self._last_activity_monotonic = time.monotonic()
+            except Exception as e:
+                error_msg = f"Failed to keep alive: {str(e)}"
+                logger.error(f"[STT] {error_msg}")
+                self.on_error(error_msg)
+                self.is_open = False
+                return
+
     async def connect(self):
         """Initialize Deepgram client and open connection."""
-        try:
-            self.client = DeepgramClient(api_key=self.api_key)
-            logger.info("[STT] Deepgram client initialized")
+        async with self._connect_lock:
+            if self.is_open and self.connection:
+                return
 
-            # Create live connection with v1 API
-            # Using the callback-based API for v7.3.1
-            def listen_callback(msg):
-                """Callback for incoming messages from Deepgram"""
-                asyncio.create_task(self._handle_message(msg))
+            await self._cleanup()
 
-            # Start listening (this returns a V1SocketClient iterator)
-            # We need to run this in a way that allows continuous operation
-            self.connection = self.client.listen.v1.connect(
-                model="nova-2",
-                language="en-US",
-                sample_rate=16000,
-                channels=1,
-                encoding="linear16",
-                interim_results=True,
-                utterance_end_ms=700,
-                vad_events=True,
-                callback=listen_callback,
-            )
+            try:
+                self._loop = asyncio.get_running_loop()
+                self._last_activity_monotonic = time.monotonic()
 
-            self.is_open = True
-            logger.info("[STT] Connection established")
+                self.client = DeepgramClient(api_key=self.api_key)
 
-        except Exception as e:
-            error_msg = f"Failed to connect: {str(e)}"
-            logger.error(f"[STT] {error_msg}")
-            self.on_error(error_msg)
-            raise
+                options = {
+                    "model": "nova-2",
+                    "language": "en-US",
+                    "smart_format": True,
+                    "encoding": "linear16",
+                    "channels": 1,
+                    "sample_rate": 16000,
+                    "interim_results": True,
+                    "endpointing": 700,
+                    "vad_events": True,
+                }
+
+                self._ctx = self.client.listen.v1.connect(**options)
+                self.connection = self._ctx.__enter__()
+
+                def on_message(result):
+                    try:
+                        loop = self._loop
+                        if loop:
+                            loop.call_soon_threadsafe(self._process_transcript, result)
+                    except Exception as e:
+                        logger.error(f"[STT] Error in message callback: {e}")
+
+                def on_error(error):
+                    error_msg = f"Deepgram connection error: {error}"
+                    logger.error(f"[STT] {error_msg}")
+                    self.is_open = False
+                    self.on_error(error_msg)
+                    loop = self._loop
+                    if loop:
+                        loop.call_soon_threadsafe(lambda: asyncio.create_task(self._cleanup()))
+
+                def on_close(_close_info):
+                    logger.info("[STT] Deepgram connection closed")
+                    self.is_open = False
+                    loop = self._loop
+                    if loop:
+                        loop.call_soon_threadsafe(lambda: asyncio.create_task(self._cleanup()))
+
+                self.connection.on(EventType.MESSAGE, on_message)
+                self.connection.on(EventType.ERROR, on_error)
+                self.connection.on(EventType.CLOSE, on_close)
+
+                self._send_queue = asyncio.Queue(maxsize=200)
+                self.is_open = True
+                self._sender_task = asyncio.create_task(self._send_loop())
+                self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+                logger.info("[STT] Deepgram connection established")
+
+            except Exception as e:
+                error_msg = f"Failed to connect: {str(e)}"
+                logger.error(f"[STT] {error_msg}")
+                self.on_error(error_msg)
+                await self._cleanup()
+                raise
 
     async def send_audio(self, audio_bytes: bytes):
         """
@@ -101,132 +224,66 @@ class STTHandler:
         Args:
             audio_bytes: Raw PCM audio data
         """
-        if not self.connection or not self.is_open:
-            logger.warning("[STT] Connection not open, discarding audio")
+        if not audio_bytes or len(audio_bytes) == 0:
             return
 
-        if not audio_bytes:
-            logger.debug("[STT] Empty audio buffer, skipping")
-            return
+        if not self.connection or not self.is_open:
+            with contextlib.suppress(Exception):
+                await self.connect()
+            if not self.connection or not self.is_open:
+                return
 
         try:
-            # Run sync send in executor to avoid blocking event loop
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.connection.send, audio_bytes)
+            if not self._send_queue:
+                return
+
+            if self._send_queue.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    self._send_queue.get_nowait()
+
+            self._send_queue.put_nowait(audio_bytes)
         except Exception as e:
             error_msg = f"Failed to send audio: {str(e)}"
             logger.error(f"[STT] {error_msg}")
             self.on_error(error_msg)
-            # Mark connection as broken to prevent further sends
             self.is_open = False
 
     async def close(self):
-        """Close the connection cleanly and prevent further processing."""
+        """Close the connection cleanly."""
         try:
-            if not self.is_open:
-                logger.info("[STT] Connection already closed")
-                return
-
-            self.is_open = False  # Mark closed immediately to prevent new messages
-            
-            if self.connection:
-                try:
-                    # Run sync close in executor
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, self.connection.close)
-                except Exception as e:
-                    logger.error(f"[STT] Error calling connection.close(): {e}")
-            
-            # Clear buffer
-            self.transcript_buffer = ""
+            async with self._connect_lock:
+                await self._cleanup()
             logger.info("[STT] Connection closed")
         except Exception as e:
             logger.error(f"[STT] Error closing connection: {e}")
 
-    async def _handle_message(self, message):
+    def _process_transcript(self, result):
         """
-        Handle incoming messages from Deepgram.
-
-        Message structure varies, but typically includes transcript results.
+        Process transcript results from Deepgram.
+        Called from the background thread via call_soon_threadsafe.
         """
-        # Guard against processing after close
-        if not self.is_open:
-            logger.debug("[STT] Ignoring message received after close")
-            return
-
-        # Guard against concurrent processing
-        if self.is_processing_message:
-            logger.debug("[STT] Message processing already in progress, skipping")
-            return
-
         try:
-            self.is_processing_message = True
-            
-            if not message:
+            if not result or not hasattr(result, 'channel'):
                 return
 
-            # Extract transcript information from the message
-            # The exact structure depends on Deepgram's response format
-            if isinstance(message, dict):
-                self._process_dict_message(message)
-
-        except Exception as e:
-            logger.error(f"[STT] Error processing message: {e}")
-        finally:
-            self.is_processing_message = False
-
-    def _process_dict_message(self, message: dict):
-        """Process a dictionary message from Deepgram with defensive checks."""
-        try:
-            # Check if this is a transcript result
-            msg_type = message.get("type")
-            if msg_type != "Results":
+            transcript = result.channel.alternatives[0].transcript
+            if not transcript:
                 return
 
-            # Extract transcript from channel results with defensive checks
-            channel = message.get("channel")
-            if not isinstance(channel, dict):
-                logger.debug("[STT] Invalid channel structure")
-                return
+            is_final = result.is_final
+            speech_final = result.speech_final
 
-            results = channel.get("results", [])
-            if not results:
-                return
+            if is_final:
+                # Accumulate final transcripts
+                self.transcript_buffer += " " + transcript if self.transcript_buffer else transcript
+                logger.debug(f"[STT] Final: {transcript}")
 
-            latest_result = results[-1] if isinstance(results, list) else None
-            if not isinstance(latest_result, dict):
-                logger.debug("[STT] Invalid result structure")
-                return
-
-            transcript_text = ""
-
-            # Extract text from alternatives with defensive checks
-            alternatives = latest_result.get("alternatives", [])
-            if alternatives and isinstance(alternatives, list):
-                first_alt = alternatives[0]
-                if isinstance(first_alt, dict):
-                    transcript_text = first_alt.get("transcript", "").strip()
-
-            is_final = latest_result.get("is_final", False)
-
-            if transcript_text:
-                if is_final:
-                    # Final transcript - accumulate
-                    self.transcript_buffer += (
-                        " " + transcript_text
-                        if self.transcript_buffer
-                        else transcript_text
-                    )
-                    logger.debug(f"[STT] Final: {transcript_text}")
-
-            # Check for utterance end
-            speech_final = latest_result.get("speech_final", False)
             if speech_final and self.transcript_buffer:
-                # Utterance complete - emit the full transcript
+                # Utterance complete
                 confirmed = self.transcript_buffer.strip()
                 logger.info(f"[STT] Utterance complete: '{confirmed}'")
                 self.on_transcript(confirmed)
                 self.transcript_buffer = ""
 
         except Exception as e:
-            logger.error(f"[STT] Error processing dict message: {e}")
+            logger.error(f"[STT] Error processing transcript: {e}")

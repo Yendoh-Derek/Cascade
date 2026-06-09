@@ -20,14 +20,22 @@ from deepgram import DeepgramClient
 
 def _test_deepgram_connection(api_key: str) -> dict:
     """
-    Test Deepgram connection by initializing client.
-    In Phase 1, we just verify the client can be created.
-    Live streaming is tested in Phase 2.
+    Test Deepgram connection by initializing client and opening a live connection.
     """
     result = {"success": False, "error": None}
     try:
         client = DeepgramClient(api_key=api_key)
-        result["success"] = True
+        
+        # Test actual live connection handshake
+        options = {
+            "model": "nova-2",
+            "smart_format": True,
+        }
+        
+        # connect() returns a context manager, __enter__ triggers the handshake
+        with client.listen.v1.connect(**options):
+            result["success"] = True
+            
     except Exception as e:
         result["error"] = str(e)
     return result
@@ -38,26 +46,29 @@ def run() -> bool:
     Run all STT verification checks.
     Returns True if all pass, False otherwise.
     """
-    print("\n── Deepgram STT Verification ─────────────────────────────")
+    print("\n-- Deepgram STT Verification -----------------------------")
 
     # Step 1: API key present
-    print("  [1/2] Checking API key...")
+    print("  [1/3] Checking API key...")
     try:
         keys = get_api_keys()
         masked = keys.deepgram[:8] + "..." + keys.deepgram[-4:]
-        print(f"        ✓ Key found: {masked}")
+        print(f"        v Key found: {masked}")
     except EnvironmentError as e:
-        print(f"        ✗ {e}")
+        print(f"        x {e}")
         return False
 
     # Step 2: Client init
-    print("  [2/2] Initialising Deepgram client...")
+    print("  [2/3] Initialising Deepgram client...")
+    
+    # Step 3: Live connection
+    print("  [3/3] Testing live connection handshake...")
     result = _test_deepgram_connection(keys.deepgram)
     if not result["success"]:
-        print(f"        ✗ Client failed: {result['error']}")
+        print(f"        x Connection failed: {result['error']}")
         return False
-    print(f"        ✓ Client initialised successfully")
-    print("  ✓ Deepgram STT — ALL CHECKS PASSED\n")
+    print(f"        v Live connection established successfully")
+    print("  v Deepgram STT -- ALL CHECKS PASSED\n")
     return True
 
 

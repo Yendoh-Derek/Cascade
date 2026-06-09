@@ -20,7 +20,6 @@ import asyncio
 import logging
 import time
 from typing import Callable, Dict, Optional
-from datetime import datetime
 
 from backend.stt import STTHandler
 from backend.llm import LLMGenerator
@@ -67,6 +66,9 @@ class PipelineSession:
         self.utterance_end_time: Optional[float] = None
         self.first_llm_token_time: Optional[float] = None
         self.first_audio_time: Optional[float] = None
+
+        # Prevent concurrent transcript processing
+        self.is_processing_transcript = False
 
         logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject})")
 
@@ -118,6 +120,7 @@ class PipelineSession:
         Called by STT when a complete transcript is confirmed.
 
         This triggers the full pipeline: LLM → TTS → WebSocket send.
+        Uses async-safe event loop access.
 
         Args:
             transcript: Confirmed transcript string
@@ -127,23 +130,37 @@ class PipelineSession:
             logger.warning("[Pipeline] Invalid transcript received, skipping")
             return
 
+        # Guard against concurrent processing
+        if self.is_processing_transcript:
+            logger.info("[Pipeline] Already processing a transcript, queueing this one...")
+            return  # Drop if already processing - prioritize current over new
+
         self.utterance_end_time = time.time()
         logger.info(f"[Pipeline] Transcript received: {transcript[:60]}...")
+        self.is_processing_transcript = True
 
-        # Schedule async processing using asyncio.create_task
-        # which is safe to call from sync context when already in event loop
         try:
-            task = asyncio.create_task(self._process_transcript(transcript))
-            # Don't wait for task - let it run in background
-        except RuntimeError as e:
-            # This shouldn't happen in normal FastAPI context, but log if it does
-            logger.error(f"[Pipeline] Failed to create task: {e}")
+            # Use get_running_loop() to safely detect if loop exists
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self._process_transcript(transcript))
+            # Store task reference to prevent garbage collection
+            task.add_done_callback(lambda t: self._on_processing_done(t))
+        except RuntimeError:
+            # No running event loop - this shouldn't happen in FastAPI context
+            logger.error("[Pipeline] No running event loop to schedule transcript processing")
             self.send_message(
                 {
                     "type": "error",
-                    "message": f"Pipeline error: Failed to create processing task",
+                    "message": "Pipeline error: event loop not available",
                 }
             )
+            self.is_processing_transcript = False
+
+    def _on_processing_done(self, task: asyncio.Task):
+        """Called when transcript processing completes."""
+        self.is_processing_transcript = False
+        if task.exception():
+            logger.error(f"[Pipeline] Task failed: {task.exception()}")
 
     async def _process_transcript(self, transcript: str):
         """
@@ -176,7 +193,6 @@ class PipelineSession:
             logger.debug(f"[Pipeline] LLM processing with {len(messages)} messages")
 
             # Track LLM latency
-            llm_start = time.time()
             first_token_received = False
 
             # Collect full response for history
@@ -184,16 +200,26 @@ class PipelineSession:
 
             # Stream sentences from LLM
             try:
+                # Use a flag to track if we've sent the response_end signal
+                response_started = False
+
+                if self.llm_generator is None:
+                    raise Exception("LLM generator not initialized")
+
                 async for sentence in self.llm_generator.generate(
                     transcript=transcript,
                     messages=messages,
                     timeout_sec=30,  # 30 second timeout on LLM generation
                 ):
+                    response_started = True
                     # Record first token time
                     if not first_token_received:
                         self.first_llm_token_time = time.time()
-                        llm_latency = (self.first_llm_token_time - self.utterance_end_time) * 1000
-                        logger.info(f"[Pipeline] First LLM token: {llm_latency:.0f}ms")
+                        # Use local variable for type safety with Pylance
+                        u_end = self.utterance_end_time
+                        if u_end is not None:
+                            llm_latency = (self.first_llm_token_time - u_end) * 1000
+                            logger.info(f"[Pipeline] First LLM token: {llm_latency:.0f}ms")
                         first_token_received = True
 
                     full_response += sentence
@@ -208,16 +234,21 @@ class PipelineSession:
 
                     # Stream TTS for this sentence
                     logger.debug(f"[Pipeline] TTS: {sentence[:40]}...")
-                    tts_start = time.time()
                     first_chunk_sent = False
 
                     try:
+                        if self.tts_engine is None:
+                            raise Exception("TTS engine not initialized")
+
                         async for audio_chunk in self.tts_engine.synthesise(sentence):
                             # Record first audio sent time
                             if not first_chunk_sent:
                                 self.first_audio_time = time.time()
-                                total_latency = (self.first_audio_time - self.utterance_end_time) * 1000
-                                logger.info(f"[Pipeline] First audio sent: {total_latency:.0f}ms")
+                                # Use local variable for type safety with Pylance
+                                u_end = self.utterance_end_time
+                                if u_end is not None:
+                                    total_latency = (self.first_audio_time - u_end) * 1000
+                                    logger.info(f"[Pipeline] First audio sent: {total_latency:.0f}ms")
                                 first_chunk_sent = True
 
                             # Send audio chunk immediately to WebSocket as binary
@@ -270,11 +301,12 @@ class PipelineSession:
                 self.tutor.add_assistant_message(full_response)
 
             # Signal end of response to frontend
-            self.send_message(
-                {
-                    "type": "response_end",
-                }
-            )
+            if response_started:
+                self.send_message(
+                    {
+                        "type": "response_end",
+                    }
+                )
 
             # Send latency summary
             if self.first_audio_time and self.utterance_end_time:

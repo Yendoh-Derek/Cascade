@@ -82,9 +82,9 @@ class LLMGenerator:
             return
 
         try:
-            # Build the messages list - ensure transcript is appended
+            # Build the messages list - messages already contains full history
+            # DO NOT append transcript again - it's already in the messages
             request_messages = list(messages)
-            request_messages.append({"role": "user", "content": transcript})
 
             logger.debug(f"[LLM] Requesting {len(request_messages)} messages, model={self.model}")
 
@@ -145,7 +145,7 @@ class LLMGenerator:
 
         More sophisticated than simple punctuation check:
         - Must end with . ? ! or ...
-        - If . then must not be an abbreviation
+        - If . then must not be a decimal number or abbreviation
         - Typically followed by space and capital or end-of-string
 
         Args:
@@ -174,26 +174,29 @@ class LLMGenerator:
         if not stripped.endswith("."):
             return False
 
-        # Period at end - check if it's likely an abbreviation or sentence end
-        # Extract word before period
+        # Period at end - check context to distinguish from decimals/abbreviations
         before_period = stripped[:-1].strip()
-
-        # Look for pattern: lowercase_word. or abbreviation.
-        # Real sentence ends usually have capital after or end of string
-        # and usually the word before is not a known abbreviation
-
-        # Check for common abbreviations
-        last_word = before_period.split()[-1].lower() if before_period else ""
-        if last_word in ABBREVIATIONS:
-            return False
-
-        # Check for single letter (like "A." or "I.")
-        if len(last_word) <= 2:
+        if not before_period:
             return False
 
         # Check for decimal numbers (e.g., "3.14")
-        if re.match(r".*\d+\.$", stripped):
+        if re.search(r'\d+\.\d+$', stripped):
             return False
+
+        # Check for URLs (e.g., "example.com")
+        if re.search(r'\w+\.\w{2,}$', stripped):
+            return False
+
+        # Check for email-like patterns
+        if re.search(r'\w+\.\w+@', stripped):
+            return False
+
+        # Check for common abbreviations
+        words = before_period.split()
+        if words:
+            last_word = words[-1].lower()
+            if last_word in ABBREVIATIONS or len(last_word) <= 2:
+                return False
 
         # Likely a real sentence boundary
         return True
