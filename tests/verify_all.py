@@ -2,13 +2,6 @@
 cascade/tests/verify_all.py
 
 Master verification runner for Phase 1.
-
-Runs all three API verification checks in sequence (STT, LLM, TTS)
-and produces a final summary report. Exit code 0 = all passed,
-exit code 1 = one or more failed.
-
-Usage:
-    python tests/verify_all.py
 """
 
 import sys
@@ -20,7 +13,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from tests.test_stt import run as verify_stt
 from tests.test_llm import run as verify_llm
 from tests.test_tts import run as verify_tts
-
 
 DIVIDER = "═" * 56
 
@@ -41,23 +33,19 @@ def print_summary(results: dict, elapsed: float):
     labels = {
         "stt": "Deepgram STT     ",
         "llm": "Groq LLM         ",
-        "tts": "Edge-TTS          ",
+        "tts": "Edge-TTS         ",  # [L2] was labelled "ElevenLabs TTS"
     }
 
     for key, label in labels.items():
         status = results.get(key)
         if status is True:
-            icon = "✓"
-            text = "PASSED"
+            icon, text = "✓", "PASSED"
         elif status is False:
-            icon = "✗"
-            text = "FAILED"
+            icon, text = "✗", "FAILED"
             all_passed = False
         else:
-            icon = "–"
-            text = "SKIPPED"
+            icon, text = "–", "SKIPPED"
             all_passed = False
-
         print(f"  {icon}  {label}  {text}")
 
     print(f"\n  Completed in {elapsed:.2f}s")
@@ -66,44 +54,30 @@ def print_summary(results: dict, elapsed: float):
     if all_passed:
         print("  ✓  All checks passed. Ready to build Phase 2.\n")
     else:
-        print("  ✗  Some checks failed. Fix the issues above before")
-        print("     proceeding to Phase 2.\n")
-        print("  Tip: Make sure your .env file is filled in correctly.")
-        print("       Copy .env.example → .env and add your API keys.\n")
+        print("  ✗  Some checks failed. Fix the issues above.\n")
+        print("  Tip: Copy .env.example → .env and add your API keys.\n")
 
     return all_passed
 
 
 def run() -> bool:
     print_header()
-
     results = {}
     start = time.perf_counter()
 
-    # Deepgram STT
-    try:
-        results["stt"] = verify_stt()
-    except Exception as e:
-        print(f"  ✗ STT verification crashed unexpectedly: {e}\n")
-        results["stt"] = False
-
-    # Groq LLM
-    try:
-        results["llm"] = verify_llm()
-    except Exception as e:
-        print(f"  ✗ LLM verification crashed unexpectedly: {e}\n")
-        results["llm"] = False
-
-    # ElevenLabs TTS
-    try:
-        results["tts"] = verify_tts()
-    except Exception as e:
-        print(f"  ✗ TTS verification crashed unexpectedly: {e}\n")
-        results["tts"] = False
+    for key, label, fn in [
+        ("stt", "STT", verify_stt),
+        ("llm", "LLM", verify_llm),
+        ("tts", "Edge-TTS", verify_tts),  # [L2] fix
+    ]:
+        try:
+            results[key] = fn()
+        except Exception as e:
+            print(f"  ✗ {label} verification crashed: {e}\n")
+            results[key] = False
 
     elapsed = time.perf_counter() - start
-    all_passed = print_summary(results, elapsed)
-    return all_passed
+    return print_summary(results, elapsed)
 
 
 if __name__ == "__main__":
