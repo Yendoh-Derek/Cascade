@@ -24,14 +24,14 @@ Cascade:    [STT ██▒▒▒▒▒▒]
 
 ## Tech Stack
 
-| Layer     | Service                        | Role                        |
-|-----------|--------------------------------|-----------------------------|
-| STT       | Deepgram Nova-2                | Streaming speech-to-text    |
-| LLM       | Groq + Llama 3.3 70B           | High-speed token generation |
-| TTS       | edge-tts (Microsoft Neural)    | Free streaming TTS, no key  |
-| Transport | WebSockets                     | Low-latency full-duplex     |
-| Backend   | FastAPI                        | Async pipeline server       |
-| Frontend  | HTML + JavaScript              | Browser mic + audio player  |
+| Layer     | Service                     | Role                        |
+| --------- | --------------------------- | --------------------------- |
+| STT       | Deepgram Nova-2             | Streaming speech-to-text    |
+| LLM       | Groq + Llama 3.3 70B        | High-speed token generation |
+| TTS       | edge-tts (Microsoft Neural) | Free streaming TTS, no key  |
+| Transport | WebSockets                  | Low-latency full-duplex     |
+| Backend   | FastAPI                     | Async pipeline server       |
+| Frontend  | HTML + JavaScript           | Browser mic + audio player  |
 
 ---
 
@@ -88,10 +88,10 @@ cp .env.example .env
 
 Open `.env` and fill in your two API keys:
 
-| Key                | Where to get it         | Cost             |
-|--------------------|-------------------------|------------------|
-| `DEEPGRAM_API_KEY` | console.deepgram.com    | Free $200 credit |
-| `GROQ_API_KEY`     | console.groq.com        | Free tier        |
+| Key                | Where to get it      | Cost             |
+| ------------------ | -------------------- | ---------------- |
+| `DEEPGRAM_API_KEY` | console.deepgram.com | Free $200 credit |
+| `GROQ_API_KEY`     | console.groq.com     | Free tier        |
 
 > edge-tts requires no API key or account.
 
@@ -114,7 +114,7 @@ Open: [http://localhost:8000](http://localhost:8000)
 ## Phases
 
 | Phase | Description                      | Status     |
-|-------|----------------------------------|------------|
+| ----- | -------------------------------- | ---------- |
 | 1     | Project setup & API verification | ✓ Complete |
 | 2     | Streaming pipeline core          | ✓ Complete |
 | 3     | Tutor logic & context management | ✓ Complete |
@@ -125,7 +125,7 @@ Open: [http://localhost:8000](http://localhost:8000)
 ## Budget
 
 | Service      | Estimated Cost | Notes                  |
-|--------------|----------------|------------------------|
+| ------------ | -------------- | ---------------------- |
 | Deepgram STT | $0.86          | Free $200 credit       |
 | Groq LLM     | ~$0.30         | Free tier              |
 | edge-tts     | $0.00          | Free, no account       |

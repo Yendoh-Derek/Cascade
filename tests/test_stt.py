@@ -1,43 +1,49 @@
 """
 cascade/tests/test_stt.py
 
-Verifies the Deepgram Speech-to-Text API key and connection.
+Verifies the Deepgram Speech-to-Text API key and connection using our new STTHandler.
 
 Tests:
   1. API key is present in environment
-  2. Deepgram client initialises without error
-  3. Deepgram API responds to a simple prerecorded audio request
+  2. STTHandler connects successfully
 """
 
 import sys
 import os
+import asyncio
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from backend.config import get_api_keys
-from deepgram import DeepgramClient
+from backend.stt import STTHandler
 
 
-def _test_deepgram_connection(api_key: str) -> dict:
+async def _test_deepgram_connection(api_key: str) -> dict:
     """
-    Test Deepgram connection by initializing client and opening a live connection.
+    Test Deepgram connection using our STTHandler.
     """
     result = {"success": False, "error": None}
+    handler = None
     try:
-        client = DeepgramClient(api_key=api_key)
+        def dummy_transcript(_):
+            pass
         
-        # Test actual live connection handshake
-        options = {
-            "model": "nova-2",
-            "smart_format": True,
-        }
+        def dummy_error(_):
+            pass
         
-        # connect() returns a context manager, __enter__ triggers the handshake
-        with client.listen.v1.connect(**options):
-            result["success"] = True
-            
+        handler = STTHandler(
+            api_key=api_key,
+            on_transcript=dummy_transcript,
+            on_error=dummy_error
+        )
+        await handler.connect()
+        await asyncio.sleep(0.5)  # Give it a moment to connect
+        result["success"] = True
     except Exception as e:
         result["error"] = str(e)
+    finally:
+        if handler:
+            await handler.close()
     return result
 
 
@@ -49,7 +55,7 @@ def run() -> bool:
     print("\n-- Deepgram STT Verification -----------------------------")
 
     # Step 1: API key present
-    print("  [1/3] Checking API key...")
+    print("  [1/2] Checking API key...")
     try:
         keys = get_api_keys()
         masked = keys.deepgram[:8] + "..." + keys.deepgram[-4:]
@@ -58,12 +64,9 @@ def run() -> bool:
         print(f"        x {e}")
         return False
 
-    # Step 2: Client init
-    print("  [2/3] Initialising Deepgram client...")
-    
-    # Step 3: Live connection
-    print("  [3/3] Testing live connection handshake...")
-    result = _test_deepgram_connection(keys.deepgram)
+    # Step 2: Live connection
+    print("  [2/2] Testing live connection handshake...")
+    result = asyncio.run(_test_deepgram_connection(keys.deepgram))
     if not result["success"]:
         print(f"        x Connection failed: {result['error']}")
         return False

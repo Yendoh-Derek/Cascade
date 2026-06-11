@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
 websockets
-deepgram-sdk>=3.7
+aiohttp
 groq>=0.12
 edge-tts
 python-dotenv
