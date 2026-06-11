@@ -1,18 +1,31 @@
 /**
  * Cascade — AI Tutor Frontend
- * Handles microphone input, WebSocket communication, audio playback, and latency measurement
+ *
+ * Fixes applied:
+ *  [C2] stopSession() now sends plain string "stop" (not JSON) — server
+ *       check is `text == "stop"` so JSON object never matched.
+ *  [H1] onAudioProcess now gates on STATE.LISTENING — audio is no longer
+ *       forwarded to Deepgram during PROCESSING or SPEAKING, preventing
+ *       phantom transcripts from the tutor's own TTS audio.
+ *  [H2] firstAudioTime reset at start of every turn (not only on stopSession).
+ *  [H3] lastUtteredTime, silenceStartTime reset at start of every turn so
+ *       silence detection doesn't fire immediately after a response.
+ *  [H4] maxAudioLevel reset on session start so adaptive threshold is fresh.
+ *  [H5] AudioContext.resume() called before decoding audio — required by
+ *       browser autoplay policy (context starts in 'suspended' state).
+ *  [M1] ScriptProcessor fallback now sends raw PCM16 bytes (no WAV header)
+ *       to match Deepgram's encoding:"linear16" expectation.
+ *  [M2] State returns to LISTENING only when audio queue is empty (inside
+ *       playNextAudioChunk) — not via a fixed 500ms timeout that could fire
+ *       while audio is still playing and Deepgram picks up TTS output.
  */
 
-// Configuration
 const CONFIG = {
   WS_HOST: window.location.hostname || "localhost",
   WS_PORT: window.location.port || "8000",
-  AUDIO_SAMPLE_RATE: 16000,
-  SILENCE_THRESHOLD: 0.02,
   SILENCE_DURATION_MS: 800,
 };
 
-// Application state
 const STATE = {
   IDLE: "IDLE",
   LISTENING: "LISTENING",
@@ -30,52 +43,52 @@ class CascadeClient {
     this.sinkNode = null;
     this.mediaStream = null;
     this.isRecording = false;
-    this.audioWorkletLoaded = false;
-    this.audioWorkletModuleUrl = null;
 
-    // Audio playback state
+    // Audio playback
     this.audioPlaybackQueue = [];
     this.isPlaying = false;
-    this.audioBuffer = null;
 
-    // Latency tracking
+    // Per-turn latency tracking — reset each turn [H2][H3]
     this.utteranceStartTime = null;
     this.firstAudioTime = null;
     this.lastUtteredTime = null;
     this.silenceStartTime = null;
 
+    // Adaptive silence threshold — reset on session start [H4]
+    this.maxAudioLevel = 0;
+
+    // Intentional disconnect flag — prevents reconnection loop on manual stop
+    this.intentionalDisconnect = false;
+
+    // Reconnection
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 3;
+
+    // Response accumulation
+    this.currentResponse = "";
+
     // UI references
     this.startBtn = document.getElementById("start-btn");
-    this.statusBadge = document.getElementById("status-badge");
     this.statusDot = document.getElementById("status-dot");
     this.statusText = document.getElementById("status-text");
     this.latencyValue = document.getElementById("latency-value");
     this.transcriptList = document.getElementById("transcript-list");
     this.subjectSelect = document.getElementById("subject-select");
-    this.debugText = document.getElementById("debug-text");
 
-    // Bind event listeners
     this.startBtn.addEventListener("click", () => this.toggleSession());
-
-    this.init();
+    this._initAudioContext();
   }
 
-  async init() {
-    console.log("Cascade Client initializing...");
+  _initAudioContext() {
     try {
-      this.audioContext = new (
-        window.AudioContext || window.webkitAudioContext
-      )();
-      console.log("✓ AudioContext created");
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
     } catch (err) {
-      console.error("Failed to create AudioContext:", err);
-      this.showError("Browser audio support not available");
+      console.error("AudioContext not available:", err);
     }
   }
 
-  /**
-   * Toggle session start/stop
-   */
+  // ── Session lifecycle ────────────────────────────────────────────────
+
   async toggleSession() {
     if (this.state === STATE.IDLE) {
       await this.startSession();
@@ -84,12 +97,8 @@ class CascadeClient {
     }
   }
 
-  /**
-   * Start a new tutoring session
-   */
   async startSession() {
     try {
-      // Request microphone permission
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -98,476 +107,59 @@ class CascadeClient {
           sampleRate: { ideal: 16000 },
         },
       });
-      console.log("✓ Microphone permission granted");
 
-      // Initialize Web Audio processing
-      await this.initAudioProcessing();
+      // ── FIX [H5]: Resume AudioContext (browser autoplay policy) ─────
+      // Browsers start AudioContext in 'suspended' state until a user
+      // gesture occurs. resuming here guarantees decodeAudioData works.
+      if (this.audioContext && this.audioContext.state === "suspended") {
+        await this.audioContext.resume();
+      }
 
-      // Connect to WebSocket
-      await this.connectWebSocket();
+      // ── FIX [H4]: Reset adaptive threshold for fresh session ─────────
+      this.maxAudioLevel = 0;
 
-      // Update UI
+      await this._initAudioProcessing();
+      this.intentionalDisconnect = false;
+      await this._connectWebSocket();
+
       this.setState(STATE.LISTENING);
       this.startBtn.textContent = "Stop Session";
       this.subjectSelect.disabled = true;
       this.transcriptList.innerHTML = "";
-      this.addTranscriptItem("welcome", "Connected. Ask me a question.");
+      this.addTranscriptItem("welcome", "Connected — ask me a question.");
     } catch (err) {
-      console.error("Failed to start session:", err);
-
-      // Provide specific error messages
-      let errorMsg = "Failed to start session: " + err.message;
+      console.error("startSession failed:", err);
+      let msg = `Failed to start: ${err.message}`;
       if (err.name === "NotAllowedError") {
-        errorMsg =
-          "🔒 Microphone permission denied. Please enable it in your browser settings.";
+        msg = "🔒 Microphone permission denied. Enable it in browser settings.";
       } else if (err.name === "NotFoundError") {
-        errorMsg = "🎤 No microphone found on your device.";
+        msg = "🎤 No microphone found on this device.";
       } else if (err.message.includes("WebSocket")) {
-        errorMsg = "🌐 Failed to connect to server. Check your connection.";
+        msg = "🌐 Could not connect to server. Is the backend running?";
       }
-
-      this.showError(errorMsg);
+      this.showError(msg);
       await this.stopSession();
     }
   }
 
-  /**
-   * Initialize Web Audio API for mic capture
-   */
-  async initAudioProcessing() {
-    if (!this.mediaStream || !this.audioContext) {
-      throw new Error("MediaStream or AudioContext not available");
-    }
-
-    const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-    this.sourceNode = source;
-
-    const sink = this.audioContext.createGain();
-    sink.gain.value = 0;
-    this.sinkNode = sink;
-
-    const workletUrl = this.getAudioWorkletCode();
-
-    // Try to use AudioWorklet (modern approach)
-    try {
-      if (!this.audioWorkletLoaded) {
-        const blob = new Blob([workletUrl], {
-          type: "application/javascript",
-        });
-        const url = URL.createObjectURL(blob);
-        this.audioWorkletModuleUrl = url;
-        await this.audioContext.audioWorklet.addModule(url);
-        this.audioWorkletLoaded = true;
-      }
-
-      this.processor = new AudioWorkletNode(
-        this.audioContext,
-        "audio-processor",
-      );
-      this.processor.port.onmessage = (evt) => this.onAudioProcess(evt.data);
-      source.connect(this.processor);
-      this.processor.connect(sink);
-      sink.connect(this.audioContext.destination);
-      console.log("✓ AudioWorklet processor created");
-    } catch (err) {
-      console.warn(
-        "AudioWorklet not supported, falling back to ScriptProcessor",
-      );
-      // Fallback to ScriptProcessor
-      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-      this.processor.onaudioprocess = (evt) =>
-        this.onAudioProcess(this.pcmEncode(evt.inputBuffer.getChannelData(0)));
-      source.connect(this.processor);
-      this.processor.connect(sink);
-      sink.connect(this.audioContext.destination);
-    }
-
-    this.isRecording = true;
-  }
-
-  /**
-   * Get AudioWorklet processor code as inline string
-   */
-  getAudioWorkletCode() {
-    return `
-            class AudioProcessor extends AudioWorkletProcessor {
-                process(inputs, outputs) {
-                    const input = inputs[0][0];  // Mono input
-                    if (input && input.length > 0) {
-                        // Convert Float32Array to PCM16 bytes
-                        const pcmBytes = new Int16Array(input.length);
-                        for (let i = 0; i < input.length; i++) {
-                            // Clamp to [-1, 1] range and convert to 16-bit
-                            const s = Math.max(-1, Math.min(1, input[i]));
-                            pcmBytes[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-                        }
-                        // Send as message
-                        this.port.postMessage({
-                            type: 'audio',
-                            data: pcmBytes.buffer
-                        });
-                    }
-                    return true;  // Keep processor alive
-                }
-            }
-
-            registerProcessor('audio-processor', AudioProcessor);
-        `;
-  }
-
-  /**
-   * PCM encoding helper (for ScriptProcessor fallback)
-   */
-  pcmEncode(samples) {
-    let offset = 0;
-    const length = samples.length * 2 + 44;
-    const arrayBuffer = new ArrayBuffer(length);
-    const view = new DataView(arrayBuffer);
-    const channels = [samples];
-
-    const setUint16 = (data) => {
-      view.setUint16(offset, data, true);
-      offset += 2;
-    };
-    const setUint32 = (data) => {
-      view.setUint32(offset, data, true);
-      offset += 4;
-    };
-
-    setUint32(0x46464952);
-    setUint32(length - 8);
-    setUint32(0x45564157);
-    setUint32(0x20746d66);
-    setUint32(16);
-    setUint16(1);
-    setUint16(channels.length);
-    setUint32(16000);
-    setUint32(16000 * 2);
-    setUint16(channels.length * 2);
-    setUint16(16);
-    setUint32(0x61746164);
-    setUint32(length - offset - 4);
-
-    const volume = 0.8;
-    let audioOffset = offset;
-    for (let i = 0; i < samples.length; i++, audioOffset += 2) {
-      const s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(
-        offset + audioOffset,
-        s < 0 ? s * 0x8000 : s * 0x7fff,
-        true,
-      );
-    }
-
-    return new Uint8Array(arrayBuffer);
-  }
-
-  /**
-   * Handle audio from processor
-   */
-  onAudioProcess(data) {
-    if (!this.isRecording || this.state === STATE.IDLE) return;
-
-    // Handle both AudioWorklet and ScriptProcessor formats
-    let audioData = data;
-    if (data && typeof data === "object") {
-      if (data.type === "audio" && data.data) {
-        audioData = new Uint8Array(data.data);
-      } else if (ArrayBuffer.isView(data)) {
-        audioData = new Uint8Array(data);
-      }
-    }
-
-    // Send audio to server
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && audioData) {
-      this.ws.send(audioData);
-    }
-
-    // Detect silence for end-of-utterance
-    this.detectSilence(audioData);
-  }
-
-  /**
-   * Detect silence to determine end-of-utterance
-   */
-  detectSilence(audioData) {
-    if (!audioData || audioData.length < 4) {
-      return; // Not enough data for RMS calculation
-    }
-
-    // Calculate RMS (Root Mean Square) from PCM16 samples
-    let sum = 0;
-    let sampleCount = 0;
-
-    try {
-      // Handle both Uint8Array and ArrayBuffer
-      let bytes = audioData;
-      if (audioData instanceof ArrayBuffer) {
-        bytes = new Uint8Array(audioData);
-      }
-
-      const view = new DataView(bytes.buffer || bytes);
-      const numSamples = Math.floor(bytes.length / 2);
-
-      for (let i = 0; i < numSamples; i++) {
-        const sample = view.getInt16(i * 2, true) / 32768;
-        sum += sample * sample;
-        sampleCount++;
-      }
-
-      const rms = Math.sqrt(sum / sampleCount);
-
-      // Use adaptive thresholding: scale threshold based on observed audio level
-      // Ensure we don't trigger on noise at the start
-      if (!this.maxAudioLevel) {
-        this.maxAudioLevel = 0.1; // Initialize
-      }
-
-      // Track maximum audio level seen
-      if (rms > this.maxAudioLevel) {
-        this.maxAudioLevel = rms;
-      }
-
-      // Silence threshold is 5% of maximum level seen, with minimum of 0.02
-      const silenceThreshold = Math.max(0.02, this.maxAudioLevel * 0.05);
-
-      if (rms < silenceThreshold) {
-        if (!this.silenceStartTime) {
-          this.silenceStartTime = Date.now();
-        } else if (
-          Date.now() - this.silenceStartTime >
-          CONFIG.SILENCE_DURATION_MS
-        ) {
-          if (this.state === STATE.LISTENING && this.lastUtteredTime) {
-            this.setState(STATE.PROCESSING);
-            this.utteranceStartTime = Date.now();
-            this.silenceStartTime = null;
-          }
-        }
-      } else {
-        // Audio detected - reset silence timer
-        this.silenceStartTime = null;
-        this.lastUtteredTime = Date.now();
-        if (this.state === STATE.IDLE) {
-          this.setState(STATE.LISTENING);
-        }
-      }
-    } catch (err) {
-      console.debug("Error in silence detection:", err);
-    }
-  }
-
-  /**
-   * Connect to WebSocket server with reconnection logic
-   */
-  connectWebSocket() {
-    return new Promise((resolve, reject) => {
-      const subject = this.subjectSelect.value || "";
-      const wsUrl = `ws://${CONFIG.WS_HOST}:${CONFIG.WS_PORT}/ws${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`;
-
-      console.log(`Connecting to ${wsUrl}`);
-      this.ws = new WebSocket(wsUrl);
-      this.ws.binaryType = "arraybuffer";
-
-      // Initialize reconnection tracking
-      this.reconnectAttempts = 0;
-      this.maxReconnectAttempts = 3;
-
-      this.ws.onopen = () => {
-        console.log("✓ WebSocket connected");
-        this.reconnectAttempts = 0; // Reset on successful connection
-        resolve();
-      };
-
-      this.ws.onmessage = (evt) => {
-        if (evt.data instanceof ArrayBuffer) {
-          this.onAudioChunk(evt.data);
-        } else {
-          try {
-            const msg = JSON.parse(evt.data);
-            this.onServerMessage(msg);
-          } catch (err) {
-            console.warn("Failed to parse message:", evt.data);
-          }
-        }
-      };
-
-      this.ws.onerror = (err) => {
-        console.error("WebSocket error:", err);
-        reject(new Error("WebSocket connection failed"));
-      };
-
-      this.ws.onclose = () => {
-        console.log("WebSocket disconnected");
-        // Only attempt reconnection if we were actively in a session
-        if (
-          this.state !== STATE.IDLE &&
-          this.reconnectAttempts < this.maxReconnectAttempts
-        ) {
-          this.reconnectAttempts++;
-          const delay = 1000 * Math.pow(2, this.reconnectAttempts - 1); // Exponential backoff
-          console.log(
-            `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`,
-          );
-          setTimeout(() => {
-            this.connectWebSocket().catch((err) => {
-              console.error("Reconnection failed:", err);
-              this.stopSession();
-            });
-          }, delay);
-        } else {
-          this.stopSession();
-        }
-      };
-
-      // Connection timeout
-      setTimeout(() => {
-        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
-          console.error("WebSocket connection timeout");
-          reject(new Error("WebSocket connection timeout"));
-        }
-      }, 5000);
-    });
-  }
-
-  /**
-   * Handle text messages from server
-   */
-  onServerMessage(msg) {
-    if (!msg || typeof msg !== "object") {
-      console.warn("Invalid message format:", msg);
-      return;
-    }
-
-    if (msg.type === "error") {
-      console.error("Server error:", msg.message);
-      this.showError(msg.message || "Unknown server error");
-    } else if (msg.type === "transcript") {
-      if (msg.text) {
-        this.addTranscriptItem("student", msg.text);
-        this.debug(`Transcript: ${msg.text}`);
-      }
-    } else if (msg.type === "response_start") {
-      this.setState(STATE.PROCESSING);
-      this.currentResponse = ""; // Reset accumulator
-    } else if (msg.type === "response_chunk") {
-      // Accumulate response for transcript display
-      if (msg.text) {
-        if (!this.currentResponse) {
-          this.currentResponse = "";
-        }
-        this.currentResponse += msg.text;
-        this.debug(`Response chunk: ${msg.text.substring(0, 40)}...`);
-      }
-    } else if (msg.type === "response_end") {
-      // Display the accumulated response
-      if (this.currentResponse && this.currentResponse.trim()) {
-        this.addTranscriptItem("tutor", this.currentResponse);
-      }
-      this.currentResponse = "";
-      // Return to listening state after audio finishes
-      setTimeout(() => {
-        if (this.state === STATE.SPEAKING) {
-          this.setState(STATE.LISTENING);
-        }
-      }, 500);
-    } else if (msg.type === "latency") {
-      if (typeof msg.ms === "number") {
-        this.displayLatency(msg.ms);
-      }
-    }
-  }
-
-  /**
-   * Handle audio chunks received from server
-   */
-  onAudioChunk(arrayBuffer) {
-    if (this.firstAudioTime === null) {
-      this.firstAudioTime = Date.now();
-      const latency = this.firstAudioTime - this.utteranceStartTime;
-      this.displayLatency(latency);
-      this.debug(`First audio received: ${latency}ms`);
-    }
-
-    // Queue audio for playback
-    this.audioPlaybackQueue.push(arrayBuffer);
-
-    if (!this.isPlaying) {
-      this.playNextAudioChunk();
-    }
-  }
-
-  /**
-   * Play queued audio chunks sequentially
-   */
-  async playNextAudioChunk() {
-    if (this.audioPlaybackQueue.length === 0) {
-      this.isPlaying = false;
-      this.firstAudioTime = null;
-      return;
-    }
-
-    this.isPlaying = true;
-    this.setState(STATE.SPEAKING);
-
-    const arrayBuffer = this.audioPlaybackQueue.shift();
-
-    try {
-      const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
-      const source = this.audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(this.audioContext.destination);
-
-      await new Promise((resolve) => {
-        source.onended = resolve;
-        source.start(0);
-      });
-
-      // Play next chunk
-      this.playNextAudioChunk();
-    } catch (err) {
-      console.error("Failed to decode audio:", err);
-      this.playNextAudioChunk();
-    }
-  }
-
-  /**
-   * Stop the current session
-   */
   async stopSession() {
     this.isRecording = false;
+    this.intentionalDisconnect = true;
 
-    // Close WebSocket cleanly
+    // ── FIX [C2]: Send plain string "stop" — server checks text == "stop" ──
+    // The original code sent JSON.stringify({type:"stop"}) which never
+    // matched the server's string equality check.
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
-        // Send stop message if connection is open
-        this.ws.send(JSON.stringify({ type: "stop" }));
-        // Give server time to process before closing
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } catch (err) {
-        console.debug("Error sending stop message:", err);
-      }
-      try {
-        this.ws.close();
-      } catch (err) {
-        console.debug("Error closing WebSocket:", err);
-      }
+        this.ws.send("stop");
+        await new Promise((r) => setTimeout(r, 100));
+      } catch (_) {}
+      try { this.ws.close(); } catch (_) {}
     }
     this.ws = null;
 
-    // Stop microphone
     if (this.mediaStream) {
-      try {
-        this.mediaStream.getTracks().forEach((track) => {
-          try {
-            track.stop();
-          } catch (err) {
-            console.debug("Error stopping track:", err);
-          }
-        });
-      } catch (err) {
-        console.debug("Error stopping media stream:", err);
-      }
+      this.mediaStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
       this.mediaStream = null;
     }
 
@@ -577,133 +169,399 @@ class CascadeClient {
           this.processor.port.onmessage = null;
           this.processor.port.close();
         }
-      } catch (err) {
-        console.debug("Error closing processor port:", err);
-      }
-      try {
         this.processor.disconnect();
-      } catch (err) {
-        console.debug("Error disconnecting processor:", err);
-      }
+      } catch (_) {}
       this.processor = null;
     }
 
-    if (this.sourceNode) {
-      try {
-        this.sourceNode.disconnect();
-      } catch (err) {
-        console.debug("Error disconnecting source:", err);
-      }
-      this.sourceNode = null;
-    }
+    if (this.sourceNode) { try { this.sourceNode.disconnect(); } catch (_) {} this.sourceNode = null; }
+    if (this.sinkNode)   { try { this.sinkNode.disconnect();   } catch (_) {} this.sinkNode = null; }
 
-    if (this.sinkNode) {
-      try {
-        this.sinkNode.disconnect();
-      } catch (err) {
-        console.debug("Error disconnecting sink:", err);
-      }
-      this.sinkNode = null;
-    }
-
-    // Stop audio playback
     this.audioPlaybackQueue = [];
     this.isPlaying = false;
-
-    // Clear response accumulator
     this.currentResponse = "";
+    this._resetTurnState();
 
-    // Update UI
     this.setState(STATE.IDLE);
     this.startBtn.textContent = "Start Session";
     this.subjectSelect.disabled = false;
     this.latencyValue.textContent = "—";
-    this.firstAudioTime = null;
-    this.utteranceStartTime = null;
+    this.latencyValue.classList.remove("active");
   }
 
+  // ── Per-turn state reset ─────────────────────────────────────────────
+
   /**
-   * Update application state and UI
+   * Reset all per-turn latency and silence-detection state.
+   * Called at the start of each new turn so previous values
+   * don't corrupt the next turn's measurements [H2][H3].
    */
+  _resetTurnState() {
+    this.utteranceStartTime = null;
+    this.firstAudioTime = null;
+    this.lastUtteredTime = null;
+    this.silenceStartTime = null;
+  }
+
+  // ── Audio capture ────────────────────────────────────────────────────
+
+  async _initAudioProcessing() {
+    if (!this.mediaStream || !this.audioContext) return;
+
+    const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+    this.sourceNode = source;
+    const sink = this.audioContext.createGain();
+    sink.gain.value = 0;
+    this.sinkNode = sink;
+
+    const workletCode = this._getWorkletCode();
+
+    try {
+      const blob = new Blob([workletCode], { type: "application/javascript" });
+      const url = URL.createObjectURL(blob);
+      await this.audioContext.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+
+      this.processor = new AudioWorkletNode(this.audioContext, "audio-processor");
+      this.processor.port.onmessage = (evt) => this._onAudioData(evt.data);
+      source.connect(this.processor);
+      this.processor.connect(sink);
+      sink.connect(this.audioContext.destination);
+      console.log("✓ AudioWorklet ready");
+    } catch (_) {
+      // ── FIX [M1]: ScriptProcessor fallback sends raw PCM16 ───────────
+      // Original pcmEncode() wrapped samples in a 44-byte WAV header.
+      // Deepgram expects encoding:"linear16" = raw signed-16-bit PCM.
+      // The WAV header corrupted the first audio chunk of every session.
+      console.warn("AudioWorklet unavailable — falling back to ScriptProcessor");
+      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+      this.processor.onaudioprocess = (evt) => {
+        const float32 = evt.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        this._onAudioData({ type: "audio", data: pcm16.buffer });
+      };
+      source.connect(this.processor);
+      this.processor.connect(sink);
+      sink.connect(this.audioContext.destination);
+    }
+
+    this.isRecording = true;
+  }
+
+  _getWorkletCode() {
+    return `
+      class AudioProcessor extends AudioWorkletProcessor {
+        process(inputs) {
+          const input = inputs[0][0];
+          if (input && input.length > 0) {
+            const pcm16 = new Int16Array(input.length);
+            for (let i = 0; i < input.length; i++) {
+              const s = Math.max(-1, Math.min(1, input[i]));
+              pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+            this.port.postMessage({ type: "audio", data: pcm16.buffer }, [pcm16.buffer]);
+          }
+          return true;
+        }
+      }
+      registerProcessor("audio-processor", AudioProcessor);
+    `;
+  }
+
+  _onAudioData(data) {
+    // ── FIX [H1]: Only forward audio during LISTENING ────────────────
+    // Original code sent audio in all non-IDLE states. During PROCESSING
+    // and SPEAKING, the microphone was still open and feeding raw bytes
+    // to Deepgram — including the tutor's own TTS audio through the
+    // speakers, causing phantom transcripts and feedback loops.
+    if (!this.isRecording || this.state !== STATE.LISTENING) return;
+
+    let bytes;
+    if (data && data.type === "audio" && data.data) {
+      bytes = new Uint8Array(data.data);
+    } else if (ArrayBuffer.isView(data)) {
+      bytes = new Uint8Array(data.buffer);
+    } else {
+      return;
+    }
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(bytes);
+    }
+
+    this._detectSilence(bytes);
+  }
+
+  _detectSilence(bytes) {
+    if (!bytes || bytes.length < 4) return;
+
+    // Calculate RMS from PCM16 samples
+    let sum = 0;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const numSamples = Math.floor(bytes.byteLength / 2);
+
+    for (let i = 0; i < numSamples; i++) {
+      const s = view.getInt16(i * 2, true) / 32768;
+      sum += s * s;
+    }
+    const rms = numSamples > 0 ? Math.sqrt(sum / numSamples) : 0;
+
+    if (rms > this.maxAudioLevel) this.maxAudioLevel = rms;
+
+    const threshold = Math.max(0.02, this.maxAudioLevel * 0.05);
+
+    if (rms < threshold) {
+      if (!this.silenceStartTime) {
+        this.silenceStartTime = Date.now();
+      } else if (
+        Date.now() - this.silenceStartTime > CONFIG.SILENCE_DURATION_MS &&
+        this.state === STATE.LISTENING &&
+        this.lastUtteredTime
+      ) {
+        // End of utterance — transition to PROCESSING
+        this.utteranceStartTime = Date.now();
+        this.silenceStartTime = null;
+        this.setState(STATE.PROCESSING);
+      }
+    } else {
+      this.silenceStartTime = null;
+      this.lastUtteredTime = Date.now();
+    }
+  }
+
+  // ── WebSocket ────────────────────────────────────────────────────────
+
+  _connectWebSocket() {
+    return new Promise((resolve, reject) => {
+      const subject = this.subjectSelect.value || "";
+      const wsUrl = `ws://${CONFIG.WS_HOST}:${CONFIG.WS_PORT}/ws${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`;
+
+      console.log(`Connecting to ${wsUrl}`);
+      this.ws = new WebSocket(wsUrl);
+      this.ws.binaryType = "arraybuffer";
+
+      const timeout = setTimeout(() => {
+        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+          reject(new Error("WebSocket connection timed out"));
+        }
+      }, 5000);
+
+      this.ws.onopen = () => {
+        clearTimeout(timeout);
+        this.reconnectAttempts = 0;
+        console.log("✓ WebSocket connected");
+        resolve();
+      };
+
+      this.ws.onmessage = (evt) => {
+        if (evt.data instanceof ArrayBuffer) {
+          this._onAudioChunk(evt.data);
+        } else {
+          try {
+            this._onServerMessage(JSON.parse(evt.data));
+          } catch (_) {
+            console.warn("Unparseable server message:", evt.data);
+          }
+        }
+      };
+
+      this.ws.onerror = (err) => {
+        clearTimeout(timeout);
+        reject(new Error("WebSocket error"));
+      };
+
+      this.ws.onclose = () => {
+        clearTimeout(timeout);
+        // Only reconnect if disconnection was unexpected (not user-initiated)
+        if (
+          !this.intentionalDisconnect &&
+          this.state !== STATE.IDLE &&
+          this.reconnectAttempts < this.maxReconnectAttempts
+        ) {
+          this.reconnectAttempts++;
+          const delay = 1000 * Math.pow(2, this.reconnectAttempts - 1);
+          console.log(
+            `[Client] WebSocket reconnection attempt ${this.reconnectAttempts} (delay: ${delay}ms)`
+          );
+          setTimeout(() => {
+            this._connectWebSocket().catch(() => {
+              if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                console.log("[Client] Max reconnection attempts reached");
+                this.showError("Connection lost. Please start a new session.");
+                this.stopSession();
+              }
+            });
+          }, delay);
+        } else if (!this.intentionalDisconnect && this.state !== STATE.IDLE) {
+          this.showError("Connection lost. Please start a new session.");
+          this.stopSession();
+        }
+      };
+    });
+  }
+
+  // ── Server message handling ──────────────────────────────────────────
+
+  _onServerMessage(msg) {
+    if (!msg || typeof msg !== "object") return;
+
+    switch (msg.type) {
+      case "transcript":
+        if (msg.text) {
+          // ── FIX [H3]: Reset turn state when a new transcript arrives ──
+          // Prevents stale lastUtteredTime from causing immediate silence
+          // detection at the start of the next turn.
+          this._resetTurnState();
+          this.addTranscriptItem("student", msg.text);
+        }
+        break;
+
+      case "response_chunk":
+        if (msg.text) {
+          this.currentResponse = (this.currentResponse || "") + msg.text;
+        }
+        break;
+
+      case "response_end":
+        if (this.currentResponse && this.currentResponse.trim()) {
+          this.addTranscriptItem("tutor", this.currentResponse.trim());
+        }
+        this.currentResponse = "";
+        // NOTE: Do NOT set state back to LISTENING here [M2 fix].
+        // State transitions to LISTENING inside playNextAudioChunk()
+        // when the queue drains — ensuring we only listen after audio ends.
+        break;
+
+      case "latency":
+        if (typeof msg.ms === "number") {
+          this._displayLatency(msg.ms);
+        }
+        break;
+
+      case "busy":
+        // [M4] Server dropped a concurrent transcript — show user feedback
+        this.addTranscriptItem(
+          "info",
+          "⏳ Still responding — please wait a moment."
+        );
+        break;
+
+      case "error":
+        this.showError(msg.message || "Unknown server error");
+        break;
+
+      default:
+        console.debug("Unhandled message type:", msg.type);
+    }
+  }
+
+  // ── Audio playback ───────────────────────────────────────────────────
+
+  _onAudioChunk(arrayBuffer) {
+    // ── FIX [H2]: Track first audio time per turn ─────────────────────
+    // Original: firstAudioTime only reset in stopSession() so turn 2+
+    // latency was calculated from null or a stale value.
+    if (this.firstAudioTime === null && this.utteranceStartTime !== null) {
+      this.firstAudioTime = Date.now();
+      const latency = this.firstAudioTime - this.utteranceStartTime;
+      this._displayLatency(latency);
+      console.log(`[Client] First audio: ${latency}ms`);
+    }
+
+    this.audioPlaybackQueue.push(arrayBuffer);
+    if (!this.isPlaying) {
+      this._playNextChunk();
+    }
+  }
+
+  async _playNextChunk() {
+    if (this.audioPlaybackQueue.length === 0) {
+      this.isPlaying = false;
+
+      // ── FIX [M2]: Return to LISTENING only when queue is empty ───────
+      // Original: 500ms setTimeout in response_end handler returned to
+      // LISTENING while audio could still be queued. Deepgram then picked
+      // up the TTS audio output as a new utterance, creating a feedback
+      // loop. Now the transition happens here — after the last chunk plays.
+      if (this.state === STATE.SPEAKING) {
+        this.setState(STATE.LISTENING);
+        // Reset firstAudioTime so the next turn measures correctly [H2]
+        this.firstAudioTime = null;
+      }
+      return;
+    }
+
+    this.isPlaying = true;
+    this.setState(STATE.SPEAKING);
+
+    // ── FIX [H5]: Ensure AudioContext is running before decoding ──────
+    if (this.audioContext && this.audioContext.state === "suspended") {
+      try { await this.audioContext.resume(); } catch (_) {}
+    }
+
+    const arrayBuffer = this.audioPlaybackQueue.shift();
+
+    try {
+      const decoded = await this.audioContext.decodeAudioData(arrayBuffer);
+      const source = this.audioContext.createBufferSource();
+      source.buffer = decoded;
+      source.connect(this.audioContext.destination);
+      await new Promise((resolve) => {
+        source.onended = resolve;
+        source.start(0);
+      });
+    } catch (err) {
+      console.error("Audio decode failed:", err);
+    }
+
+    // Play next chunk (recursive — drains queue)
+    this._playNextChunk();
+  }
+
+  // ── UI helpers ───────────────────────────────────────────────────────
+
   setState(newState) {
     this.state = newState;
-
-    const stateConfig = {
-      [STATE.IDLE]: { dot: "", text: "Ready", color: "" },
-      [STATE.LISTENING]: {
-        dot: "listening",
-        text: "🎤 Listening",
-        color: "listening",
-      },
-      [STATE.PROCESSING]: {
-        dot: "processing",
-        text: "⚙️ Processing",
-        color: "processing",
-      },
-      [STATE.SPEAKING]: {
-        dot: "speaking",
-        text: "🔊 Speaking",
-        color: "speaking",
-      },
+    const map = {
+      [STATE.IDLE]:       { cls: "",           text: "Ready" },
+      [STATE.LISTENING]:  { cls: "listening",  text: "🎤 Listening" },
+      [STATE.PROCESSING]: { cls: "processing", text: "⚙️ Processing" },
+      [STATE.SPEAKING]:   { cls: "speaking",   text: "🔊 Speaking" },
     };
-
-    const config = stateConfig[newState];
-    this.statusDot.className = `status-dot ${config.dot}`;
-    this.statusText.textContent = config.text;
+    const cfg = map[newState] || map[STATE.IDLE];
+    this.statusDot.className = `status-dot ${cfg.cls}`;
+    this.statusText.textContent = cfg.text;
   }
 
-  /**
-   * Display latency value
-   */
-  displayLatency(ms) {
+  _displayLatency(ms) {
     this.latencyValue.textContent = `${Math.round(ms)}ms`;
     this.latencyValue.classList.add("active");
   }
 
-  /**
-   * Add a line to the transcript
-   */
   addTranscriptItem(type, text) {
-    if (this.transcriptList.querySelector(".welcome")) {
-      this.transcriptList.innerHTML = "";
-    }
+    // Remove welcome placeholder on first real message
+    const welcome = this.transcriptList.querySelector(".welcome");
+    if (welcome) welcome.remove();
 
     const item = document.createElement("div");
     item.className = `transcript-item ${type}`;
-    item.innerHTML = `<p>${this.escapeHtml(text)}</p>`;
+    const p = document.createElement("p");
+    p.textContent = text; // textContent escapes HTML automatically
+    item.appendChild(p);
     this.transcriptList.appendChild(item);
     this.transcriptList.scrollTop = this.transcriptList.scrollHeight;
   }
 
-  /**
-   * Display error message
-   */
   showError(message) {
-    this.addTranscriptItem("error", `❌ Error: ${message}`);
-    console.error(message);
-  }
-
-  /**
-   * Debug logging
-   */
-  debug(message) {
-    console.log(`[DEBUG] ${message}`);
-    // Uncomment to show debug info in UI:
-    // this.debugText.textContent = message;
-  }
-
-  /**
-   * Escape HTML entities
-   */
-  escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
+    console.error("[Error]", message);
+    this.addTranscriptItem("error", `❌ ${message}`);
   }
 }
 
-// Initialize when DOM is ready
 document.addEventListener("DOMContentLoaded", () => {
-  console.log("DOM loaded, initializing Cascade...");
   window.cascadeClient = new CascadeClient();
 });
