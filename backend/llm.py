@@ -110,13 +110,17 @@ class LLMGenerator:
                     token_count += 1
                     sentence_buffer += token
 
-                    # Check for sentence boundary
-                    if self._has_sentence_boundary(sentence_buffer):
-                        # Sentence complete - yield it
-                        sentence = sentence_buffer.strip()
-                        logger.debug(f"[LLM] Yielding sentence ({token_count} tokens): {sentence[:60]}...")
-                        yield sentence
-                        sentence_buffer = ""
+                    # ── FIX [Bug 7]: Pre-filter before expensive regex ──
+                    # _has_sentence_boundary calls multiple regex scans. For a 300-token
+                    # response, this means 300 regex operations on a growing string.
+                    # Cheap pre-filter: only call if buffer ends with . ? or !
+                    if sentence_buffer and sentence_buffer[-1] in '.?!':
+                        if self._has_sentence_boundary(sentence_buffer):
+                            # Sentence complete - yield it
+                            sentence = sentence_buffer.strip()
+                            logger.debug(f"[LLM] Yielding sentence ({token_count} tokens): {sentence[:60]}...")
+                            yield sentence
+                            sentence_buffer = ""
 
             # Yield any remaining buffer
             if sentence_buffer.strip():

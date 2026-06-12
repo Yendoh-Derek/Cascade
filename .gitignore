@@ -63,5 +63,5 @@ yarn.lock
 *.pyc
 *.pyo
 
-/ai_voice_agent_implementation_plan.md
+/review.md
 /deepgram.md
