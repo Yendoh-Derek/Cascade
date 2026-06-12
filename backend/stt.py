@@ -115,21 +115,24 @@ class STTHandler:
                 if alternatives:
                     alt = alternatives[0]
                     transcript = alt.get("transcript", "")
+                    is_final = data.get("is_final", False)
+                    speech_final = data.get("speech_final", False)
 
-                    if transcript:
-                        is_final = data.get("is_final", False)
-                        speech_final = data.get("speech_final", False)
+                    # ── FIX [Bug 3]: Move speech_final check outside transcript guard ──
+                    # Deepgram can emit speech_final with empty transcript. When it does,
+                    # the buffer has content from earlier is_final messages that needs
+                    # flushing. Previously, speech_final was only checked inside
+                    # if transcript:, causing the flush to be skipped.
+                    if transcript and is_final:
+                        self.transcript_buffer = (
+                            self.transcript_buffer + " " + transcript
+                            if self.transcript_buffer
+                            else transcript
+                        )
+                        logger.debug(f"[STT] is_final: '{transcript}'")
 
-                        if is_final:
-                            self.transcript_buffer = (
-                                self.transcript_buffer + " " + transcript
-                                if self.transcript_buffer
-                                else transcript
-                            )
-                            logger.debug(f"[STT] is_final: '{transcript}'")
-
-                        if speech_final:
-                            self._flush_buffer("speech_final")
+                    if speech_final:
+                        self._flush_buffer("speech_final")
 
             elif msg_type == "UtteranceEnd":
                 self._flush_buffer("utterance_end")

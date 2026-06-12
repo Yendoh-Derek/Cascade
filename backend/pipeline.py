@@ -121,6 +121,9 @@ class PipelineSession:
 
     async def _process_transcript(self, transcript: str):
         """Core pipeline: transcript → LLM streaming → TTS streaming → WebSocket."""
+        full_response = ""
+        first_token_received = False
+
         try:
             # Send confirmed transcript to frontend
             self.send_message({"type": "transcript", "text": transcript})
@@ -130,17 +133,11 @@ class PipelineSession:
             self.tutor.trim_history(max_turns=10)
             messages = self.tutor.get_messages()
 
-            full_response = ""
-            first_token_received = False
-            response_started = False
-
             async for sentence in self.llm_generator.generate(
                 transcript=transcript,
                 messages=messages,
                 timeout_sec=30,
             ):
-                response_started = True
-
                 if not first_token_received:
                     first_token_received = True
                     if self.utterance_end_time:
@@ -168,9 +165,6 @@ class PipelineSession:
             if full_response:
                 self.tutor.add_assistant_message(full_response)
 
-            if response_started:
-                self.send_message({"type": "response_end"})
-
             logger.info(f"[Pipeline] Turn complete: '{full_response[:60]}'")
 
         except asyncio.CancelledError:
@@ -178,6 +172,11 @@ class PipelineSession:
         except Exception as e:
             logger.error(f"[Pipeline] Unexpected error: {e}")
             self.send_message({"type": "error", "message": f"Pipeline error: {e}"})
+        finally:
+            # ── FIX [Bug 5]: Always signal end-of-response ──
+            # Ensures frontend can recover even if LLM yields nothing
+            # or an error occurs during processing.
+            self.send_message({"type": "response_end"})
 
     def _on_stt_error(self, error: str):
         """Surface STT errors to the frontend."""

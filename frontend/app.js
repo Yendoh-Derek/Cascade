@@ -81,7 +81,9 @@ class CascadeClient {
 
   _initAudioContext() {
     try {
-      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      this.audioContext = new (
+        window.AudioContext || window.webkitAudioContext
+      )();
     } catch (err) {
       console.error("AudioContext not available:", err);
     }
@@ -154,12 +156,18 @@ class CascadeClient {
         this.ws.send("stop");
         await new Promise((r) => setTimeout(r, 100));
       } catch (_) {}
-      try { this.ws.close(); } catch (_) {}
+      try {
+        this.ws.close();
+      } catch (_) {}
     }
     this.ws = null;
 
     if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+      this.mediaStream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch (_) {}
+      });
       this.mediaStream = null;
     }
 
@@ -174,8 +182,18 @@ class CascadeClient {
       this.processor = null;
     }
 
-    if (this.sourceNode) { try { this.sourceNode.disconnect(); } catch (_) {} this.sourceNode = null; }
-    if (this.sinkNode)   { try { this.sinkNode.disconnect();   } catch (_) {} this.sinkNode = null; }
+    if (this.sourceNode) {
+      try {
+        this.sourceNode.disconnect();
+      } catch (_) {}
+      this.sourceNode = null;
+    }
+    if (this.sinkNode) {
+      try {
+        this.sinkNode.disconnect();
+      } catch (_) {}
+      this.sinkNode = null;
+    }
 
     this.audioPlaybackQueue = [];
     this.isPlaying = false;
@@ -222,7 +240,10 @@ class CascadeClient {
       await this.audioContext.audioWorklet.addModule(url);
       URL.revokeObjectURL(url);
 
-      this.processor = new AudioWorkletNode(this.audioContext, "audio-processor");
+      this.processor = new AudioWorkletNode(
+        this.audioContext,
+        "audio-processor",
+      );
       this.processor.port.onmessage = (evt) => this._onAudioData(evt.data);
       source.connect(this.processor);
       this.processor.connect(sink);
@@ -233,7 +254,9 @@ class CascadeClient {
       // Original pcmEncode() wrapped samples in a 44-byte WAV header.
       // Deepgram expects encoding:"linear16" = raw signed-16-bit PCM.
       // The WAV header corrupted the first audio chunk of every session.
-      console.warn("AudioWorklet unavailable — falling back to ScriptProcessor");
+      console.warn(
+        "AudioWorklet unavailable — falling back to ScriptProcessor",
+      );
       this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
       this.processor.onaudioprocess = (evt) => {
         const float32 = evt.inputBuffer.getChannelData(0);
@@ -273,12 +296,13 @@ class CascadeClient {
   }
 
   _onAudioData(data) {
-    // ── FIX [H1]: Only forward audio during LISTENING ────────────────
-    // Original code sent audio in all non-IDLE states. During PROCESSING
-    // and SPEAKING, the microphone was still open and feeding raw bytes
-    // to Deepgram — including the tutor's own TTS audio through the
-    // speakers, causing phantom transcripts and feedback loops.
-    if (!this.isRecording || this.state !== STATE.LISTENING) return;
+    // ── FIX [H1]: Send audio during LISTENING+PROCESSING; block only SPEAKING ──
+    // Original code blocked all audio during non-LISTENING states. But Deepgram's
+    // speech_final event requires receiving silence to fire. During PROCESSING,
+    // we must forward incoming audio (which includes silence) to Deepgram or the
+    // utterance won't finalize. Only block during SPEAKING — that's when TTS audio
+    // feeds back through the open mic and would cause phantom transcripts.
+    if (!this.isRecording) return;
 
     let bytes;
     if (data && data.type === "audio" && data.data) {
@@ -289,11 +313,21 @@ class CascadeClient {
       return;
     }
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    // Send audio to server during LISTENING and PROCESSING.
+    // Deepgram needs to receive silence to fire speech_final.
+    // Block during SPEAKING only — that's when TTS audio would feed back.
+    if (
+      this.state !== STATE.SPEAKING &&
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN
+    ) {
       this.ws.send(bytes);
     }
 
-    this._detectSilence(bytes);
+    // Silence detection only matters while we're listening.
+    if (this.state === STATE.LISTENING) {
+      this._detectSilence(bytes);
+    }
   }
 
   _detectSilence(bytes) {
@@ -338,7 +372,10 @@ class CascadeClient {
   _connectWebSocket() {
     return new Promise((resolve, reject) => {
       const subject = this.subjectSelect.value || "";
-      const wsUrl = `ws://${CONFIG.WS_HOST}:${CONFIG.WS_PORT}/ws${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`;
+      // ── FIX: Detect HTTPS and use wss:// accordingly ──
+      // Hardcoded ws:// breaks when deployed on HTTPS-only platforms.
+      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${wsProtocol}//${CONFIG.WS_HOST}:${CONFIG.WS_PORT}/ws${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`;
 
       console.log(`Connecting to ${wsUrl}`);
       this.ws = new WebSocket(wsUrl);
@@ -385,7 +422,7 @@ class CascadeClient {
           this.reconnectAttempts++;
           const delay = 1000 * Math.pow(2, this.reconnectAttempts - 1);
           console.log(
-            `[Client] WebSocket reconnection attempt ${this.reconnectAttempts} (delay: ${delay}ms)`
+            `[Client] WebSocket reconnection attempt ${this.reconnectAttempts} (delay: ${delay}ms)`,
           );
           setTimeout(() => {
             this._connectWebSocket().catch(() => {
@@ -431,8 +468,14 @@ class CascadeClient {
           this.addTranscriptItem("tutor", this.currentResponse.trim());
         }
         this.currentResponse = "";
-        // NOTE: Do NOT set state back to LISTENING here [M2 fix].
-        // State transitions to LISTENING inside playNextAudioChunk()
+        // ── FIX [Bug 2]: If no audio is queued or playing, we won't reach ──
+        // _playNextChunk's LISTENING transition — force it here.
+        // This handles cases where TTS fails silently or LLM returns no audio.
+        if (!this.isPlaying && this.audioPlaybackQueue.length === 0) {
+          this.setState(STATE.LISTENING);
+          this._resetTurnState();
+        }
+        // Otherwise, state transitions to LISTENING inside playNextAudioChunk()
         // when the queue drains — ensuring we only listen after audio ends.
         break;
 
@@ -446,12 +489,22 @@ class CascadeClient {
         // [M4] Server dropped a concurrent transcript — show user feedback
         this.addTranscriptItem(
           "info",
-          "⏳ Still responding — please wait a moment."
+          "⏳ Still responding — please wait a moment.",
         );
         break;
 
       case "error":
         this.showError(msg.message || "Unknown server error");
+        // ── FIX [Bug 4]: Recover to LISTENING so the user can try again ──
+        // Pipeline errors (LLM timeout, TTS fail, etc.) left state in
+        // PROCESSING or SPEAKING with no recovery. User saw error but UI
+        // was inert. Now we reset to a listening state unless session stopped.
+        if (this.state !== STATE.IDLE) {
+          this.audioPlaybackQueue = [];
+          this.isPlaying = false;
+          this.setState(STATE.LISTENING);
+          this._resetTurnState();
+        }
         break;
 
       default:
@@ -500,7 +553,9 @@ class CascadeClient {
 
     // ── FIX [H5]: Ensure AudioContext is running before decoding ──────
     if (this.audioContext && this.audioContext.state === "suspended") {
-      try { await this.audioContext.resume(); } catch (_) {}
+      try {
+        await this.audioContext.resume();
+      } catch (_) {}
     }
 
     const arrayBuffer = this.audioPlaybackQueue.shift();
@@ -527,10 +582,10 @@ class CascadeClient {
   setState(newState) {
     this.state = newState;
     const map = {
-      [STATE.IDLE]:       { cls: "",           text: "Ready" },
-      [STATE.LISTENING]:  { cls: "listening",  text: "🎤 Listening" },
+      [STATE.IDLE]: { cls: "", text: "Ready" },
+      [STATE.LISTENING]: { cls: "listening", text: "🎤 Listening" },
       [STATE.PROCESSING]: { cls: "processing", text: "⚙️ Processing" },
-      [STATE.SPEAKING]:   { cls: "speaking",   text: "🔊 Speaking" },
+      [STATE.SPEAKING]: { cls: "speaking", text: "🔊 Speaking" },
     };
     const cfg = map[newState] || map[STATE.IDLE];
     this.statusDot.className = `status-dot ${cfg.cls}`;
