@@ -53,6 +53,7 @@ class CascadeClient {
     this.firstAudioTime = null;
     this.lastUtteredTime = null;
     this.silenceStartTime = null;
+    this.sessionStartTime = null;
 
     // Adaptive silence threshold — reset on session start [H4]
     this.maxAudioLevel = 0;
@@ -83,7 +84,13 @@ class CascadeClient {
     try {
       this.audioContext = new (
         window.AudioContext || window.webkitAudioContext
-      )();
+      )({ sampleRate: 16000 });
+      if (this.audioContext && this.audioContext.sampleRate !== 16000) {
+        console.warn(
+          `AudioContext created at ${this.audioContext.sampleRate}Hz — ` +
+            `expected 16000Hz. Transcription quality may be degraded.`
+        );
+      }
     } catch (err) {
       console.error("AudioContext not available:", err);
     }
@@ -125,6 +132,7 @@ class CascadeClient {
       await this._connectWebSocket();
 
       this.setState(STATE.LISTENING);
+      this.sessionStartTime = Date.now();
       this.startBtn.textContent = "Stop Session";
       this.subjectSelect.disabled = true;
       this.transcriptList.innerHTML = "";
@@ -199,6 +207,7 @@ class CascadeClient {
     this.isPlaying = false;
     this.currentResponse = "";
     this._resetTurnState();
+    this.sessionStartTime = null;
 
     this.setState(STATE.IDLE);
     this.startBtn.textContent = "Start Session";
@@ -348,6 +357,11 @@ class CascadeClient {
 
     const threshold = Math.max(0.02, this.maxAudioLevel * 0.05);
 
+    // Ignore initial mic startup noise/clicks for the first 1.5s
+    if (this.sessionStartTime && Date.now() - this.sessionStartTime < 1500) {
+      return;
+    }
+
     if (rms < threshold) {
       if (!this.silenceStartTime) {
         this.silenceStartTime = Date.now();
@@ -390,7 +404,9 @@ class CascadeClient {
       this.ws.onopen = () => {
         clearTimeout(timeout);
         this.reconnectAttempts = 0;
-        console.log("✓ WebSocket connected");
+        console.log(
+          `✓ WebSocket connected (AudioContext: ${this.audioContext?.sampleRate || "unknown"}Hz)`
+        );
         resolve();
       };
 
@@ -495,15 +511,20 @@ class CascadeClient {
 
       case "error":
         this.showError(msg.message || "Unknown server error");
-        // ── FIX [Bug 4]: Recover to LISTENING so the user can try again ──
-        // Pipeline errors (LLM timeout, TTS fail, etc.) left state in
-        // PROCESSING or SPEAKING with no recovery. User saw error but UI
-        // was inert. Now we reset to a listening state unless session stopped.
         if (this.state !== STATE.IDLE) {
-          this.audioPlaybackQueue = [];
-          this.isPlaying = false;
-          this.setState(STATE.LISTENING);
-          this._resetTurnState();
+          const isSTTError = typeof msg.message === "string" && msg.message.includes("STT");
+          if (isSTTError) {
+            // STT connection is dead — can't recover without a new session.
+            // stopSession() will clean up WebSocket, mic, and UI state.
+            this.stopSession();
+          } else {
+            // Pipeline error (LLM/TTS failure) — STT is still alive,
+            // safe to return to LISTENING for the next utterance.
+            this.audioPlaybackQueue = [];
+            this.isPlaying = false;
+            this.setState(STATE.LISTENING);
+            this._resetTurnState();
+          }
         }
         break;
 
