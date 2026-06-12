@@ -41,6 +41,7 @@ class STTHandler:
         self.is_open = False
         self.transcript_buffer = ""
         self._listen_task: Optional[asyncio.Task] = None
+        self._keepalive_task: Optional[asyncio.Task] = None
 
     async def connect(self):
         """Open an async WebSocket connection to Deepgram."""
@@ -64,12 +65,19 @@ class STTHandler:
             # Create session and connect
             self.session = aiohttp.ClientSession()
             headers = {"Authorization": f"Token {self.api_key}"}
-            self.ws = await self.session.ws_connect(url, headers=headers)
+            self.ws = await self.session.ws_connect(
+                url,
+                headers=headers,
+                heartbeat=20,      # send PING every 20s, expect PONG within 20s
+                receive_timeout=None,  # don't time out on long silences
+            )
             self.is_open = True
             logger.info("[STT] Deepgram WebSocket connection established")
 
             # Start listening task
             self._listen_task = asyncio.create_task(self._listen())
+            # Start keepalive task
+            self._keepalive_task = asyncio.create_task(self._keepalive())
 
         except Exception as e:
             logger.error(f"[STT] Connection failed: {e}")
@@ -96,13 +104,35 @@ class STTHandler:
                         logger.error(f"[STT] WebSocket error: {self.ws.exception()}")
                         self.on_error(str(self.ws.exception()))
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
-                    logger.info("[STT] WebSocket closed")
+                    close_data = getattr(msg, "data", None)
+                    logger.warning(f"[STT] WebSocket closed by server (data={close_data})")
+                    if self.is_open:
+                        # Only call on_error if we didn't initiate the close ourselves
+                        self.on_error("STT connection closed by server — please start a new session")
                     self.is_open = False
                     break
+            # Loop exited cleanly (no explicit CLOSED message received)
+            if self.is_open:
+                logger.warning("[STT] _listen loop exited unexpectedly")
+                self.on_error("STT connection dropped — please start a new session")
+                self.is_open = False
         except Exception as e:
             logger.error(f"[STT] Listen task failed: {e}")
             self.on_error(str(e))
             self.is_open = False
+            
+    async def _keepalive(self):
+        """Send a KeepAlive message to Deepgram every 5 seconds to prevent inactivity timeouts."""
+        try:
+            while self.is_open and self.ws:
+                await asyncio.sleep(5)
+                if self.is_open and self.ws and not self.ws.closed:
+                    logger.debug("[STT] Sending KeepAlive to Deepgram")
+                    await self.ws.send_json({"type": "KeepAlive"})
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"[STT] KeepAlive task error: {e}")
 
     async def _handle_message(self, data: dict):
         """Handle a message from Deepgram."""
@@ -149,18 +179,37 @@ class STTHandler:
         """
         Forward raw PCM16 audio bytes to Deepgram.
         """
-        if not audio_bytes or not self.ws or not self.is_open:
+        if not audio_bytes or not self.ws or not self.is_open or self.ws.closed:
             return
         try:
             await self.ws.send_bytes(audio_bytes)
+        except RuntimeError as e:
+            # "Cannot write to closing transport" — aiohttp race during close.
+            # The _listen loop will handle the CLOSED event and call on_error
+            # if appropriate. Don't double-fire here.
+            self.is_open = False
+            logger.warning(f"[STT] Transport closing mid-send (expected during shutdown): {e}")
+        except ConnectionResetError:
+            self.is_open = False
+            logger.warning("[STT] Connection reset by peer")
         except Exception as e:
-            logger.error(f"[STT] send failed: {e}")
+            logger.error(f"[STT] Unexpected send error: {e}")
             self.on_error(str(e))
             self.is_open = False
 
     async def close(self):
         """Close the WebSocket connection cleanly."""
         self.is_open = False
+
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"[STT] Keepalive task cancel error: {e}")
+            self._keepalive_task = None
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -193,8 +242,6 @@ class STTHandler:
     def _flush_buffer(self, trigger: str):
         """Emit the accumulated transcript buffer as a confirmed utterance."""
         confirmed = self.transcript_buffer.strip()
-        if not confirmed:
-            return
         self.transcript_buffer = ""
         logger.info(f"[STT] Utterance confirmed ({trigger}): '{confirmed}'")
         self.on_transcript(confirmed)

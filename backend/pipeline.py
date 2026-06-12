@@ -84,7 +84,12 @@ class PipelineSession:
         Called by STT when a complete utterance is confirmed.
         Schedules the pipeline processing on the event loop.
         """
-        if not transcript or not isinstance(transcript, str):
+        if not isinstance(transcript, str):
+            return
+
+        if not transcript.strip():
+            logger.info("[Pipeline] Empty transcript received — resetting client")
+            self.send_message({"type": "response_end"})
             return
 
         # ── FIX [M4] ─────────────────────────────────────────────────────
