@@ -1,23 +1,6 @@
 /**
  * Cascade — AI Tutor Frontend
- *
- * Fixes applied:
- *  [C2] stopSession() now sends plain string "stop" (not JSON) — server
- *       check is `text == "stop"` so JSON object never matched.
- *  [H1] onAudioProcess now gates on STATE.LISTENING — audio is no longer
- *       forwarded to Deepgram during PROCESSING or SPEAKING, preventing
- *       phantom transcripts from the tutor's own TTS audio.
- *  [H2] firstAudioTime reset at start of every turn (not only on stopSession).
- *  [H3] lastUtteredTime, silenceStartTime reset at start of every turn so
- *       silence detection doesn't fire immediately after a response.
- *  [H4] maxAudioLevel reset on session start so adaptive threshold is fresh.
- *  [H5] AudioContext.resume() called before decoding audio — required by
- *       browser autoplay policy (context starts in 'suspended' state).
- *  [M1] ScriptProcessor fallback now sends raw PCM16 bytes (no WAV header)
- *       to match Deepgram's encoding:"linear16" expectation.
- *  [M2] State returns to LISTENING only when audio queue is empty (inside
- *       playNextAudioChunk) — not via a fixed 500ms timeout that could fire
- *       while audio is still playing and Deepgram picks up TTS output.
+ * Redesigned according to ui-ux-design.md
  */
 
 const CONFIG = {
@@ -38,6 +21,7 @@ class CascadeClient {
     this.state = STATE.IDLE;
     this.ws = null;
     this.audioContext = null;
+    this.analyser = null; // cached shared analyser node
     this.processor = null;
     this.sourceNode = null;
     this.sinkNode = null;
@@ -45,20 +29,24 @@ class CascadeClient {
     this.isRecording = false;
 
     // Audio playback
-    this.audioPlaybackQueue = [];
     this.isPlaying = false;
 
-    // Per-turn latency tracking — reset each turn [H2][H3]
+    // Per-turn latency tracking — reset each turn
     this.utteranceStartTime = null;
     this.firstAudioTime = null;
     this.lastUtteredTime = null;
     this.silenceStartTime = null;
     this.sessionStartTime = null;
 
-    // Adaptive silence threshold — reset on session start [H4]
+    // Precise audio scheduling
+    this.nextPlaybackTime = null;
+    this.isAudioSourceEnded = false;
+    this.activeSourceNodes = [];
+
+    // Adaptive silence threshold
     this.maxAudioLevel = 0;
 
-    // Intentional disconnect flag — prevents reconnection loop on manual stop
+    // Intentional disconnect flag
     this.intentionalDisconnect = false;
 
     // Reconnection
@@ -69,15 +57,107 @@ class CascadeClient {
     this.currentResponse = "";
 
     // UI references
-    this.startBtn = document.getElementById("start-btn");
-    this.statusDot = document.getElementById("status-dot");
+    this.orb = document.getElementById("orb");
+    this.transcriptPanel = document.getElementById("transcript-panel");
     this.statusText = document.getElementById("status-text");
-    this.latencyValue = document.getElementById("latency-value");
-    this.transcriptList = document.getElementById("transcript-list");
-    this.subjectSelect = document.getElementById("subject-select");
+    this.btnToggleSession = document.getElementById("btn-toggle-session");
+    this.btnClearTranscript = document.getElementById("btn-clear-transcript");
+    this.btnMute = document.getElementById("btn-mute");
 
-    this.startBtn.addEventListener("click", () => this.toggleSession());
+    // Microphone mute flag
+    this.isMuted = false;
+
+    this._initUIListeners();
     this._initAudioContext();
+  }
+
+  _initUIListeners() {
+    if (this.orb) {
+      const orbShell = this.orb.querySelector('.orb-shell');
+
+      this.orb.addEventListener('pointerdown', () => {
+        if (orbShell) {
+          orbShell.style.transitionProperty = 'transform';
+          orbShell.style.transitionDuration = '100ms';
+          orbShell.style.transitionTimingFunction = 'ease-in';
+          orbShell.style.transform = 'scale(0.92)';
+        }
+      });
+
+      this.orb.addEventListener('pointerup', () => {
+        if (orbShell) {
+          orbShell.style.transitionProperty = 'transform';
+          orbShell.style.transitionDuration = '350ms';
+          orbShell.style.transitionTimingFunction = 'var(--spring)';
+          orbShell.style.transform = 'scale(1.08)';
+          setTimeout(() => {
+            orbShell.style.transform = 'scale(1)';
+          }, 200);
+        }
+        this.toggleSession();
+      });
+
+      this.orb.addEventListener('keydown', (evt) => {
+        if (evt.key === ' ' || evt.key === 'Enter') {
+          evt.preventDefault();
+          if (orbShell) {
+            orbShell.style.transitionProperty = 'transform';
+            orbShell.style.transitionDuration = '100ms';
+            orbShell.style.transitionTimingFunction = 'ease-in';
+            orbShell.style.transform = 'scale(0.92)';
+            setTimeout(() => {
+              orbShell.style.transitionProperty = 'transform';
+              orbShell.style.transitionDuration = '350ms';
+              orbShell.style.transitionTimingFunction = 'var(--spring)';
+              orbShell.style.transform = 'scale(1.08)';
+              setTimeout(() => {
+                orbShell.style.transform = 'scale(1)';
+              }, 200);
+            }, 100);
+          }
+          this.toggleSession();
+        }
+      });
+    }
+
+    // Menu: Start/End Session toggle
+    if (this.btnToggleSession) {
+      this.btnToggleSession.addEventListener('click', () => {
+        this.toggleSession();
+      });
+    }
+
+    // Menu: Clear transcript
+    if (this.btnClearTranscript) {
+      this.btnClearTranscript.addEventListener('click', () => {
+        if (this.transcriptPanel) {
+          this.transcriptPanel.innerHTML = "";
+        }
+        this._resetTurnState();
+      });
+    }
+
+    // Menu: Mute Microphone
+    if (this.btnMute) {
+      this.btnMute.addEventListener('click', () => {
+        this.toggleMute();
+      });
+    }
+  }
+
+  toggleMute() {
+    this.isMuted = !this.isMuted;
+    if (this.btnMute) {
+      if (this.isMuted) {
+        this.btnMute.classList.add("active");
+        this.btnMute.querySelector(".btn-label").textContent = "Unmute Mic";
+        this.btnMute.querySelector(".btn-icon").textContent = "🔇";
+      } else {
+        this.btnMute.classList.remove("active");
+        this.btnMute.querySelector(".btn-label").textContent = "Mute Mic";
+        this.btnMute.querySelector(".btn-icon").textContent = "🔊";
+      }
+    }
   }
 
   _initAudioContext() {
@@ -85,11 +165,17 @@ class CascadeClient {
       this.audioContext = new (
         window.AudioContext || window.webkitAudioContext
       )({ sampleRate: 16000 });
-      if (this.audioContext && this.audioContext.sampleRate !== 16000) {
-        console.warn(
-          `AudioContext created at ${this.audioContext.sampleRate}Hz — ` +
-            `expected 16000Hz. Transcription quality may be degraded.`
-        );
+      if (this.audioContext) {
+        if (this.audioContext.sampleRate !== 16000) {
+          console.warn(
+            `AudioContext created at ${this.audioContext.sampleRate}Hz — ` +
+              `expected 16000Hz. Transcription quality may be degraded.`
+          );
+        }
+        // Initialize a single shared AnalyserNode for audio output reactivity
+        this.analyser = this.audioContext.createAnalyser();
+        this.analyser.fftSize = 256;
+        this.analyser.connect(this.audioContext.destination);
       }
     } catch (err) {
       console.error("AudioContext not available:", err);
@@ -117,14 +203,10 @@ class CascadeClient {
         },
       });
 
-      // ── FIX [H5]: Resume AudioContext (browser autoplay policy) ─────
-      // Browsers start AudioContext in 'suspended' state until a user
-      // gesture occurs. resuming here guarantees decodeAudioData works.
       if (this.audioContext && this.audioContext.state === "suspended") {
         await this.audioContext.resume();
       }
 
-      // ── FIX [H4]: Reset adaptive threshold for fresh session ─────────
       this.maxAudioLevel = 0;
 
       await this._initAudioProcessing();
@@ -133,10 +215,11 @@ class CascadeClient {
 
       this.setState(STATE.LISTENING);
       this.sessionStartTime = Date.now();
-      this.startBtn.textContent = "Stop Session";
-      this.subjectSelect.disabled = true;
-      this.transcriptList.innerHTML = "";
-      this.addTranscriptItem("welcome", "Connected — ask me a question.");
+
+      // Clear transcript for new session
+      if (this.transcriptPanel) {
+        this.transcriptPanel.innerHTML = "";
+      }
     } catch (err) {
       console.error("startSession failed:", err);
       let msg = `Failed to start: ${err.message}`;
@@ -144,7 +227,7 @@ class CascadeClient {
         msg = "🔒 Microphone permission denied. Enable it in browser settings.";
       } else if (err.name === "NotFoundError") {
         msg = "🎤 No microphone found on this device.";
-      } else if (err.message.includes("WebSocket")) {
+      } else if (err.message && err.message.includes("WebSocket")) {
         msg = "🌐 Could not connect to server. Is the backend running?";
       }
       this.showError(msg);
@@ -156,9 +239,6 @@ class CascadeClient {
     this.isRecording = false;
     this.intentionalDisconnect = true;
 
-    // ── FIX [C2]: Send plain string "stop" — server checks text == "stop" ──
-    // The original code sent JSON.stringify({type:"stop"}) which never
-    // matched the server's string equality check.
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send("stop");
@@ -203,31 +283,41 @@ class CascadeClient {
       this.sinkNode = null;
     }
 
-    this.audioPlaybackQueue = [];
+    if (this.activeSourceNodes) {
+      this.activeSourceNodes.forEach((source) => {
+        try {
+          source.stop();
+        } catch (_) {}
+      });
+    }
+    this.activeSourceNodes = [];
+    this.nextPlaybackTime = null;
+    this.isAudioSourceEnded = false;
+
     this.isPlaying = false;
     this.currentResponse = "";
     this._resetTurnState();
     this.sessionStartTime = null;
 
+    // Reset mute state when session stops
+    if (this.isMuted) {
+      this.toggleMute();
+    }
+
     this.setState(STATE.IDLE);
-    this.startBtn.textContent = "Start Session";
-    this.subjectSelect.disabled = false;
-    this.latencyValue.textContent = "—";
-    this.latencyValue.classList.remove("active");
   }
 
   // ── Per-turn state reset ─────────────────────────────────────────────
 
-  /**
-   * Reset all per-turn latency and silence-detection state.
-   * Called at the start of each new turn so previous values
-   * don't corrupt the next turn's measurements [H2][H3].
-   */
   _resetTurnState() {
     this.utteranceStartTime = null;
     this.firstAudioTime = null;
     this.lastUtteredTime = null;
     this.silenceStartTime = null;
+    this.nextPlaybackTime = null;
+    this.isAudioSourceEnded = false;
+    this.activeSourceNodes = [];
+    this.maxAudioLevel = 0; // Reset adaptive threshold on each turn to avoid permanent desensitization
   }
 
   // ── Audio capture ────────────────────────────────────────────────────
@@ -259,10 +349,6 @@ class CascadeClient {
       sink.connect(this.audioContext.destination);
       console.log("✓ AudioWorklet ready");
     } catch (_) {
-      // ── FIX [M1]: ScriptProcessor fallback sends raw PCM16 ───────────
-      // Original pcmEncode() wrapped samples in a 44-byte WAV header.
-      // Deepgram expects encoding:"linear16" = raw signed-16-bit PCM.
-      // The WAV header corrupted the first audio chunk of every session.
       console.warn(
         "AudioWorklet unavailable — falling back to ScriptProcessor",
       );
@@ -305,12 +391,6 @@ class CascadeClient {
   }
 
   _onAudioData(data) {
-    // ── FIX [H1]: Send audio during LISTENING+PROCESSING; block only SPEAKING ──
-    // Original code blocked all audio during non-LISTENING states. But Deepgram's
-    // speech_final event requires receiving silence to fire. During PROCESSING,
-    // we must forward incoming audio (which includes silence) to Deepgram or the
-    // utterance won't finalize. Only block during SPEAKING — that's when TTS audio
-    // feeds back through the open mic and would cause phantom transcripts.
     if (!this.isRecording) return;
 
     let bytes;
@@ -322,10 +402,9 @@ class CascadeClient {
       return;
     }
 
-    // Send audio to server during LISTENING and PROCESSING.
-    // Deepgram needs to receive silence to fire speech_final.
-    // Block during SPEAKING only — that's when TTS audio would feed back.
+    // Send audio to server during LISTENING and PROCESSING (if not muted).
     if (
+      !this.isMuted &&
       this.state !== STATE.SPEAKING &&
       this.ws &&
       this.ws.readyState === WebSocket.OPEN
@@ -357,6 +436,11 @@ class CascadeClient {
 
     const threshold = Math.max(0.02, this.maxAudioLevel * 0.05);
 
+    // Update mic reactivity CSS var
+    if (this.orb) {
+      this.orb.style.setProperty('--rms', rms.toFixed(3));
+    }
+
     // Ignore initial mic startup noise/clicks for the first 1.5s
     if (this.sessionStartTime && Date.now() - this.sessionStartTime < 1500) {
       return;
@@ -385,11 +469,8 @@ class CascadeClient {
 
   _connectWebSocket() {
     return new Promise((resolve, reject) => {
-      const subject = this.subjectSelect.value || "";
-      // ── FIX: Detect HTTPS and use wss:// accordingly ──
-      // Hardcoded ws:// breaks when deployed on HTTPS-only platforms.
       const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${wsProtocol}//${CONFIG.WS_HOST}:${CONFIG.WS_PORT}/ws${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`;
+      const wsUrl = `${wsProtocol}//${CONFIG.WS_HOST}:${CONFIG.WS_PORT}/ws`;
 
       console.log(`Connecting to ${wsUrl}`);
       this.ws = new WebSocket(wsUrl);
@@ -429,7 +510,6 @@ class CascadeClient {
 
       this.ws.onclose = () => {
         clearTimeout(timeout);
-        // Only reconnect if disconnection was unexpected (not user-initiated)
         if (
           !this.intentionalDisconnect &&
           this.state !== STATE.IDLE &&
@@ -465,9 +545,6 @@ class CascadeClient {
     switch (msg.type) {
       case "transcript":
         if (msg.text) {
-          // ── FIX [H3]: Reset turn state when a new transcript arrives ──
-          // Prevents stale lastUtteredTime from causing immediate silence
-          // detection at the start of the next turn.
           this._resetTurnState();
           this.addTranscriptItem("student", msg.text);
         }
@@ -484,15 +561,8 @@ class CascadeClient {
           this.addTranscriptItem("tutor", this.currentResponse.trim());
         }
         this.currentResponse = "";
-        // ── FIX [Bug 2]: If no audio is queued or playing, we won't reach ──
-        // _playNextChunk's LISTENING transition — force it here.
-        // This handles cases where TTS fails silently or LLM returns no audio.
-        if (!this.isPlaying && this.audioPlaybackQueue.length === 0) {
-          this.setState(STATE.LISTENING);
-          this._resetTurnState();
-        }
-        // Otherwise, state transitions to LISTENING inside playNextAudioChunk()
-        // when the queue drains — ensuring we only listen after audio ends.
+        this.isAudioSourceEnded = true;
+        this._checkPlaybackFinished();
         break;
 
       case "latency":
@@ -502,11 +572,7 @@ class CascadeClient {
         break;
 
       case "busy":
-        // [M4] Server dropped a concurrent transcript — show user feedback
-        this.addTranscriptItem(
-          "info",
-          "⏳ Still responding — please wait a moment.",
-        );
+        this.showToast("⏳ Still responding — please wait a moment.");
         break;
 
       case "error":
@@ -514,13 +580,8 @@ class CascadeClient {
         if (this.state !== STATE.IDLE) {
           const isSTTError = typeof msg.message === "string" && msg.message.includes("STT");
           if (isSTTError) {
-            // STT connection is dead — can't recover without a new session.
-            // stopSession() will clean up WebSocket, mic, and UI state.
             this.stopSession();
           } else {
-            // Pipeline error (LLM/TTS failure) — STT is still alive,
-            // safe to return to LISTENING for the next utterance.
-            this.audioPlaybackQueue = [];
             this.isPlaying = false;
             this.setState(STATE.LISTENING);
             this._resetTurnState();
@@ -536,9 +597,6 @@ class CascadeClient {
   // ── Audio playback ───────────────────────────────────────────────────
 
   _onAudioChunk(arrayBuffer) {
-    // ── FIX [H2]: Track first audio time per turn ─────────────────────
-    // Original: firstAudioTime only reset in stopSession() so turn 2+
-    // latency was calculated from null or a stale value.
     if (this.firstAudioTime === null && this.utteranceStartTime !== null) {
       this.firstAudioTime = Date.now();
       const latency = this.firstAudioTime - this.utteranceStartTime;
@@ -546,95 +604,205 @@ class CascadeClient {
       console.log(`[Client] First audio: ${latency}ms`);
     }
 
-    this.audioPlaybackQueue.push(arrayBuffer);
-    if (!this.isPlaying) {
-      this._playNextChunk();
-    }
-  }
-
-  async _playNextChunk() {
-    if (this.audioPlaybackQueue.length === 0) {
-      this.isPlaying = false;
-
-      // ── FIX [M2]: Return to LISTENING only when queue is empty ───────
-      // Original: 500ms setTimeout in response_end handler returned to
-      // LISTENING while audio could still be queued. Deepgram then picked
-      // up the TTS audio output as a new utterance, creating a feedback
-      // loop. Now the transition happens here — after the last chunk plays.
-      if (this.state === STATE.SPEAKING) {
-        this.setState(STATE.LISTENING);
-        // Reset firstAudioTime so the next turn measures correctly [H2]
-        this.firstAudioTime = null;
-      }
-      return;
-    }
-
-    this.isPlaying = true;
-    this.setState(STATE.SPEAKING);
-
-    // ── FIX [H5]: Ensure AudioContext is running before decoding ──────
     if (this.audioContext && this.audioContext.state === "suspended") {
       try {
-        await this.audioContext.resume();
+        this.audioContext.resume();
       } catch (_) {}
     }
 
-    const arrayBuffer = this.audioPlaybackQueue.shift();
-
-    try {
-      const decoded = await this.audioContext.decodeAudioData(arrayBuffer);
-      const source = this.audioContext.createBufferSource();
-      source.buffer = decoded;
-      source.connect(this.audioContext.destination);
-      await new Promise((resolve) => {
-        source.onended = resolve;
-        source.start(0);
+    this.audioContext.decodeAudioData(arrayBuffer)
+      .then(audioBuffer => {
+        this._schedulePlayback(audioBuffer);
+      })
+      .catch(err => {
+        console.error("Audio decode failed:", err);
       });
-    } catch (err) {
-      console.error("Audio decode failed:", err);
+  }
+
+  _schedulePlayback(audioBuffer) {
+    this.setState(STATE.SPEAKING);
+    this.isPlaying = true;
+
+    const currentTime = this.audioContext.currentTime;
+
+    if (this.nextPlaybackTime === null || this.nextPlaybackTime < currentTime) {
+      this.nextPlaybackTime = currentTime + 0.1; // 100ms buffering lookahead
     }
 
-    // Play next chunk (recursive — drains queue)
-    this._playNextChunk();
+    const source = this.audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+
+    // Route source through the single cached AnalyserNode
+    if (this.analyser) {
+      source.connect(this.analyser);
+    } else {
+      source.connect(this.audioContext.destination);
+    }
+
+    source.start(this.nextPlaybackTime);
+    this.activeSourceNodes.push(source);
+
+    // Audio reactivity loop using the single cached AnalyserNode
+    if (this.analyser) {
+      const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+      const tick = () => {
+        if (this.state !== STATE.SPEAKING) return;
+        this.analyser.getByteFrequencyData(dataArray);
+        const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+        if (this.orb) {
+          this.orb.style.setProperty('--audio-level', avg.toFixed(1));
+        }
+        requestAnimationFrame(tick);
+      };
+      tick();
+    }
+
+    source.onended = () => {
+      const index = this.activeSourceNodes.indexOf(source);
+      if (index > -1) {
+        this.activeSourceNodes.splice(index, 1);
+      }
+      this._checkPlaybackFinished();
+
+      // Reset reactive CSS var when playback ends
+      if (this.activeSourceNodes.length === 0 && this.orb) {
+        this.orb.style.setProperty('--audio-level', '0');
+      }
+    };
+
+    this.nextPlaybackTime = this.nextPlaybackTime + audioBuffer.duration;
+  }
+
+  _checkPlaybackFinished() {
+    if (this.activeSourceNodes.length === 0 && this.isAudioSourceEnded) {
+      this.isPlaying = false;
+      if (this.state === STATE.SPEAKING) {
+        this.setState(STATE.LISTENING);
+        this._resetTurnState();
+      }
+    }
   }
 
   // ── UI helpers ───────────────────────────────────────────────────────
 
   setState(newState) {
+    const prev = this.state;
     this.state = newState;
-    const map = {
-      [STATE.IDLE]: { cls: "", text: "Ready" },
-      [STATE.LISTENING]: { cls: "listening", text: "🎤 Listening" },
-      [STATE.PROCESSING]: { cls: "processing", text: "⚙️ Processing" },
-      [STATE.SPEAKING]: { cls: "speaking", text: "🔊 Speaking" },
+
+    if (!this.orb) return;
+
+    // Remove all state classes
+    this.orb.classList.remove(
+      'state-idle', 'state-listening',
+      'state-processing', 'state-speaking'
+    );
+
+    // Add current state class
+    const classMap = {
+      [STATE.IDLE]:       'state-idle',
+      [STATE.LISTENING]:  'state-listening',
+      [STATE.PROCESSING]: 'state-processing',
+      [STATE.SPEAKING]:   'state-speaking',
     };
-    const cfg = map[newState] || map[STATE.IDLE];
-    this.statusDot.className = `status-dot ${cfg.cls}`;
-    this.statusText.textContent = cfg.text;
+    if (classMap[newState]) this.orb.classList.add(classMap[newState]);
+
+    // Reset reactive CSS vars on state exit
+    if (prev === STATE.LISTENING) this.orb.style.setProperty('--rms', '0');
+    if (prev === STATE.SPEAKING)  this.orb.style.setProperty('--audio-level', '0');
+
+    // Update status text underneath the orb
+    if (this.statusText) {
+      const statusLabels = {
+        [STATE.IDLE]: "tap to begin",
+        [STATE.LISTENING]: "listening",
+        [STATE.PROCESSING]: "thinking",
+        [STATE.SPEAKING]: "speaking",
+      };
+      this.statusText.textContent = statusLabels[newState] || "";
+      this.statusText.className = `status-text state-${newState.toLowerCase()}`;
+    }
+
+    // Update button states
+    if (this.btnToggleSession) {
+      if (newState === STATE.IDLE) {
+        this.btnToggleSession.classList.remove("active");
+        this.btnToggleSession.querySelector(".btn-label").textContent = "Start Session";
+        this.btnToggleSession.querySelector(".btn-icon").textContent = "🎙️";
+      } else {
+        this.btnToggleSession.classList.add("active");
+        this.btnToggleSession.querySelector(".btn-label").textContent = "End Session";
+        this.btnToggleSession.querySelector(".btn-icon").textContent = "🛑";
+      }
+    }
+
+    if (this.btnMute) {
+      this.btnMute.disabled = (newState === STATE.IDLE);
+    }
   }
 
   _displayLatency(ms) {
-    this.latencyValue.textContent = `${Math.round(ms)}ms`;
-    this.latencyValue.classList.add("active");
+    const messages = document.querySelectorAll('.message-tutor');
+    const last = messages[messages.length - 1];
+    if (!last) return;
+
+    // Avoid double latency tags if already added
+    if (last.querySelector('.latency-tag')) return;
+
+    const tag = document.createElement('span');
+    tag.className = 'latency-tag';
+    tag.textContent = `↯ ${Math.round(ms)}ms`;
+    last.appendChild(tag);
+
+    setTimeout(() => tag.classList.add('fade-out'), 3000);
   }
 
   addTranscriptItem(type, text) {
-    // Remove welcome placeholder on first real message
-    const welcome = this.transcriptList.querySelector(".welcome");
-    if (welcome) welcome.remove();
+    if (type === 'welcome') return;
 
-    const item = document.createElement("div");
-    item.className = `transcript-item ${type}`;
-    const p = document.createElement("p");
-    p.textContent = text; // textContent escapes HTML automatically
-    item.appendChild(p);
-    this.transcriptList.appendChild(item);
-    this.transcriptList.scrollTop = this.transcriptList.scrollHeight;
+    if (!this.transcriptPanel) return;
+    const msg = document.createElement('div');
+
+    if (type === 'student') {
+      msg.className = 'message message-user';
+      msg.innerHTML = `<p>${this._escapeHTML(text)}</p>`;
+    } else if (type === 'tutor') {
+      msg.className = 'message message-tutor';
+      msg.innerHTML = `<p>${this._escapeHTML(text)}</p>`;
+    } else {
+      return; // info / error types now handled by toast
+    }
+
+    this.transcriptPanel.appendChild(msg);
+    this.transcriptPanel.scrollTop = this.transcriptPanel.scrollHeight;
+  }
+
+  _escapeHTML(str) {
+    const d = document.createElement('div');
+    d.appendChild(document.createTextNode(str));
+    return d.innerHTML;
+  }
+
+  showToast(message, duration = 4000) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.textContent = message;
+    container.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.transitionProperty = 'opacity, transform';
+      toast.style.transitionDuration = '400ms, 400ms';
+      toast.style.transitionTimingFunction = 'ease, ease';
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(8px)';
+      setTimeout(() => toast.remove(), 400);
+    }, duration);
   }
 
   showError(message) {
     console.error("[Error]", message);
-    this.addTranscriptItem("error", `❌ ${message}`);
+    this.showToast(`❌ ${message}`);
   }
 }
 

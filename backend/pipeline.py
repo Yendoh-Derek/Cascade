@@ -138,34 +138,74 @@ class PipelineSession:
             self.tutor.trim_history(max_turns=10)
             messages = self.tutor.get_messages()
 
-            async for sentence in self.llm_generator.generate(
-                transcript=transcript,
-                messages=messages,
-                timeout_sec=30,
-            ):
-                if not first_token_received:
-                    first_token_received = True
-                    if self.utterance_end_time:
-                        llm_ms = (time.time() - self.utterance_end_time) * 1000
-                        logger.info(f"[Pipeline] LLM first token: {llm_ms:.0f}ms")
+            queue = asyncio.Queue()
 
-                full_response += sentence
-                self.send_message({"type": "response_chunk", "text": sentence})
-
-                # Stream TTS for this sentence immediately
-                first_audio_sent = False
+            async def synthesize_sentence(text: str) -> bytes:
                 try:
-                    async for audio_chunk in self.tts_engine.synthesise(sentence):
-                        if not first_audio_sent:
-                            first_audio_sent = True
-                            if self.utterance_end_time:
-                                total_ms = (time.time() - self.utterance_end_time) * 1000
-                                logger.info(f"[Pipeline] First audio sent: {total_ms:.0f}ms")
-                                self.send_message({"type": "latency", "ms": int(total_ms)})
-                        self.send_message({"type": "audio", "data": audio_chunk})
+                    audio_data_list = []
+                    async for chunk in self.tts_engine.synthesise(text):
+                        audio_data_list.append(chunk)
+                    return b"".join(audio_data_list)
                 except Exception as e:
-                    logger.error(f"[Pipeline] TTS error on sentence: {e}")
-                    continue  # Try next sentence even if this one fails
+                    logger.error(f"[Pipeline] TTS synthesis failed for '{text[:20]}': {e}")
+                    return b""
+
+            async def produce_sentences():
+                nonlocal first_token_received
+                try:
+                    async for sentence in self.llm_generator.generate(
+                        transcript=transcript,
+                        messages=messages,
+                        timeout_sec=30,
+                    ):
+                        if not first_token_received:
+                            first_token_received = True
+                            if self.utterance_end_time:
+                                llm_ms = (time.time() - self.utterance_end_time) * 1000
+                                logger.info(f"[Pipeline] LLM first token: {llm_ms:.0f}ms")
+
+                        self.send_message({"type": "response_chunk", "text": sentence})
+                        # Start synthesis task concurrently in background
+                        tts_task = asyncio.create_task(synthesize_sentence(sentence))
+                        await queue.put((sentence, tts_task))
+                    
+                    # Push sentinel to indicate end of stream
+                    await queue.put(None)
+                except Exception as e:
+                    logger.error(f"[Pipeline] LLM generator error: {e}")
+                    await queue.put(e)
+
+            async def consume_audio():
+                nonlocal full_response
+                first_audio_sent = False
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        queue.task_done()
+                        break
+                    if isinstance(item, Exception):
+                        queue.task_done()
+                        raise item
+
+                    sentence, tts_task = item
+                    try:
+                        audio_bytes = await tts_task
+                        if audio_bytes:
+                            if not first_audio_sent:
+                                first_audio_sent = True
+                                if self.utterance_end_time:
+                                    total_ms = (time.time() - self.utterance_end_time) * 1000
+                                    logger.info(f"[Pipeline] First audio sent: {total_ms:.0f}ms")
+                                    self.send_message({"type": "latency", "ms": int(total_ms)})
+                            self.send_message({"type": "audio", "data": audio_bytes})
+                        full_response += sentence
+                    except Exception as e:
+                        logger.error(f"[Pipeline] Error sending audio for sentence: {e}")
+                    finally:
+                        queue.task_done()
+
+            # Run producer and consumer concurrently
+            await asyncio.gather(produce_sentences(), consume_audio())
 
             if full_response:
                 self.tutor.add_assistant_message(full_response)
