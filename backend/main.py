@@ -102,6 +102,8 @@ async def websocket_endpoint(
             await websocket.close()
             return
 
+        send_lock = asyncio.Lock()
+
         session = PipelineSession(
             api_keys={"deepgram": keys.deepgram, "groq": keys.groq},
             model_config={
@@ -110,7 +112,7 @@ async def websocket_endpoint(
                 "edge_tts_voice": config.edge_tts_voice,
             },
             send_message=lambda msg: asyncio.create_task(
-                _send_ws_message(websocket, msg)
+                _send_ws_message(websocket, msg, send_lock)
             ),
             subject=subject,
         )
@@ -197,20 +199,21 @@ async def websocket_endpoint(
                 logger.error(f"[WS] Error during session cleanup: {e}")
 
 
-async def _send_ws_message(websocket: WebSocket, message: Dict[str, Any]):
+async def _send_ws_message(websocket: WebSocket, message: Dict[str, Any], lock: asyncio.Lock):
     """Route a message to the WebSocket — binary for audio, JSON for everything else."""
-    try:
-        if message.get("type") == "audio":
-            audio_data = message.get("data", b"")
-            if isinstance(audio_data, str):
-                audio_data = bytes.fromhex(audio_data)
-            if audio_data:
-                await websocket.send_bytes(audio_data)
-        else:
-            await websocket.send_json(message)
-    except Exception as e:
-        # Client likely disconnected mid-send — not a server error
-        logger.debug(f"[WS] Send failed (client likely gone): {e}")
+    async with lock:
+        try:
+            if message.get("type") == "audio":
+                audio_data = message.get("data", b"")
+                if isinstance(audio_data, str):
+                    audio_data = bytes.fromhex(audio_data)
+                if audio_data:
+                    await websocket.send_bytes(audio_data)
+            else:
+                await websocket.send_json(message)
+        except Exception as e:
+            # Client likely disconnected mid-send — not a server error
+            logger.debug(f"[WS] Send failed (client likely gone): {e}")
 
 
 # Mount frontend static files — must be registered last so it doesn't

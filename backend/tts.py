@@ -46,7 +46,7 @@ class TTSEngine:
             timeout_sec: Timeout for synthesis in seconds
 
         Yields:
-            Raw MP3 audio bytes as chunks arrive
+            Raw MP3 audio bytes as a single complete chunk
         """
         if not text or not text.strip():
             logger.warning("[TTS] Empty text provided, skipping synthesis")
@@ -62,29 +62,22 @@ class TTSEngine:
             # Create Communicate object
             communicate = edge_tts.Communicate(text, self.voice)
 
-            chunk_count = 0
-            byte_count = 0
-
-            # edge-tts Communicate.stream() is an async generator in recent versions
-            # If it's not, we wrap it properly
+            audio_data_list = []
             try:
                 async for chunk in communicate.stream():
                     # Check chunk type - Use get() for TypedDict safety
                     if chunk.get("type") == "audio":
                         audio_data = chunk.get("data")
                         if audio_data:  # Skip empty chunks
-                            chunk_count += 1
-                            byte_count += len(audio_data)
-                            logger.debug(f"[TTS] Chunk {chunk_count}: {len(audio_data)} bytes")
-                            yield audio_data
-                            
-                            # Add small delay to prevent overwhelming the client
-                            await asyncio.sleep(0.01)
+                            audio_data_list.append(audio_data)
             except Exception as e:
                 logger.error(f"[TTS] Error during streaming: {e}")
                 raise
 
-            logger.info(f"[TTS] Audio complete: {chunk_count} chunks, {byte_count} bytes total")
+            if audio_data_list:
+                complete_audio = b"".join(audio_data_list)
+                logger.info(f"[TTS] Audio complete: {len(complete_audio)} bytes total")
+                yield complete_audio
 
         except Exception as e:
             logger.error(f"[TTS] Error during synthesis: {e}")

@@ -242,6 +242,8 @@ class STTHandler:
     def _flush_buffer(self, trigger: str):
         """Emit the accumulated transcript buffer as a confirmed utterance."""
         confirmed = self.transcript_buffer.strip()
+        if not confirmed:
+            return
         self.transcript_buffer = ""
         logger.info(f"[STT] Utterance confirmed ({trigger}): '{confirmed}'")
         self.on_transcript(confirmed)

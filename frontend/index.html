@@ -1,67 +1,76 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cascade — AI Tutor</title>
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <div class="container">
-      <!-- Header -->
-      <div class="header">
-        <h1>Cascade</h1>
-        <p class="tagline">Low-latency AI Tutor</p>
-      </div>
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Cascade</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=JetBrains+Mono&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="style.css?v=1.0.2"/>
+</head>
+<body>
 
-      <!-- Subject Selector -->
-      <div class="control-panel">
-        <label for="subject-select">Subject:</label>
-        <select id="subject-select">
-          <option value="">General</option>
-          <option value="Mathematics">Mathematics</option>
-          <option value="Biology">Biology</option>
-          <option value="Physics">Physics</option>
-          <option value="Chemistry">Chemistry</option>
-          <option value="History">History</option>
-        </select>
-      </div>
+  <!-- Atmospheric background blobs -->
+  <div class="blob blob-a" aria-hidden="true"></div>
+  <div class="blob blob-b" aria-hidden="true"></div>
+  <div class="blob blob-c" aria-hidden="true"></div>
 
-      <!-- Status Indicator -->
-      <div class="status-container">
-        <div class="status-badge" id="status-badge">
-          <span class="status-dot" id="status-dot"></span>
-          <span class="status-text" id="status-text">Ready</span>
-        </div>
-      </div>
+  <!-- App shell -->
+  <div class="app-shell">
 
-      <!-- Session Controls -->
-      <div class="controls">
-        <button id="start-btn" class="btn btn-primary">Start Session</button>
-      </div>
+    <!-- Header -->
+    <header class="app-header">
+      <span class="wordmark">cascade</span>
+    </header>
 
-      <!-- Latency Display -->
-      <div class="latency-display">
-        <div class="latency-value" id="latency-value">—</div>
-        <div class="latency-label">Response Time</div>
-      </div>
-
-      <!-- Transcript Panel -->
-      <div class="transcript-panel">
-        <h3>Session Transcript</h3>
-        <div class="transcript-list" id="transcript-list">
-          <div class="transcript-item welcome">
-            <p>Ask me a question to get started.</p>
+    <!-- Main layout grid -->
+    <div class="layout-grid">
+      <!-- Left Column: Orb and Status Panel -->
+      <div class="orb-card glass">
+        <div class="orb-wrapper state-idle" id="orb" role="button"
+             aria-label="Tap to start voice session" tabindex="0">
+          <!-- Layer 1: outer glow (box-shadow only, no background) -->
+          <div class="orb-glow-ring" aria-hidden="true"></div>
+          <div class="orb-shell glass">
+            <div class="orb-core" id="orb-core"></div>
+            <div class="orb-highlight" aria-hidden="true"></div>
+            <div class="orb-ring ring-1" aria-hidden="true"></div>
+            <div class="orb-ring ring-2" aria-hidden="true"></div>
+            <div class="orb-ring ring-3" aria-hidden="true"></div>
           </div>
         </div>
+        <p class="status-text state-idle" id="status-text">tap to begin</p>
       </div>
 
-      <!-- Debug Info (optional) -->
-      <div class="debug-info" id="debug-info" style="display: none">
-        <small id="debug-text"></small>
+      <!-- Right Column: Conversation Transcript Panel -->
+      <div class="transcript-card glass">
+        <div class="transcript-panel" id="transcript-panel"
+             role="log" aria-live="polite" aria-label="Conversation transcript">
+        </div>
       </div>
     </div>
 
-    <script src="app.js"></script>
-  </body>
+    <!-- Bottom Menu Bar -->
+    <footer class="menu-bar glass">
+      <button class="menu-btn" id="btn-toggle-session" title="Start or Stop Session">
+        <span class="btn-icon">🎙️</span>
+        <span class="btn-label">Start Session</span>
+      </button>
+      <button class="menu-btn" id="btn-clear-transcript" title="Clear Conversation Log">
+        <span class="btn-icon">🗑️</span>
+        <span class="btn-label">Clear</span>
+      </button>
+      <button class="menu-btn" id="btn-mute" title="Mute Microphone" disabled>
+        <span class="btn-icon">🔊</span>
+        <span class="btn-label">Mute Mic</span>
+      </button>
+    </footer>
+
+  </div>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toast-container" aria-live="assertive"></div>
+
+  <script src="app.js?v=1.0.2"></script>
+</body>
 </html>
