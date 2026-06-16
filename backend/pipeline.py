@@ -47,9 +47,9 @@ class PipelineSession:
         self.tts_engine_choice = tts_engine
 
         self.tutor = TutorSession(subject=subject)
-        self.stt_handler: Optional[STTHandler] = None
-        self.llm_generator: Optional[LLMGenerator] = None
-        self.tts_engine: Optional[TTSEngine] = None
+        self.stt_handler: STTHandler
+        self.llm_generator: LLMGenerator
+        self.tts_engine: TTSEngine
 
         # Latency tracking
         self.utterance_end_time: Optional[float] = None
@@ -259,4 +259,9 @@ class PipelineSession:
                 await self.stt_handler.close()
             except Exception as e:
                 logger.error(f"[Pipeline] STT close error: {e}")
+        if self.tts_engine:
+            try:
+                await self.tts_engine.close()
+            except Exception as e:
+                logger.error(f"[Pipeline] TTS close error: {e}")
         logger.info("[Pipeline] Session closed")
