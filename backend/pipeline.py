@@ -39,10 +39,12 @@ class PipelineSession:
         model_config: Dict[str, str],
         send_message: Callable,
         subject: Optional[str] = None,
+        tts_engine: str = "edge"
     ):
         self.api_keys = api_keys
         self.model_config = model_config
         self.send_message = send_message
+        self.tts_engine_choice = tts_engine
 
         self.tutor = TutorSession(subject=subject)
         self.stt_handler: Optional[STTHandler] = None
@@ -55,7 +57,7 @@ class PipelineSession:
         # Prevent concurrent transcript processing
         self.is_processing_transcript = False
 
-        logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject})")
+        logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject}, tts_engine={tts_engine})")
 
     async def initialize(self):
         """Initialize all pipeline components."""
@@ -69,8 +71,20 @@ class PipelineSession:
             model=self.model_config["groq_model"],
         )
         self.tts_engine = TTSEngine(
-            voice=self.model_config.get("edge_tts_voice", "en-US-AriaNeural")
+            engine=self.tts_engine_choice,
+            edge_voice=self.model_config.get("edge_tts_voice", "en-US-AriaNeural"),
+            deepgram_api_key=self.api_keys["deepgram"],
+            deepgram_model=self.model_config.get("deepgram_tts_model", "aura-asteria-en")
         )
+        
+        # Send TTS config to frontend
+        self.send_message({
+            "type": "tts_config",
+            "format": self.tts_engine.format,
+            "sample_rate": self.tts_engine.sample_rate,
+            "sampleRate": self.tts_engine.sample_rate
+        })
+        
         await self.stt_handler.connect()
         logger.info("[Pipeline] All components initialized and ready")
 

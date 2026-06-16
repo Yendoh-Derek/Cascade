@@ -72,6 +72,7 @@ def health():
 async def websocket_endpoint(
     websocket: WebSocket,
     subject: Optional[str] = Query(default=None),
+    tts_engine: str = Query(default="edge"),
 ):
     """
     WebSocket endpoint for the streaming voice pipeline.
@@ -115,6 +116,7 @@ async def websocket_endpoint(
                 _send_ws_message(websocket, msg, send_lock)
             ),
             subject=subject,
+            tts_engine=tts_engine,
         )
 
         try:
@@ -168,7 +170,7 @@ async def websocket_endpoint(
                         f"[WS] Dropping oversized audio chunk ({len(raw_bytes)}B)"
                     )
                     continue
-                if len(raw_bytes) >= 100:
+                if len(raw_bytes) >= 2:
                     await session.handle_audio(raw_bytes)
                 continue
 
