@@ -164,8 +164,11 @@ class LLMGenerator:
         if not text:
             return False
 
+        # Only check the last 80 characters to improve performance
+        tail = text[-80:] if len(text) > 80 else text
+
         # Strip trailing whitespace
-        stripped = text.rstrip()
+        stripped = tail.rstrip()
         if not stripped:
             return False
 

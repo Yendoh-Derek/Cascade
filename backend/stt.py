@@ -68,7 +68,7 @@ class STTHandler:
             self.ws = await self.session.ws_connect(
                 url,
                 headers=headers,
-                heartbeat=20,      # send PING every 20s, expect PONG within 20s
+                heartbeat=None,      # rely purely on text-based KeepAlive
                 receive_timeout=None,  # don't time out on long silences
             )
             self.is_open = True
@@ -122,10 +122,10 @@ class STTHandler:
             self.is_open = False
             
     async def _keepalive(self):
-        """Send a KeepAlive message to Deepgram every 5 seconds to prevent inactivity timeouts."""
+        """Send a KeepAlive message to Deepgram every 10 seconds to prevent inactivity timeouts."""
         try:
             while self.is_open and self.ws:
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
                 if self.is_open and self.ws and not self.ws.closed:
                     logger.debug("[STT] Sending KeepAlive to Deepgram")
                     await self.ws.send_json({"type": "KeepAlive"})
