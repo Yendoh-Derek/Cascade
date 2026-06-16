@@ -61,7 +61,8 @@ def health():
             "models": {
                 "stt": config.deepgram_model,
                 "llm": config.groq_model,
-                "tts": config.edge_tts_voice,
+                "edge_tts": config.edge_tts_voice,
+                "deepgram_tts": config.deepgram_tts_model,
             },
         }
     except EnvironmentError as e:
@@ -111,6 +112,7 @@ async def websocket_endpoint(
                 "deepgram_model": config.deepgram_model,
                 "groq_model": config.groq_model,
                 "edge_tts_voice": config.edge_tts_voice,
+                "deepgram_tts_model": config.deepgram_tts_model,
             },
             send_message=lambda msg: asyncio.create_task(
                 _send_ws_message(websocket, msg, send_lock)

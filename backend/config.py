@@ -37,6 +37,7 @@ class ModelConfig:
 
     # TTS — edge-tts requires no API key
     edge_tts_voice: str = "en-US-AriaNeural"
+    deepgram_tts_model: str = "aura-asteria-en"
 
 
 @dataclass(frozen=True)

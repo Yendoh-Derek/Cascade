@@ -8,7 +8,6 @@ the caller.
 """
 
 import logging
-import asyncio
 import os
 from typing import AsyncGenerator, Optional
 from abc import ABC, abstractmethod
@@ -25,6 +24,10 @@ class BaseTTSEngine(ABC):
     @abstractmethod
     async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
         """Convert text to speech and stream audio bytes."""
+        yield b""
+
+    async def close(self):
+        """Clean up resources."""
         pass
 
 
@@ -80,7 +83,17 @@ class DeepgramTTSEngine(BaseTTSEngine):
     def __init__(self, api_key: Optional[str] = None, model: str = "aura-asteria-en"):
         self.api_key = api_key or os.environ.get("DEEPGRAM_API_KEY")
         self.model = model
+        self._session: Optional[aiohttp.ClientSession] = None
         logger.info(f"[TTS] DeepgramTTS Engine initialized with model: {model}")
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
         if not text or not text.strip():
@@ -100,12 +113,13 @@ class DeepgramTTSEngine(BaseTTSEngine):
             }
             data = {"text": text}
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=data, headers=headers, timeout=timeout_sec) as resp:
-                    resp.raise_for_status()
-                    async for chunk in resp.content.iter_chunked(4096):
-                        if chunk:
-                            yield chunk
+            session = await self._get_session()
+            timeout = aiohttp.ClientTimeout(total=timeout_sec)
+            async with session.post(url, json=data, headers=headers, timeout=timeout) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.content.iter_chunked(4096):
+                    if chunk:
+                        yield chunk
 
             logger.info("[TTS] DeepgramTTS audio complete")
 
@@ -140,3 +154,7 @@ class TTSEngine:
     async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
         async for chunk in self._engine.synthesise(text, timeout_sec):
             yield chunk
+
+    async def close(self):
+        """Clean up resources used by the TTS engine."""
+        await self._engine.close()

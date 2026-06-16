@@ -43,7 +43,6 @@ class CascadeClient {
     this.currentResponse = "";
     this.totalTurns = 0;
     this.lastLatencyMs = null;
-    this.lastModel = "edge-tts";
     this.ttsConfig = { format: "mp3", sampleRate: 24000 };
     this.selectedTTSEngine =
       localStorage.getItem("cascade_tts_engine") || "edge";
@@ -53,7 +52,6 @@ class CascadeClient {
     this.statusText = document.getElementById("status-text");
     this.btnToggleSession = document.getElementById("btn-toggle-session");
     this.btnClearTranscript = document.getElementById("btn-clear-transcript");
-    this.btnMute = document.getElementById("btn-mute");
     this.statsBar = document.getElementById("stats-bar");
     this.transcriptEmpty = document.getElementById("transcript-empty");
     this.ttsEngineSelector = document.getElementById("tts-engine-selector");
@@ -72,9 +70,6 @@ class CascadeClient {
   _restoreTTSSelection() {
     if (this.ttsEngineSelector) {
       this.ttsEngineSelector.value = this.selectedTTSEngine;
-      this.lastModel =
-        this.selectedTTSEngine === "edge" ? "edge-tts" : "aura-asteria";
-      this._updateStatsBar();
     }
   }
 
@@ -120,42 +115,79 @@ class CascadeClient {
       });
     }
 
-    if (this.btnToggleSession) {
-      this.btnToggleSession.addEventListener("click", () =>
-        this.toggleSession(),
-      );
-    }
+    [this.btnToggleSession, this.btnClearTranscript].forEach((btn) => {
+      if (!btn) return;
 
-    if (this.btnClearTranscript) {
-      this.btnClearTranscript.addEventListener("click", () => {
-        if (this.transcriptPanel) this.transcriptPanel.innerHTML = "";
-        this._resetTurnState();
-        this._updateStatsBar();
-        this._showEmptyStateIfNeeded();
+      const createCircle = (x, y) => {
+        const buttonWidth = btn.offsetWidth || 0;
+        const xPos = x / buttonWidth;
+        const color = `linear-gradient(to right, rgba(160, 217, 248, 0.8) ${xPos * 100}%, rgba(58, 91, 191, 0.8) ${xPos * 100}%)`;
+
+        const circle = document.createElement("div");
+        circle.className = "menu-btn-circle";
+        circle.style.left = `${x}px`;
+        circle.style.top = `${y}px`;
+        circle.style.background = color;
+
+        btn.appendChild(circle);
+
+        setTimeout(() => {
+          circle.classList.add("fade-in");
+        }, 0);
+
+        setTimeout(() => {
+          circle.classList.remove("fade-in");
+          circle.classList.add("fade-out");
+        }, 1000);
+
+        setTimeout(() => {
+          if (circle.parentNode) {
+            circle.parentNode.removeChild(circle);
+          }
+        }, 2200);
+      };
+
+      let isListening = false;
+      let lastAdded = 0;
+
+      btn.addEventListener("pointermove", (evt) => {
+        if (!isListening) return;
+
+        const currentTime = Date.now();
+        if (currentTime - lastAdded > 100) {
+          lastAdded = currentTime;
+          const rect = btn.getBoundingClientRect();
+          const x = evt.clientX - rect.left;
+          const y = evt.clientY - rect.top;
+          createCircle(x, y);
+        }
       });
-    }
 
-    if (this.btnMute) {
-      this.btnMute.addEventListener("click", () => this.toggleMute());
-    }
+      btn.addEventListener("pointerenter", () => {
+        isListening = true;
+      });
+
+      btn.addEventListener("pointerleave", () => {
+        isListening = false;
+      });
+
+      if (btn.id === "btn-toggle-session") {
+        btn.addEventListener("click", () => this.toggleSession());
+      } else if (btn.id === "btn-clear-transcript") {
+        btn.addEventListener("click", () => {
+          if (this.transcriptPanel) this.transcriptPanel.innerHTML = "";
+          this._resetTurnState();
+          this._updateStatsBar();
+          this._showEmptyStateIfNeeded();
+        });
+      }
+    });
 
     if (this.ttsEngineSelector) {
       this.ttsEngineSelector.addEventListener("change", (evt) => {
         this.selectedTTSEngine = evt.target.value;
         localStorage.setItem("cascade_tts_engine", this.selectedTTSEngine);
-        this.lastModel =
-          this.selectedTTSEngine === "edge" ? "edge-tts" : "aura-asteria";
-        this._updateStatsBar();
       });
-    }
-  }
-
-  toggleMute() {
-    this.isMuted = !this.isMuted;
-    if (this.btnMute) {
-      this.btnMute.classList.toggle("active", this.isMuted);
-      const label = this.btnMute.querySelector(".btn-label");
-      if (label) label.textContent = this.isMuted ? "Mic On" : "Mic Off";
     }
   }
 
@@ -349,10 +381,10 @@ class CascadeClient {
     return `
       class AudioProcessor extends AudioWorkletProcessor {
         constructor() {
-          super();
-          this.bufferSize = 2048; // ~128ms of audio at 16kHz
-          this.buffer = new Int16Array(this.bufferSize);
-          this.bufferWriteIndex = 0;
+            super();
+            this.bufferSize = 512; // ~32ms of audio at 16kHz
+            this.buffer = new Int16Array(this.bufferSize);
+            this.bufferWriteIndex = 0;
         }
 
         process(inputs) {
@@ -511,7 +543,10 @@ class CascadeClient {
     if (!msg || typeof msg !== "object") return;
     switch (msg.type) {
       case "tts_config":
-        this.ttsConfig = { format: msg.format, sampleRate: msg.sampleRate || msg.sample_rate };
+        this.ttsConfig = {
+          format: msg.format,
+          sampleRate: msg.sampleRate || msg.sample_rate,
+        };
         console.log("[Client] Received TTS config:", this.ttsConfig);
         break;
       case "transcript":
@@ -575,14 +610,6 @@ class CascadeClient {
   }
 
   async _onAudioChunk(arrayBuffer) {
-    if (this.firstAudioTime === null && this.utteranceStartTime !== null) {
-      this.firstAudioTime = Date.now();
-      const latency = this.firstAudioTime - this.utteranceStartTime;
-      this.lastLatencyMs = latency;
-      this._updateStatsBar();
-      console.log(`[Client] First audio: ${latency}ms`);
-    }
-
     if (this.audioContext && this.audioContext.state === "suspended") {
       await this._resumeAudioContext();
     }
@@ -719,17 +746,13 @@ class CascadeClient {
         if (label) label.textContent = "Stop";
       }
     }
-
-    if (this.btnMute) this.btnMute.disabled = newState === STATE.IDLE;
   }
 
   _updateStatsBar() {
     if (!this.statsBar) return;
-    const latencyText = this.lastLatencyMs
-      ? `↯ ${this.lastLatencyMs}ms`
-      : "↯ --ms";
-    const turnsText = `${this.totalTurns} ${this.totalTurns === 1 ? "turn" : "turns"}`;
-    this.statsBar.textContent = `${latencyText} · ${turnsText} · ${this.lastModel}`;
+    this.statsBar.textContent = this.lastLatencyMs
+      ? `${this.lastLatencyMs}ms`
+      : `--ms`;
   }
 
   _showEmptyStateIfNeeded() {
