@@ -154,15 +154,15 @@ class PipelineSession:
 
             queue = asyncio.Queue()
 
-            async def synthesize_sentence(text: str) -> bytes:
+            async def synthesize_sentence_to_queue(text: str, sentence_queue: asyncio.Queue):
                 try:
-                    audio_data_list = []
                     async for chunk in self.tts_engine.synthesise(text):
-                        audio_data_list.append(chunk)
-                    return b"".join(audio_data_list)
+                        if chunk:
+                            await sentence_queue.put(chunk)
+                    await sentence_queue.put(None)  # Sentinel for end of sentence audio
                 except Exception as e:
                     logger.error(f"[Pipeline] TTS synthesis failed for '{text[:20]}': {e}")
-                    return b""
+                    await sentence_queue.put(e)
 
             async def produce_sentences():
                 nonlocal first_token_received
@@ -179,9 +179,11 @@ class PipelineSession:
                                 logger.info(f"[Pipeline] LLM first token: {llm_ms:.0f}ms")
 
                         self.send_message({"type": "response_chunk", "text": sentence})
+                        
+                        sentence_queue = asyncio.Queue()
                         # Start synthesis task concurrently in background
-                        tts_task = asyncio.create_task(synthesize_sentence(sentence))
-                        await queue.put((sentence, tts_task))
+                        asyncio.create_task(synthesize_sentence_to_queue(sentence, sentence_queue))
+                        await queue.put((sentence, sentence_queue))
                     
                     # Push sentinel to indicate end of stream
                     await queue.put(None)
@@ -201,18 +203,26 @@ class PipelineSession:
                         queue.task_done()
                         raise item
 
-                    sentence, tts_task = item
+                    sentence, sentence_queue = item
+                    full_response += sentence
                     try:
-                        audio_bytes = await tts_task
-                        if audio_bytes:
+                        while True:
+                            chunk = await sentence_queue.get()
+                            if chunk is None:
+                                sentence_queue.task_done()
+                                break
+                            if isinstance(chunk, Exception):
+                                sentence_queue.task_done()
+                                raise chunk
+
                             if not first_audio_sent:
                                 first_audio_sent = True
                                 if self.utterance_end_time:
                                     total_ms = (time.time() - self.utterance_end_time) * 1000
                                     logger.info(f"[Pipeline] First audio sent: {total_ms:.0f}ms")
                                     self.send_message({"type": "latency", "ms": int(total_ms)})
-                            self.send_message({"type": "audio", "data": audio_bytes})
-                        full_response += sentence
+                            self.send_message({"type": "audio", "data": chunk})
+                            sentence_queue.task_done()
                     except Exception as e:
                         logger.error(f"[Pipeline] Error sending audio for sentence: {e}")
                     finally:
