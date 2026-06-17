@@ -5,11 +5,12 @@
 const CONFIG = {
   WS_HOST: window.location.hostname || "localhost",
   WS_PORT: window.location.port || "8000",
-  SILENCE_DURATION_MS: 450,
+  SILENCE_DURATION_MS: 800,
 };
 
 const STATE = {
   IDLE: "IDLE",
+  CONNECTING: "CONNECTING",
   LISTENING: "LISTENING",
   PROCESSING: "PROCESSING",
   SPEAKING: "SPEAKING",
@@ -33,6 +34,7 @@ class CascadeClient {
     this.lastUtteredTime = null;
     this.silenceStartTime = null;
     this.sessionStartTime = null;
+    this.speakingStartTime = null;
     this.nextPlaybackTime = null;
     this.isAudioSourceEnded = false;
     this.activeSourceNodes = [];
@@ -43,18 +45,19 @@ class CascadeClient {
     this.currentResponse = "";
     this.totalTurns = 0;
     this.lastLatencyMs = null;
-    this.ttsConfig = { format: "mp3", sampleRate: 24000 };
+    this.latencyHistory = [];
+    this.ttsConfig = { format: "linear16", sampleRate: 24000 };
     this.selectedTTSEngine =
-      localStorage.getItem("cascade_tts_engine") || "edge";
+      localStorage.getItem("cascade_tts_engine") || "deepgram";
 
     this.orb = document.getElementById("orb");
     this.transcriptPanel = document.getElementById("transcript-panel");
     this.statusText = document.getElementById("status-text");
     this.btnToggleSession = document.getElementById("btn-toggle-session");
     this.btnClearTranscript = document.getElementById("btn-clear-transcript");
+    this.btnStats = document.getElementById("btn-stats");
     this.statsBar = document.getElementById("stats-bar");
     this.transcriptEmpty = document.getElementById("transcript-empty");
-    this.ttsEngineSelector = document.getElementById("tts-engine-selector");
 
     this.isMuted = false;
     this._audioResumed = false;
@@ -68,8 +71,10 @@ class CascadeClient {
   }
 
   _restoreTTSSelection() {
-    if (this.ttsEngineSelector) {
-      this.ttsEngineSelector.value = this.selectedTTSEngine;
+    const activeBtn = document.querySelector(`.tts-toggle-btn[data-engine="${this.selectedTTSEngine}"]`);
+    if (activeBtn) {
+      document.querySelectorAll(".tts-toggle-btn").forEach(btn => btn.classList.remove("active"));
+      activeBtn.classList.add("active");
     }
   }
 
@@ -115,7 +120,7 @@ class CascadeClient {
       });
     }
 
-    [this.btnToggleSession, this.btnClearTranscript].forEach((btn) => {
+    [this.btnToggleSession, this.btnClearTranscript, this.btnStats].forEach((btn) => {
       if (!btn) return;
 
       const createCircle = (x, y) => {
@@ -180,14 +185,31 @@ class CascadeClient {
           this._updateStatsBar();
           this._showEmptyStateIfNeeded();
         });
+      } else if (btn.id === "btn-stats") {
+        btn.addEventListener("click", () => this._openStatsPanel());
       }
     });
 
-    if (this.ttsEngineSelector) {
-      this.ttsEngineSelector.addEventListener("change", (evt) => {
-        this.selectedTTSEngine = evt.target.value;
-        localStorage.setItem("cascade_tts_engine", this.selectedTTSEngine);
+    // Custom TTS Engine Selector Toggles
+    document.querySelectorAll(".tts-toggle-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const engine = btn.getAttribute("data-engine");
+        this.selectedTTSEngine = engine;
+        localStorage.setItem("cascade_tts_engine", engine);
+        document.querySelectorAll(".tts-toggle-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        console.log(`[Client] TTS Engine changed to: ${engine}`);
       });
+    });
+
+    // Close stats panel listeners
+    const btnCloseStats = document.getElementById("btn-close-stats");
+    if (btnCloseStats) {
+      btnCloseStats.addEventListener("click", () => this._closeStatsPanel());
+    }
+    const statsBackdrop = document.getElementById("stats-backdrop");
+    if (statsBackdrop) {
+      statsBackdrop.addEventListener("click", () => this._closeStatsPanel());
     }
   }
 
@@ -229,6 +251,7 @@ class CascadeClient {
       this.maxAudioLevel = 0;
       await this._initAudioProcessing();
       this.intentionalDisconnect = false;
+      this.setState(STATE.CONNECTING);
       await this._connectWebSocket();
       this.setState(STATE.LISTENING);
       this.sessionStartTime = Date.now();
@@ -428,14 +451,13 @@ class CascadeClient {
 
     if (
       !this.isMuted &&
-      this.state !== STATE.SPEAKING &&
       this.ws &&
       this.ws.readyState === WebSocket.OPEN
     ) {
       this.ws.send(bytes);
     }
 
-    if (this.state === STATE.LISTENING) {
+    if (this.state === STATE.LISTENING || this.state === STATE.SPEAKING) {
       this._detectSilence(bytes);
     }
   }
@@ -455,27 +477,75 @@ class CascadeClient {
     if (rms > this.maxAudioLevel) this.maxAudioLevel = rms;
     const threshold = Math.max(0.02, this.maxAudioLevel * 0.05);
 
-    if (this.orb) this.orb.style.setProperty("--rms", rms.toFixed(3));
+    if (this.orb && this.state === STATE.LISTENING) this.orb.style.setProperty("--rms", rms.toFixed(3));
 
     if (this.sessionStartTime && Date.now() - this.sessionStartTime < 1500)
       return;
 
-    if (rms < threshold) {
-      if (!this.silenceStartTime) {
-        this.silenceStartTime = Date.now();
-      } else if (
-        Date.now() - this.silenceStartTime > CONFIG.SILENCE_DURATION_MS &&
-        this.state === STATE.LISTENING &&
-        this.lastUtteredTime
-      ) {
-        this.utteranceStartTime = Date.now();
+    if (this.state === STATE.LISTENING) {
+      if (rms < threshold) {
+        if (!this.silenceStartTime) {
+          this.silenceStartTime = Date.now();
+        } else if (
+          Date.now() - this.silenceStartTime > CONFIG.SILENCE_DURATION_MS &&
+          this.state === STATE.LISTENING &&
+          this.lastUtteredTime
+        ) {
+          this.utteranceStartTime = Date.now();
+          this.silenceStartTime = null;
+          this.setState(STATE.PROCESSING);
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: "finalize" }));
+          }
+        }
+      } else {
         this.silenceStartTime = null;
-        this.setState(STATE.PROCESSING);
+        this.lastUtteredTime = Date.now();
       }
-    } else {
-      this.silenceStartTime = null;
-      this.lastUtteredTime = Date.now();
+    } else if (this.state === STATE.SPEAKING) {
+      this._detectInterruption(rms);
     }
+  }
+
+  _detectInterruption(rms) {
+    if (this.state !== STATE.SPEAKING) return;
+    if (this.speakingStartTime && Date.now() - this.speakingStartTime < 300) return;
+
+    if (!this._interruptionBuffer) this._interruptionBuffer = [];
+
+    this._interruptionBuffer.push(rms);
+    if (this._interruptionBuffer.length > 5) this._interruptionBuffer.shift();
+
+    const avgRms = this._interruptionBuffer.reduce((a, b) => a + b, 0) / this._interruptionBuffer.length;
+    const threshold = Math.max(0.04, this.maxAudioLevel * 0.15);
+
+    if (avgRms > threshold) {
+      this._triggerInterruption();
+    }
+  }
+
+  _triggerInterruption() {
+    if (this.state !== STATE.SPEAKING) return;
+    console.log("[Client] Interruption triggered! Stopping playback and cancelling server pipeline.");
+
+    this.activeSourceNodes.forEach((source) => {
+      try {
+        source.stop();
+      } catch (_) {}
+    });
+    this.activeSourceNodes = [];
+    this.nextPlaybackTime = null;
+    this.isAudioSourceEnded = false;
+    this.isPlaying = false;
+    this._interruptionBuffer = [];
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "cancel" }));
+    }
+
+    this.currentResponse = "";
+    this.setState(STATE.LISTENING);
+    this._resetTurnState();
   }
 
   _connectWebSocket() {
@@ -551,10 +621,12 @@ class CascadeClient {
         break;
       case "transcript":
         if (msg.text) {
+          this.lastSTTDuration = this.lastUtteredTime ? (Date.now() - this.lastUtteredTime) : 0;
           this._resetTurnState();
           this.addTranscriptItem("student", msg.text);
           this.totalTurns++;
           this._updateStatsBar();
+          this.setState(STATE.PROCESSING);
         }
         break;
       case "response_chunk":
@@ -563,20 +635,46 @@ class CascadeClient {
         break;
       case "response_end":
         if (this.currentResponse && this.currentResponse.trim()) {
-          this.addTranscriptItem("tutor", this.currentResponse.trim());
+          const bubble = this.addTranscriptItem("tutor", this.currentResponse.trim());
+          if (bubble) {
+            bubble.classList.add("message-complete");
+            setTimeout(() => bubble.classList.remove("message-complete"), 1200);
+          }
         }
         this.currentResponse = "";
         this.isAudioSourceEnded = true;
         this._checkPlaybackFinished();
         break;
       case "latency":
-        if (typeof msg.ms === "number") {
+        if (typeof msg.total_ms === "number") {
+          const stt = this.lastSTTDuration || 0;
+          const llm = msg.llm_ms || 0;
+          const tts = msg.tts_ms || 0;
+          const calculatedTotal = stt + llm + tts;
+          this.lastLatencyMs = calculatedTotal;
+          this.latencyHistory.push({
+            turn: this.totalTurns,
+            total: calculatedTotal,
+            llm: llm,
+            tts: tts,
+            stt: stt,
+            timestamp: Date.now(),
+          });
+          if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+          this._updateStatsBar();
+          
+          // Re-render chart if stats panel is currently open
+          const panel = document.getElementById("stats-panel");
+          if (panel && panel.classList.contains("open")) {
+            this._renderLatencyChart();
+          }
+        } else if (typeof msg.ms === "number") {
           this.lastLatencyMs = msg.ms;
           this._updateStatsBar();
         }
         break;
       case "busy":
-        this.showToast("⏳ Still responding — please wait a moment.");
+        this.showToast(msg.message || "⏳ Still responding — please wait a moment.", 4000, "info");
         break;
       case "error":
         this.showError(msg.message || "Unknown server error");
@@ -610,6 +708,11 @@ class CascadeClient {
   }
 
   async _onAudioChunk(arrayBuffer) {
+    if (this.state === STATE.LISTENING || this.state === STATE.IDLE || this.state === STATE.CONNECTING) {
+      console.log("[Client] Discarding incoming audio chunk (session not in speaking/processing state)");
+      return;
+    }
+
     if (this.audioContext && this.audioContext.state === "suspended") {
       await this._resumeAudioContext();
     }
@@ -708,12 +811,14 @@ class CascadeClient {
 
     this.orb.classList.remove(
       "state-idle",
+      "state-connecting",
       "state-listening",
       "state-processing",
       "state-speaking",
     );
     const classMap = {
       [STATE.IDLE]: "state-idle",
+      [STATE.CONNECTING]: "state-connecting",
       [STATE.LISTENING]: "state-listening",
       [STATE.PROCESSING]: "state-processing",
       [STATE.SPEAKING]: "state-speaking",
@@ -724,9 +829,14 @@ class CascadeClient {
     if (prev === STATE.SPEAKING)
       this.orb.style.setProperty("--audio-level", "0");
 
+    if (newState === STATE.SPEAKING) {
+      this.speakingStartTime = Date.now();
+    }
+
     if (this.statusText) {
       const statusLabels = {
         [STATE.IDLE]: "tap to begin",
+        [STATE.CONNECTING]: "connecting",
         [STATE.LISTENING]: "listening",
         [STATE.PROCESSING]: "thinking",
         [STATE.SPEAKING]: "speaking",
@@ -779,6 +889,7 @@ class CascadeClient {
     this.transcriptPanel.appendChild(msg);
     this.transcriptPanel.scrollTop = this.transcriptPanel.scrollHeight;
     this._showEmptyStateIfNeeded();
+    return msg;
   }
 
   _updateTimestamps() {
@@ -811,11 +922,11 @@ class CascadeClient {
     return d.innerHTML;
   }
 
-  showToast(message, duration = 4000) {
+  showToast(message, duration = 4000, variant = "error") {
     const container = document.getElementById("toast-container");
     if (!container) return;
     const toast = document.createElement("div");
-    toast.className = "toast";
+    toast.className = `toast toast-${variant}`;
     toast.textContent = message;
     container.appendChild(toast);
     setTimeout(() => {
@@ -830,7 +941,103 @@ class CascadeClient {
 
   showError(message) {
     console.error("[Error]", message);
-    this.showToast(`❌ ${message}`);
+    this.showToast(`❌ ${message}`, 4000, "error");
+  }
+
+  _renderLatencyChart() {
+    const canvas = document.getElementById("latency-chart");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const data = this.latencyHistory;
+    const W = canvas.width, H = canvas.height;
+    const PAD = { top: 20, right: 20, bottom: 40, left: 52 };
+    const chartW = W - PAD.left - PAD.right;
+    const chartH = H - PAD.top - PAD.bottom;
+    const TARGET_MS = 600;
+
+    ctx.clearRect(0, 0, W, H);
+
+    if (data.length === 0) {
+      ctx.fillStyle = "rgba(255,255,255,0.2)";
+      ctx.font = "13px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("No data yet — start a conversation", W / 2, H / 2);
+      return;
+    }
+
+    const maxMs = Math.max(TARGET_MS + 200, ...data.map(d => d.total)) * 1.1;
+    const scaleY = v => PAD.top + chartH - (v / maxMs) * chartH;
+    const scaleX = i => PAD.left + (i / (Math.max(data.length - 1, 1))) * chartW;
+
+    // Y gridlines
+    [0, 300, 600, 900, 1200].filter(v => v <= maxMs).forEach(v => {
+      const y = scaleY(v);
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.lineWidth = 1;
+      ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + chartW, y);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.font = "10px JetBrains Mono, monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(`${v}ms`, PAD.left - 8, y + 4);
+    });
+
+    // Target line at 600ms
+    const targetY = scaleY(TARGET_MS);
+    ctx.beginPath();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.lineWidth = 1;
+    ctx.moveTo(PAD.left, targetY); ctx.lineTo(PAD.left + chartW, targetY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Stacked bars: STT (indigo) + LLM (violet) + TTS (teal)
+    const BAR_W = Math.min(32, chartW / Math.max(data.length, 1) * 0.6);
+    const colors = { stt: "#818cf8", llm: "#c084fc", tts: "#34d399" };
+
+    data.forEach((d, i) => {
+      const x = scaleX(i) - BAR_W / 2;
+      let yBase = scaleY(0);
+
+      ["stt", "llm", "tts"].forEach(key => {
+        const val = d[key] || 0;
+        const barH = (val / maxMs) * chartH;
+        yBase -= barH;
+        ctx.fillStyle = colors[key];
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x, yBase, BAR_W, barH);
+        ctx.globalAlpha = 1;
+      });
+
+      // Turn label
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.font = "9px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(`T${d.turn}`, scaleX(i), H - PAD.bottom + 14);
+    });
+  }
+
+  _openStatsPanel() {
+    const panel = document.getElementById("stats-panel");
+    const backdrop = document.getElementById("stats-backdrop");
+    if (panel) {
+      panel.classList.add("open");
+      panel.setAttribute("aria-hidden", "false");
+    }
+    if (backdrop) backdrop.classList.add("open");
+    this._renderLatencyChart();
+  }
+
+  _closeStatsPanel() {
+    const panel = document.getElementById("stats-panel");
+    const backdrop = document.getElementById("stats-backdrop");
+    if (panel) {
+      panel.classList.remove("open");
+      panel.setAttribute("aria-hidden", "true");
+    }
+    if (backdrop) backdrop.classList.remove("open");
   }
 }
 

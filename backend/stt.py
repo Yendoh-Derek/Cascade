@@ -56,9 +56,8 @@ class STTHandler:
                 "channels": "1",
                 "sample_rate": "16000",
                 "interim_results": "true",
-                "endpointing": "700",
+                "endpointing": "600",
                 "vad_events": "true",
-                "utterance_end_ms": "1000",
             }
             url = base_url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
@@ -196,6 +195,17 @@ class STTHandler:
             logger.error(f"[STT] Unexpected send error: {e}")
             self.on_error(str(e))
             self.is_open = False
+
+    async def finalize(self):
+        """
+        Send a Finalize message to Deepgram to flush any remaining audio buffer.
+        """
+        if self.ws and self.is_open and not self.ws.closed:
+            logger.info("[STT] Sending Finalize command to Deepgram")
+            try:
+                await self.ws.send_json({"type": "Finalize"})
+            except Exception as e:
+                logger.error(f"[STT] Error sending Finalize command: {e}")
 
     async def close(self):
         """Close the WebSocket connection cleanly."""

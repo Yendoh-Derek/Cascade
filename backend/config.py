@@ -5,10 +5,9 @@ Central configuration module. Loads and validates all environment variables
 at startup. Any missing key raises an explicit error immediately rather than
 failing silently deep inside the pipeline.
 
-TTS provider: edge-tts (Microsoft Azure Neural TTS)
-  - Completely free, no API key required
-  - Streams audio chunks compatible with Cascade's pipeline
-  - ~400-700ms first chunk latency
+TTS provider: Deepgram Aura (Default) / Edge-TTS (Fallback)
+  - Deepgram Aura: linear16, fast, requires DEEPGRAM_API_KEY
+  - Edge-TTS: free, no API key, yields MP3 sentences
 """
 
 import os
