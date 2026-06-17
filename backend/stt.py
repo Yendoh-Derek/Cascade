@@ -196,6 +196,10 @@ class STTHandler:
             self.on_error(str(e))
             self.is_open = False
 
+    def clear_buffer(self):
+        """Reset accumulated transcript buffer (e.g. after user interruption)."""
+        self.transcript_buffer = ""
+
     async def finalize(self):
         """
         Send a Finalize message to Deepgram to flush any remaining audio buffer.
