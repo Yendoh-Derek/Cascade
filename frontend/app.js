@@ -46,6 +46,10 @@ class CascadeClient {
     this.totalTurns = 0;
     this.lastLatencyMs = null;
     this.latencyHistory = [];
+    this.activeTurnId = null;
+    this.playbackTurnId = null;
+    this.audioEpoch = 0;
+    this._interrupting = false;
     this.ttsConfig = { format: "linear16", sampleRate: 24000 };
     this.selectedTTSEngine =
       localStorage.getItem("cascade_tts_engine") || "deepgram";
@@ -218,9 +222,12 @@ class CascadeClient {
       this.audioContext = new (
         window.AudioContext || window.webkitAudioContext
       )();
+      this.playbackGain = this.audioContext.createGain();
+      this.playbackGain.gain.value = 1;
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 256;
-      this.analyser.connect(this.audioContext.destination);
+      this.analyser.connect(this.playbackGain);
+      this.playbackGain.connect(this.audioContext.destination);
     } catch (err) {
       console.error("AudioContext not available:", err);
     }
@@ -318,17 +325,16 @@ class CascadeClient {
     }
 
     if (this.activeSourceNodes) {
-      this.activeSourceNodes.forEach((source) => {
-        try {
-          source.stop();
-        } catch (_) {}
-      });
+      this._stopAllPlayback();
     }
-    this.activeSourceNodes = [];
-    this.nextPlaybackTime = null;
-    this.isAudioSourceEnded = false;
-    this.isPlaying = false;
     this.currentResponse = "";
+    this.activeTurnId = null;
+    this.playbackTurnId = null;
+    this.audioEpoch += 1;
+    this._interrupting = false;
+    if (this.playbackGain) {
+      this.playbackGain.gain.value = 1;
+    }
     this._resetTurnState();
     this.sessionStartTime = null;
 
@@ -346,6 +352,13 @@ class CascadeClient {
     this.isAudioSourceEnded = false;
     this.activeSourceNodes = [];
     this.maxAudioLevel = 0;
+  }
+
+  _resetPlaybackOnly() {
+    this.nextPlaybackTime = null;
+    this.isAudioSourceEnded = false;
+    this.activeSourceNodes = [];
+    this._interruptionBuffer = [];
   }
 
   async _initAudioProcessing() {
@@ -457,7 +470,11 @@ class CascadeClient {
       this.ws.send(bytes);
     }
 
-    if (this.state === STATE.LISTENING || this.state === STATE.SPEAKING) {
+    if (
+      this.state === STATE.LISTENING ||
+      this.state === STATE.SPEAKING ||
+      this.state === STATE.PROCESSING
+    ) {
       this._detectSilence(bytes);
     }
   }
@@ -502,41 +519,74 @@ class CascadeClient {
         this.silenceStartTime = null;
         this.lastUtteredTime = Date.now();
       }
-    } else if (this.state === STATE.SPEAKING) {
+    } else if (this.state === STATE.SPEAKING || this.state === STATE.PROCESSING) {
       this._detectInterruption(rms);
     }
   }
 
+  _isTurnActive(turnId) {
+    return turnId != null && this.activeTurnId != null && turnId === this.activeTurnId;
+  }
+
   _detectInterruption(rms) {
-    if (this.state !== STATE.SPEAKING) return;
-    if (this.speakingStartTime && Date.now() - this.speakingStartTime < 300) return;
+    if (this.state !== STATE.SPEAKING && this.state !== STATE.PROCESSING) return;
+    if (this._interrupting) return;
+    if (
+      this.state === STATE.SPEAKING &&
+      this.speakingStartTime &&
+      Date.now() - this.speakingStartTime < 150
+    ) {
+      return;
+    }
 
     if (!this._interruptionBuffer) this._interruptionBuffer = [];
 
     this._interruptionBuffer.push(rms);
-    if (this._interruptionBuffer.length > 5) this._interruptionBuffer.shift();
+    if (this._interruptionBuffer.length > 3) this._interruptionBuffer.shift();
 
-    const avgRms = this._interruptionBuffer.reduce((a, b) => a + b, 0) / this._interruptionBuffer.length;
-    const threshold = Math.max(0.04, this.maxAudioLevel * 0.15);
+    const avgRms =
+      this._interruptionBuffer.reduce((a, b) => a + b, 0) /
+      this._interruptionBuffer.length;
+    // Higher threshold while tutor is speaking to reduce echo false-triggers
+    const multiplier = this.state === STATE.SPEAKING ? 0.25 : 0.15;
+    const threshold = Math.max(0.05, this.maxAudioLevel * multiplier);
 
     if (avgRms > threshold) {
       this._triggerInterruption();
     }
   }
 
-  _triggerInterruption() {
-    if (this.state !== STATE.SPEAKING) return;
-    console.log("[Client] Interruption triggered! Stopping playback and cancelling server pipeline.");
+  _stopAllPlayback() {
+    if (this.playbackGain && this.audioContext) {
+      this.playbackGain.gain.setValueAtTime(0, this.audioContext.currentTime);
+    }
 
+    const now = this.audioContext ? this.audioContext.currentTime : 0;
     this.activeSourceNodes.forEach((source) => {
       try {
-        source.stop();
+        source.stop(now);
+      } catch (_) {}
+      try {
+        source.disconnect();
       } catch (_) {}
     });
     this.activeSourceNodes = [];
     this.nextPlaybackTime = null;
-    this.isAudioSourceEnded = false;
     this.isPlaying = false;
+  }
+
+  _triggerInterruption() {
+    if (this.state !== STATE.SPEAKING && this.state !== STATE.PROCESSING) return;
+    if (this._interrupting) return;
+    this._interrupting = true;
+    console.log("[Client] Interruption triggered! Stopping playback and cancelling server pipeline.");
+
+    this.audioEpoch += 1;
+    this.activeTurnId = null;
+    this.playbackTurnId = null;
+
+    this._stopAllPlayback();
+    this.isAudioSourceEnded = false;
     this._interruptionBuffer = [];
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -545,7 +595,8 @@ class CascadeClient {
 
     this.currentResponse = "";
     this.setState(STATE.LISTENING);
-    this._resetTurnState();
+    this._resetPlaybackOnly();
+    this._interrupting = false;
   }
 
   _connectWebSocket() {
@@ -621,7 +672,11 @@ class CascadeClient {
         break;
       case "transcript":
         if (msg.text) {
-          this.lastSTTDuration = this.lastUtteredTime ? (Date.now() - this.lastUtteredTime) : 0;
+          if (msg.turn_id != null) {
+            this.activeTurnId = msg.turn_id;
+            this.playbackTurnId = msg.turn_id;
+          }
+          this._interrupting = false;
           this._resetTurnState();
           this.addTranscriptItem("student", msg.text);
           this.totalTurns++;
@@ -630,10 +685,12 @@ class CascadeClient {
         }
         break;
       case "response_chunk":
+        if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (msg.text)
           this.currentResponse = (this.currentResponse || "") + msg.text;
         break;
       case "response_end":
+        if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (this.currentResponse && this.currentResponse.trim()) {
           const bubble = this.addTranscriptItem("tutor", this.currentResponse.trim());
           if (bubble) {
@@ -645,9 +702,20 @@ class CascadeClient {
         this.isAudioSourceEnded = true;
         this._checkPlaybackFinished();
         break;
+      case "turn_cancelled":
+        if (msg.turn_id != null && this.activeTurnId === msg.turn_id) {
+          this.activeTurnId = null;
+          this.playbackTurnId = null;
+        }
+        this.audioEpoch += 1;
+        this._stopAllPlayback();
+        this.isAudioSourceEnded = true;
+        this._checkPlaybackFinished();
+        break;
       case "latency":
+        if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (typeof msg.total_ms === "number") {
-          const stt = this.lastSTTDuration || 0;
+          const stt = msg.stt_ms || 0;
           const llm = msg.llm_ms || 0;
           const tts = msg.tts_ms || 0;
           const calculatedTotal = stt + llm + tts;
@@ -662,8 +730,7 @@ class CascadeClient {
           });
           if (this.latencyHistory.length > 20) this.latencyHistory.shift();
           this._updateStatsBar();
-          
-          // Re-render chart if stats panel is currently open
+
           const panel = document.getElementById("stats-panel");
           if (panel && panel.classList.contains("open")) {
             this._renderLatencyChart();
@@ -708,14 +775,19 @@ class CascadeClient {
   }
 
   async _onAudioChunk(arrayBuffer) {
+    const epoch = this.audioEpoch;
+    const turnId = this.activeTurnId;
+
+    if (turnId == null) return;
     if (this.state === STATE.LISTENING || this.state === STATE.IDLE || this.state === STATE.CONNECTING) {
-      console.log("[Client] Discarding incoming audio chunk (session not in speaking/processing state)");
       return;
     }
 
     if (this.audioContext && this.audioContext.state === "suspended") {
       await this._resumeAudioContext();
     }
+
+    if (epoch !== this.audioEpoch || turnId !== this.activeTurnId) return;
 
     try {
       let audioBuffer;
@@ -737,17 +809,28 @@ class CascadeClient {
         );
       }
 
-      if (audioBuffer) {
-        this._schedulePlayback(audioBuffer);
+      if (
+        audioBuffer &&
+        epoch === this.audioEpoch &&
+        turnId === this.activeTurnId
+      ) {
+        this._schedulePlayback(audioBuffer, epoch, turnId);
       }
     } catch (err) {
       console.error("Audio decode failed:", err);
     }
   }
 
-  _schedulePlayback(audioBuffer) {
+  _schedulePlayback(audioBuffer, epoch, turnId) {
+    if (epoch !== this.audioEpoch || turnId !== this.activeTurnId) return;
+
+    if (this.playbackGain && this.audioContext) {
+      this.playbackGain.gain.setValueAtTime(1, this.audioContext.currentTime);
+    }
+
     this.setState(STATE.SPEAKING);
     this.isPlaying = true;
+    this.playbackTurnId = turnId;
 
     const currentTime = this.audioContext.currentTime;
     if (this.nextPlaybackTime === null || this.nextPlaybackTime < currentTime) {
@@ -761,6 +844,8 @@ class CascadeClient {
     } else {
       source.connect(this.audioContext.destination);
     }
+
+    if (epoch !== this.audioEpoch || turnId !== this.activeTurnId) return;
 
     source.start(this.nextPlaybackTime);
     this.activeSourceNodes.push(source);
@@ -944,16 +1029,45 @@ class CascadeClient {
     this.showToast(`❌ ${message}`, 4000, "error");
   }
 
+  _chartTickStep(maxMs) {
+    const targetTicks = 5;
+    const raw = maxMs / targetTicks;
+    const mag = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1))));
+    const norm = raw / mag;
+    let nice;
+    if (norm <= 1.5) nice = 1;
+    else if (norm <= 3) nice = 2;
+    else if (norm <= 7) nice = 5;
+    else nice = 10;
+    return nice * mag;
+  }
+
+  _chartNiceMax(peak) {
+    const step = this._chartTickStep(peak);
+    return Math.max(Math.ceil(peak / step) * step, step * 2);
+  }
+
   _renderLatencyChart() {
     const canvas = document.getElementById("latency-chart");
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+
     const data = this.latencyHistory;
-    const W = canvas.width, H = canvas.height;
-    const PAD = { top: 20, right: 20, bottom: 40, left: 52 };
+    const dpr = window.devicePixelRatio || 1;
+    const W = 600;
+    const H = 300;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = `${W}px`;
+    canvas.style.height = `${H}px`;
+
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const PAD = { top: 36, right: 20, bottom: 40, left: 56 };
     const chartW = W - PAD.left - PAD.right;
     const chartH = H - PAD.top - PAD.bottom;
     const TARGET_MS = 600;
+    const colors = { stt: "#818cf8", llm: "#c084fc", tts: "#34d399" };
 
     ctx.clearRect(0, 0, W, H);
 
@@ -965,56 +1079,107 @@ class CascadeClient {
       return;
     }
 
-    const maxMs = Math.max(TARGET_MS + 200, ...data.map(d => d.total)) * 1.1;
-    const scaleY = v => PAD.top + chartH - (v / maxMs) * chartH;
-    const scaleX = i => PAD.left + (i / (Math.max(data.length - 1, 1))) * chartW;
+    const peakTotal = Math.max(...data.map((d) => d.total), 100);
+    const tickStep = this._chartTickStep(peakTotal);
+    const maxMs = this._chartNiceMax(peakTotal);
+    const scaleY = (v) => PAD.top + chartH - (v / maxMs) * chartH;
+    const scaleX = (i) => PAD.left + ((i + 0.5) / data.length) * chartW;
 
-    // Y gridlines
-    [0, 300, 600, 900, 1200].filter(v => v <= maxMs).forEach(v => {
+    // Y-axis label
+    ctx.save();
+    ctx.translate(14, PAD.top + chartH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Latency (ms)", 0, 0);
+    ctx.restore();
+
+    // In-chart legend (top-left)
+    let legendX = PAD.left;
+    const legendY = 12;
+    ctx.font = "10px Inter, sans-serif";
+    ctx.textAlign = "left";
+    [
+      { key: "stt", label: "STT" },
+      { key: "llm", label: "LLM" },
+      { key: "tts", label: "TTS" },
+    ].forEach(({ key, label }) => {
+      ctx.fillStyle = colors[key];
+      ctx.beginPath();
+      ctx.arc(legendX + 4, legendY + 4, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.45)";
+      ctx.fillText(label, legendX + 12, legendY + 8);
+      legendX += ctx.measureText(label).width + 28;
+    });
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(legendX, legendY + 4);
+    ctx.lineTo(legendX + 16, legendY + 4);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.fillText("600ms target", legendX + 20, legendY + 8);
+
+    // Y gridlines with adaptive step (5–7 labels max)
+    for (let v = 0; v <= maxMs; v += tickStep) {
       const y = scaleY(v);
       ctx.beginPath();
       ctx.strokeStyle = "rgba(255,255,255,0.06)";
       ctx.lineWidth = 1;
-      ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + chartW, y);
+      ctx.moveTo(PAD.left, y);
+      ctx.lineTo(PAD.left + chartW, y);
       ctx.stroke();
       ctx.fillStyle = "rgba(255,255,255,0.25)";
       ctx.font = "10px JetBrains Mono, monospace";
       ctx.textAlign = "right";
-      ctx.fillText(`${v}ms`, PAD.left - 8, y + 4);
-    });
+      const label = v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`;
+      ctx.fillText(label, PAD.left - 8, y + 4);
+    }
 
     // Target line at 600ms
-    const targetY = scaleY(TARGET_MS);
-    ctx.beginPath();
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = "rgba(255,255,255,0.3)";
-    ctx.lineWidth = 1;
-    ctx.moveTo(PAD.left, targetY); ctx.lineTo(PAD.left + chartW, targetY);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    if (TARGET_MS <= maxMs) {
+      const targetY = scaleY(TARGET_MS);
+      ctx.beginPath();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(255,255,255,0.3)";
+      ctx.lineWidth = 1;
+      ctx.moveTo(PAD.left, targetY);
+      ctx.lineTo(PAD.left + chartW, targetY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
-    // Stacked bars: STT (indigo) + LLM (violet) + TTS (teal)
-    const BAR_W = Math.min(32, chartW / Math.max(data.length, 1) * 0.6);
-    const colors = { stt: "#818cf8", llm: "#c084fc", tts: "#34d399" };
+    // Stacked bars
+    const BAR_W = Math.min(36, (chartW / data.length) * 0.55);
 
     data.forEach((d, i) => {
       const x = scaleX(i) - BAR_W / 2;
       let yBase = scaleY(0);
+      let yTop = yBase;
 
-      ["stt", "llm", "tts"].forEach(key => {
+      ["stt", "llm", "tts"].forEach((key) => {
         const val = d[key] || 0;
         const barH = (val / maxMs) * chartH;
         yBase -= barH;
+        yTop = Math.min(yTop, yBase);
         ctx.fillStyle = colors[key];
         ctx.globalAlpha = 0.85;
         ctx.fillRect(x, yBase, BAR_W, barH);
         ctx.globalAlpha = 1;
       });
 
+      // Total label above bar
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.font = "9px JetBrains Mono, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`${d.total}ms`, scaleX(i), yTop - 6);
+
       // Turn label
       ctx.fillStyle = "rgba(255,255,255,0.25)";
       ctx.font = "9px Inter, sans-serif";
-      ctx.textAlign = "center";
       ctx.fillText(`T${d.turn}`, scaleX(i), H - PAD.bottom + 14);
     });
   }
