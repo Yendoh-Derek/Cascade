@@ -45,13 +45,11 @@
 
           <!-- TTS Engine Selector -->
           <div class="tts-selector">
-            <label for="tts-engine-selector" class="tts-label"
-              >TTS Engine</label
-            >
-            <select id="tts-engine-selector" class="tts-select">
-              <option value="edge">Edge-TTS</option>
-              <option value="deepgram">Deepgram Aura</option>
-            </select>
+            <span class="tts-label">TTS Engine</span>
+            <div class="tts-toggle-group">
+              <button class="tts-toggle-btn active" data-engine="deepgram">Deepgram</button>
+              <button class="tts-toggle-btn" data-engine="edge">Edge</button>
+            </div>
           </div>
         </div>
 
@@ -87,7 +85,30 @@
         >
           <span class="btn-label">Reset</span>
         </button>
+        <button
+          class="menu-btn"
+          id="btn-stats"
+          title="View Latency Chart"
+        >
+          <span class="btn-label">Stats</span>
+        </button>
       </footer>
+
+      <!-- Latency Stats Panel -->
+      <div class="stats-panel glass" id="stats-panel" aria-hidden="true">
+        <div class="stats-panel-header">
+          <span class="stats-panel-title">Latency Breakdown</span>
+          <button class="stats-close-btn" id="btn-close-stats">✕</button>
+        </div>
+        <canvas id="latency-chart" width="600" height="260"></canvas>
+        <div class="stats-legend">
+          <span class="legend-dot" style="background:#818cf8"></span> STT
+          <span class="legend-dot" style="background:#c084fc"></span> LLM
+          <span class="legend-dot" style="background:#34d399"></span> TTS
+          <span class="legend-line"></span> 600ms target
+        </div>
+      </div>
+      <div class="stats-backdrop" id="stats-backdrop"></div>
     </div>
 
     <!-- Toast container -->

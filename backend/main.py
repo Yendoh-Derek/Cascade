@@ -15,6 +15,7 @@ Fixes applied:
        so the user knows to wait.
 """
 
+import json
 import logging
 import asyncio
 from typing import Any, Dict, Optional
@@ -73,7 +74,7 @@ def health():
 async def websocket_endpoint(
     websocket: WebSocket,
     subject: Optional[str] = Query(default=None),
-    tts_engine: str = Query(default="edge"),
+    tts_engine: str = Query(default="deepgram"),
 ):
     """
     WebSocket endpoint for the streaming voice pipeline.
@@ -81,6 +82,7 @@ async def websocket_endpoint(
     Client → Server messages:
       binary  — raw PCM16 audio bytes from the microphone
       text    — "stop" to end the session
+                JSON with type "cancel" or "finalize"
 
     Server → Client messages:
       binary  — MP3 audio chunks (TTS output)
@@ -179,9 +181,28 @@ async def websocket_endpoint(
             # Text — control signals from the browser
             raw_text = message.get("text", "")
             if raw_text:
-                if raw_text.strip() == "stop":
+                stripped_text = raw_text.strip()
+                if stripped_text == "stop":
                     logger.info("[WS] Stop signal received — ending session")
                     break
+                
+                try:
+                    control_msg = json.loads(stripped_text)
+                    if isinstance(control_msg, dict):
+                        ctrl_type = control_msg.get("type")
+                        if ctrl_type == "cancel":
+                            logger.info("[WS] Cancel signal received")
+                            if session:
+                                await session.cancel()
+                            continue
+                        elif ctrl_type == "finalize":
+                            logger.info("[WS] Finalize signal received")
+                            if session and session.stt_handler:
+                                await session.stt_handler.finalize()
+                            continue
+                except json.JSONDecodeError:
+                    pass
+
                 logger.debug(f"[WS] Unrecognised text message: {raw_text[:80]}")
                 continue
 

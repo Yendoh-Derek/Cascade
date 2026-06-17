@@ -102,13 +102,26 @@ class LLMGenerator:
 
             sentence_buffer = ""
             token_count = 0
+            token_count_in_buffer = 0
+            MAX_TOKENS_BEFORE_YIELD = 25
 
             async for chunk in stream:
                 delta = chunk.choices[0].delta
                 if delta.content:
                     token = delta.content
                     token_count += 1
+
+                    # Check soft token limit before appending to preserve word boundaries
+                    if token_count_in_buffer >= MAX_TOKENS_BEFORE_YIELD and (token.startswith(' ') or token.startswith('\n')):
+                        sentence = sentence_buffer.strip()
+                        if sentence:
+                            logger.debug(f"[LLM] Yielding chunk on soft token limit ({token_count_in_buffer} tokens): {sentence[:60]}...")
+                            yield sentence
+                        sentence_buffer = ""
+                        token_count_in_buffer = 0
+
                     sentence_buffer += token
+                    token_count_in_buffer += 1
 
                     # ── FIX [Bug 7]: Pre-filter before expensive regex ──
                     # _has_sentence_boundary calls multiple regex scans. For a 300-token
@@ -121,9 +134,10 @@ class LLMGenerator:
                             if self._has_sentence_boundary(sentence_buffer):
                                 # Sentence complete - yield it
                                 sentence = sentence_buffer.strip()
-                                logger.debug(f"[LLM] Yielding sentence ({token_count} tokens): {sentence[:60]}...")
+                                logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens): {sentence[:60]}...")
                                 yield sentence
                                 sentence_buffer = ""
+                                token_count_in_buffer = 0
 
             # Yield any remaining buffer
             if sentence_buffer.strip():

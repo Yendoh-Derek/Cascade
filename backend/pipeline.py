@@ -53,9 +53,14 @@ class PipelineSession:
 
         # Latency tracking
         self.utterance_end_time: Optional[float] = None
+        self.first_audio_time: Optional[float] = None
+        self._last_stt_ms: int = 0
+        self._last_llm_ms: int = 0
 
         # Prevent concurrent transcript processing
         self.is_processing_transcript = False
+        self.processing_task: Optional[asyncio.Task] = None
+        self._cancel_event = asyncio.Event()
 
         logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject}, tts_engine={tts_engine})")
 
@@ -90,6 +95,8 @@ class PipelineSession:
 
     async def handle_audio(self, audio_bytes: bytes):
         """Forward audio bytes to the STT handler."""
+        if self.first_audio_time is None:
+            self.first_audio_time = time.time()
         if self.stt_handler:
             await self.stt_handler.send_audio(audio_bytes)
 
@@ -103,6 +110,7 @@ class PipelineSession:
 
         if not transcript.strip():
             logger.info("[Pipeline] Empty transcript received — resetting client")
+            self.first_audio_time = None
             self.send_message({"type": "response_end"})
             return
 
@@ -121,12 +129,19 @@ class PipelineSession:
             return
 
         self.utterance_end_time = time.time()
+        if self.first_audio_time:
+            self._last_stt_ms = int((self.utterance_end_time - self.first_audio_time) * 1000)
+        else:
+            self._last_stt_ms = 0
+        self.first_audio_time = None  # Reset for next turn
+        
         self.is_processing_transcript = True
-        logger.info(f"[Pipeline] Transcript received: '{transcript[:60]}'")
+        logger.info(f"[Pipeline] Transcript received: '{transcript[:60]}' (STT duration: {self._last_stt_ms}ms)")
 
         try:
             loop = asyncio.get_running_loop()
             task = loop.create_task(self._process_transcript(transcript))
+            self.processing_task = task
             task.add_done_callback(self._on_processing_done)
         except RuntimeError:
             logger.error("[Pipeline] No running event loop")
@@ -135,13 +150,18 @@ class PipelineSession:
     def _on_processing_done(self, task: asyncio.Task):
         """Reset the processing flag when the pipeline task completes."""
         self.is_processing_transcript = False
-        if task.exception():
+        if task == self.processing_task:
+            self.processing_task = None
+        if task.cancelled():
+            logger.info("[Pipeline] Processing task was cancelled")
+        elif task.exception():
             logger.error(f"[Pipeline] Processing task failed: {task.exception()}")
 
     async def _process_transcript(self, transcript: str):
         """Core pipeline: transcript → LLM streaming → TTS streaming → WebSocket."""
         full_response = ""
         first_token_received = False
+        self._cancel_event.clear()
 
         try:
             # Send confirmed transcript to frontend
@@ -157,6 +177,9 @@ class PipelineSession:
             async def synthesize_sentence_to_queue(text: str, sentence_queue: asyncio.Queue):
                 try:
                     async for chunk in self.tts_engine.synthesise(text):
+                        if self._cancel_event.is_set():
+                            logger.info("[Pipeline] TTS synthesis cancelled")
+                            break
                         if chunk:
                             await sentence_queue.put(chunk)
                     await sentence_queue.put(None)  # Sentinel for end of sentence audio
@@ -172,11 +195,16 @@ class PipelineSession:
                         messages=messages,
                         timeout_sec=30,
                     ):
+                        if self._cancel_event.is_set():
+                            logger.info("[Pipeline] Cancelled during LLM generation")
+                            break
+
                         if not first_token_received:
                             first_token_received = True
                             if self.utterance_end_time:
-                                llm_ms = (time.time() - self.utterance_end_time) * 1000
-                                logger.info(f"[Pipeline] LLM first token: {llm_ms:.0f}ms")
+                                llm_ms = int((time.time() - self.utterance_end_time) * 1000)
+                                self._last_llm_ms = llm_ms
+                                logger.info(f"[Pipeline] LLM first token: {llm_ms}ms")
 
                         self.send_message({"type": "response_chunk", "text": sentence})
                         
@@ -195,6 +223,8 @@ class PipelineSession:
                 nonlocal full_response
                 first_audio_sent = False
                 while True:
+                    if self._cancel_event.is_set():
+                        break
                     item = await queue.get()
                     if item is None:
                         queue.task_done()
@@ -207,6 +237,8 @@ class PipelineSession:
                     full_response += sentence
                     try:
                         while True:
+                            if self._cancel_event.is_set():
+                                break
                             chunk = await sentence_queue.get()
                             if chunk is None:
                                 sentence_queue.task_done()
@@ -218,9 +250,19 @@ class PipelineSession:
                             if not first_audio_sent:
                                 first_audio_sent = True
                                 if self.utterance_end_time:
-                                    total_ms = (time.time() - self.utterance_end_time) * 1000
-                                    logger.info(f"[Pipeline] First audio sent: {total_ms:.0f}ms")
-                                    self.send_message({"type": "latency", "ms": int(total_ms)})
+                                    total_ms = int((time.time() - self.utterance_end_time) * 1000)
+                                    llm_ms = getattr(self, '_last_llm_ms', 0)
+                                    tts_ms = total_ms - llm_ms
+                                    stt_ms = getattr(self, '_last_stt_ms', 0)
+                                    logger.info(f"[Pipeline] First audio sent: {total_ms}ms (STT: {stt_ms}ms, LLM: {llm_ms}ms, TTS: {tts_ms}ms)")
+                                    self.send_message({
+                                        "type": "latency",
+                                        "total_ms": total_ms,
+                                        "llm_ms": llm_ms,
+                                        "tts_ms": tts_ms,
+                                        "stt_ms": stt_ms,
+                                        "ms": total_ms
+                                    })
                             self.send_message({"type": "audio", "data": chunk})
                             sentence_queue.task_done()
                     except Exception as e:
@@ -231,7 +273,7 @@ class PipelineSession:
             # Run producer and consumer concurrently
             await asyncio.gather(produce_sentences(), consume_audio())
 
-            if full_response:
+            if full_response and not self._cancel_event.is_set():
                 self.tutor.add_assistant_message(full_response)
 
             logger.info(f"[Pipeline] Turn complete: '{full_response[:60]}'")
@@ -246,6 +288,25 @@ class PipelineSession:
             # Ensures frontend can recover even if LLM yields nothing
             # or an error occurs during processing.
             self.send_message({"type": "response_end"})
+
+    async def cancel(self):
+        """Cancel the active processing task on user interruption."""
+        self._cancel_event.set()
+        if self.processing_task and not self.processing_task.done():
+            logger.info("[Pipeline] Cancelling active processing task")
+            self.processing_task.cancel()
+            try:
+                await self.processing_task
+            except asyncio.CancelledError:
+                logger.info("[Pipeline] Active processing task cancelled successfully")
+            except Exception as e:
+                logger.error(f"[Pipeline] Error waiting for cancelled task: {e}")
+            self.processing_task = None
+        
+        self.is_processing_transcript = False
+        await asyncio.sleep(0.05)
+        self._cancel_event.clear()
+        logger.info("[Pipeline] Cancellation complete, event cleared and session ready")
 
     def _on_stt_error(self, error: str):
         """Surface STT errors to the frontend."""
