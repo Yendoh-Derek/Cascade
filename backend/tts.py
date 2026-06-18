@@ -53,21 +53,20 @@ class EdgeTTSEngine(BaseTTSEngine):
         try:
             logger.debug(f"[TTS] Synthesizing (Edge): {text[:60]}...")
             communicate = edge_tts.Communicate(text, self.voice)
-            audio_data_list = []
+            total_bytes = 0
             try:
                 async for chunk in communicate.stream():
                     if chunk.get("type") == "audio":
                         audio_data = chunk.get("data")
                         if audio_data:
-                            audio_data_list.append(audio_data)
+                            total_bytes += len(audio_data)
+                            yield audio_data
             except Exception as e:
                 logger.error(f"[TTS] EdgeTTS streaming error: {e}")
                 raise
 
-            if audio_data_list:
-                complete_audio = b"".join(audio_data_list)
-                logger.info(f"[TTS] EdgeTTS audio complete: {len(complete_audio)} bytes")
-                yield complete_audio
+            if total_bytes:
+                logger.info(f"[TTS] EdgeTTS audio complete: {total_bytes} bytes")
 
         except Exception as e:
             logger.error(f"[TTS] EdgeTTS synthesis error: {e}")

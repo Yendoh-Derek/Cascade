@@ -18,7 +18,7 @@ Fixes applied:
 import json
 import logging
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
@@ -116,11 +116,12 @@ async def websocket_endpoint(
                 "edge_tts_voice": config.edge_tts_voice,
                 "deepgram_tts_model": config.deepgram_tts_model,
             },
-            send_message=lambda msg: asyncio.create_task(
-                _send_ws_message(websocket, msg, send_lock)
-            ),
+            send_message=lambda msg: None,
             subject=subject,
             tts_engine=tts_engine,
+        )
+        session.send_message = lambda msg: asyncio.create_task(
+            _send_ws_message(websocket, msg, send_lock, session.can_send_message)
         )
 
         try:
@@ -224,16 +225,28 @@ async def websocket_endpoint(
                 logger.error(f"[WS] Error during session cleanup: {e}")
 
 
-async def _send_ws_message(websocket: WebSocket, message: Dict[str, Any], lock: asyncio.Lock):
+async def _send_ws_message(
+    websocket: WebSocket,
+    message: Dict[str, Any],
+    lock: asyncio.Lock,
+    can_send: Optional[Callable[[Dict[str, Any]], bool]] = None,
+):
     """Route a message to the WebSocket — binary for audio, JSON for everything else."""
     async with lock:
         try:
+            if can_send and not can_send(message):
+                return
             if message.get("type") == "audio":
                 audio_data = message.get("data", b"")
                 if isinstance(audio_data, str):
                     audio_data = bytes.fromhex(audio_data)
                 if audio_data:
-                    await websocket.send_bytes(audio_data)
+                    turn_id = message.get("turn_id")
+                    if turn_id is not None:
+                        frame = turn_id.to_bytes(4, "big") + audio_data
+                    else:
+                        frame = audio_data
+                    await websocket.send_bytes(frame)
             else:
                 await websocket.send_json(message)
         except Exception as e:

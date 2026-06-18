@@ -53,7 +53,6 @@ class PipelineSession:
 
         # Latency tracking
         self.utterance_end_time: Optional[float] = None
-        self.first_audio_time: Optional[float] = None
         self._last_stt_ms: int = 0
         self._last_llm_ms: int = 0
 
@@ -61,6 +60,7 @@ class PipelineSession:
         self.turn_id: int = 0
         self._active_turn_id: int = 0
         self._tts_tasks: Set[asyncio.Task] = set()
+        self._tts_semaphore = asyncio.Semaphore(2)
 
         # Prevent concurrent transcript processing
         self.is_processing_transcript = False
@@ -75,6 +75,7 @@ class PipelineSession:
             api_key=self.api_keys["deepgram"],
             on_transcript=self._on_transcript_received,
             on_error=self._on_stt_error,
+            on_status=self._on_stt_status,
         )
         self.llm_generator = LLMGenerator(
             api_key=self.api_keys["groq"],
@@ -100,15 +101,19 @@ class PipelineSession:
 
     async def handle_audio(self, audio_bytes: bytes):
         """Forward audio bytes to the STT handler."""
-        # Only measure STT window while the user is speaking (not during tutor response)
-        if not self.is_processing_transcript and self.first_audio_time is None:
-            self.first_audio_time = time.time()
         if self.stt_handler:
             await self.stt_handler.send_audio(audio_bytes)
 
     def _can_send(self, turn_id: int) -> bool:
         """Return True if messages for this turn should still be delivered."""
         return turn_id == self._active_turn_id and not self._cancel_event.is_set()
+
+    def can_send_message(self, msg: dict) -> bool:
+        """Gate outbound WebSocket messages at send time (closes fire-and-forget race)."""
+        turn_id = msg.get("turn_id")
+        if turn_id is None:
+            return True
+        return self._can_send(turn_id)
 
     def _send_for_turn(self, turn_id: int, msg: dict):
         """Send a JSON message tagged with turn_id, gated on cancel state."""
@@ -127,8 +132,8 @@ class PipelineSession:
 
         if not transcript.strip():
             logger.info("[Pipeline] Empty transcript received — resetting client")
-            self.first_audio_time = None
-            self.send_message({"type": "response_end"})
+            if not self.is_processing_transcript:
+                self.send_message({"type": "response_end"})
             return
 
         if self.is_processing_transcript:
@@ -144,18 +149,18 @@ class PipelineSession:
         self.turn_id += 1
         current_turn_id = self.turn_id
         self._active_turn_id = current_turn_id
+        self._cancel_event.clear()
 
         self.utterance_end_time = time.time()
-        if self.first_audio_time:
-            self._last_stt_ms = int((self.utterance_end_time - self.first_audio_time) * 1000)
+        if self.stt_handler:
+            self._last_stt_ms = self.stt_handler.last_stt_processing_ms
         else:
             self._last_stt_ms = 0
-        self.first_audio_time = None
 
         self.is_processing_transcript = True
         logger.info(
             f"[Pipeline] Turn {current_turn_id} transcript: '{transcript[:60]}' "
-            f"(STT duration: {self._last_stt_ms}ms)"
+            f"(STT processing: {self._last_stt_ms}ms)"
         )
 
         try:
@@ -170,7 +175,6 @@ class PipelineSession:
     def _on_processing_done(self, task: asyncio.Task):
         """Reset the processing flag when the pipeline task completes."""
         self.is_processing_transcript = False
-        self.first_audio_time = None
         if task == self.processing_task:
             self.processing_task = None
         if task.cancelled():
@@ -182,7 +186,6 @@ class PipelineSession:
         """Core pipeline: transcript → LLM streaming → TTS streaming → WebSocket."""
         full_response = ""
         first_token_received = False
-        self._cancel_event.clear()
 
         try:
             self._send_for_turn(turn_id, {"type": "transcript", "text": transcript})
@@ -195,12 +198,13 @@ class PipelineSession:
 
             async def synthesize_sentence_to_queue(text: str, sentence_queue: asyncio.Queue):
                 try:
-                    async for chunk in self.tts_engine.synthesise(text):
-                        if self._cancel_event.is_set() or turn_id != self._active_turn_id:
-                            logger.info("[Pipeline] TTS synthesis cancelled")
-                            break
-                        if chunk:
-                            await sentence_queue.put(chunk)
+                    async with self._tts_semaphore:
+                        async for chunk in self.tts_engine.synthesise(text):
+                            if self._cancel_event.is_set() or turn_id != self._active_turn_id:
+                                logger.info("[Pipeline] TTS synthesis cancelled")
+                                break
+                            if chunk:
+                                await sentence_queue.put(chunk)
                     await sentence_queue.put(None)
                 except asyncio.CancelledError:
                     pass
@@ -225,7 +229,7 @@ class PipelineSession:
                             if self.utterance_end_time:
                                 llm_ms = int((time.time() - self.utterance_end_time) * 1000)
                                 self._last_llm_ms = llm_ms
-                                logger.info(f"[Pipeline] LLM first token: {llm_ms}ms")
+                                logger.info(f"[Pipeline] LLM first sentence: {llm_ms}ms")
 
                         self._send_for_turn(turn_id, {"type": "response_chunk", "text": sentence})
 
@@ -338,12 +342,16 @@ class PipelineSession:
         if self.stt_handler:
             self.stt_handler.clear_buffer()
 
-        self.first_audio_time = None
-
         if cancelled_turn:
             self.send_message({"type": "turn_cancelled", "turn_id": cancelled_turn})
 
+        self._active_turn_id = None
+
         logger.info(f"[Pipeline] Cancellation complete for turn {cancelled_turn}")
+
+    def _on_stt_status(self, status: str, data: dict):
+        """Surface STT reconnect status to the frontend."""
+        self.send_message({"type": status, **data})
 
     def _on_stt_error(self, error: str):
         """Surface STT errors to the frontend."""

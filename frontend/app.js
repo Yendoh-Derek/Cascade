@@ -5,7 +5,6 @@
 const CONFIG = {
   WS_HOST: window.location.hostname || "localhost",
   WS_PORT: window.location.port || "8000",
-  SILENCE_DURATION_MS: 800,
 };
 
 const STATE = {
@@ -32,7 +31,6 @@ class CascadeClient {
     this.utteranceStartTime = null;
     this.firstAudioTime = null;
     this.lastUtteredTime = null;
-    this.silenceStartTime = null;
     this.sessionStartTime = null;
     this.speakingStartTime = null;
     this.nextPlaybackTime = null;
@@ -49,7 +47,10 @@ class CascadeClient {
     this.activeTurnId = null;
     this.playbackTurnId = null;
     this.audioEpoch = 0;
+    this.decodeGeneration = 0;
     this._interrupting = false;
+    this._pendingCancelTurnId = null;
+    this._interruptTimeout = null;
     this.ttsConfig = { format: "linear16", sampleRate: 24000 };
     this.selectedTTSEngine =
       localStorage.getItem("cascade_tts_engine") || "deepgram";
@@ -331,14 +332,18 @@ class CascadeClient {
     this.activeTurnId = null;
     this.playbackTurnId = null;
     this.audioEpoch += 1;
+    this.decodeGeneration += 1;
     this._interrupting = false;
+    this._pendingCancelTurnId = null;
+    if (this._interruptTimeout) {
+      clearTimeout(this._interruptTimeout);
+      this._interruptTimeout = null;
+    }
     if (this.playbackGain) {
       this.playbackGain.gain.value = 1;
     }
     this._resetTurnState();
     this.sessionStartTime = null;
-
-    if (this.isMuted) this.toggleMute();
 
     this.setState(STATE.IDLE);
   }
@@ -347,7 +352,6 @@ class CascadeClient {
     this.utteranceStartTime = null;
     this.firstAudioTime = null;
     this.lastUtteredTime = null;
-    this.silenceStartTime = null;
     this.nextPlaybackTime = null;
     this.isAudioSourceEnded = false;
     this.activeSourceNodes = [];
@@ -500,23 +504,7 @@ class CascadeClient {
       return;
 
     if (this.state === STATE.LISTENING) {
-      if (rms < threshold) {
-        if (!this.silenceStartTime) {
-          this.silenceStartTime = Date.now();
-        } else if (
-          Date.now() - this.silenceStartTime > CONFIG.SILENCE_DURATION_MS &&
-          this.state === STATE.LISTENING &&
-          this.lastUtteredTime
-        ) {
-          this.utteranceStartTime = Date.now();
-          this.silenceStartTime = null;
-          this.setState(STATE.PROCESSING);
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: "finalize" }));
-          }
-        }
-      } else {
-        this.silenceStartTime = null;
+      if (rms >= threshold) {
         this.lastUtteredTime = Date.now();
       }
     } else if (this.state === STATE.SPEAKING || this.state === STATE.PROCESSING) {
@@ -581,7 +569,9 @@ class CascadeClient {
     this._interrupting = true;
     console.log("[Client] Interruption triggered! Stopping playback and cancelling server pipeline.");
 
+    this._pendingCancelTurnId = this.activeTurnId ?? this.playbackTurnId;
     this.audioEpoch += 1;
+    this.decodeGeneration += 1;
     this.activeTurnId = null;
     this.playbackTurnId = null;
 
@@ -596,7 +586,12 @@ class CascadeClient {
     this.currentResponse = "";
     this.setState(STATE.LISTENING);
     this._resetPlaybackOnly();
-    this._interrupting = false;
+
+    if (this._interruptTimeout) clearTimeout(this._interruptTimeout);
+    this._interruptTimeout = setTimeout(() => {
+      this._interrupting = false;
+      this._interruptTimeout = null;
+    }, 1000);
   }
 
   _connectWebSocket() {
@@ -706,26 +701,32 @@ class CascadeClient {
         if (msg.turn_id != null && this.activeTurnId === msg.turn_id) {
           this.activeTurnId = null;
           this.playbackTurnId = null;
+          this.audioEpoch += 1;
+          this.decodeGeneration += 1;
+          this._stopAllPlayback();
+          this.isAudioSourceEnded = true;
+          this._checkPlaybackFinished();
         }
-        this.audioEpoch += 1;
-        this._stopAllPlayback();
-        this.isAudioSourceEnded = true;
-        this._checkPlaybackFinished();
+        if (msg.turn_id != null && msg.turn_id === this._pendingCancelTurnId) {
+          this._pendingCancelTurnId = null;
+          if (this._interruptTimeout) {
+            clearTimeout(this._interruptTimeout);
+            this._interruptTimeout = null;
+          }
+          this._interrupting = false;
+        }
         break;
       case "latency":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (typeof msg.total_ms === "number") {
-          const stt = msg.stt_ms || 0;
-          const llm = msg.llm_ms || 0;
-          const tts = msg.tts_ms || 0;
-          const calculatedTotal = stt + llm + tts;
-          this.lastLatencyMs = calculatedTotal;
+          this.lastLatencyMs = msg.total_ms;
+
           this.latencyHistory.push({
             turn: this.totalTurns,
-            total: calculatedTotal,
-            llm: llm,
-            tts: tts,
-            stt: stt,
+            total: msg.total_ms,
+            llm: msg.llm_ms || 0,
+            tts: msg.tts_ms || 0,
+            stt: msg.stt_ms || 0,
             timestamp: Date.now(),
           });
           if (this.latencyHistory.length > 20) this.latencyHistory.shift();
@@ -742,6 +743,16 @@ class CascadeClient {
         break;
       case "busy":
         this.showToast(msg.message || "⏳ Still responding — please wait a moment.", 4000, "info");
+        break;
+      case "stt_reconnecting":
+        this.showToast(
+          `Reconnecting speech recognition (${msg.attempt}/${msg.max})…`,
+          3000,
+          "info",
+        );
+        break;
+      case "stt_reconnected":
+        this.showToast("Speech recognition reconnected.", 2500, "info");
         break;
       case "error":
         this.showError(msg.message || "Unknown server error");
@@ -775,10 +786,16 @@ class CascadeClient {
   }
 
   async _onAudioChunk(arrayBuffer) {
-    const epoch = this.audioEpoch;
-    const turnId = this.activeTurnId;
+    if (arrayBuffer.byteLength < 4) return;
 
-    if (turnId == null) return;
+    const view = new DataView(arrayBuffer);
+    const turnId = view.getUint32(0, false);
+    const audioPayload = arrayBuffer.slice(4);
+
+    const epoch = this.audioEpoch;
+    const decodeGen = this.decodeGeneration;
+
+    if (!this._isTurnActive(turnId)) return;
     if (this.state === STATE.LISTENING || this.state === STATE.IDLE || this.state === STATE.CONNECTING) {
       return;
     }
@@ -787,12 +804,18 @@ class CascadeClient {
       await this._resumeAudioContext();
     }
 
-    if (epoch !== this.audioEpoch || turnId !== this.activeTurnId) return;
+    if (
+      epoch !== this.audioEpoch ||
+      decodeGen !== this.decodeGeneration ||
+      turnId !== this.activeTurnId
+    ) {
+      return;
+    }
 
     try {
       let audioBuffer;
       if (this.ttsConfig.format === "linear16") {
-        const int16Array = new Int16Array(arrayBuffer);
+        const int16Array = new Int16Array(audioPayload);
         const float32Array = new Float32Array(int16Array.length);
         for (let i = 0; i < int16Array.length; i++) {
           float32Array[i] = int16Array[i] / 32768.0;
@@ -805,24 +828,33 @@ class CascadeClient {
         audioBuffer.copyToChannel(float32Array, 0);
       } else {
         audioBuffer = await this.audioContext.decodeAudioData(
-          arrayBuffer.slice(0),
+          audioPayload.slice(0),
         );
       }
 
       if (
         audioBuffer &&
         epoch === this.audioEpoch &&
+        decodeGen === this.decodeGeneration &&
         turnId === this.activeTurnId
       ) {
-        this._schedulePlayback(audioBuffer, epoch, turnId);
+        this._schedulePlayback(audioBuffer, epoch, turnId, decodeGen);
       }
     } catch (err) {
       console.error("Audio decode failed:", err);
     }
   }
 
-  _schedulePlayback(audioBuffer, epoch, turnId) {
-    if (epoch !== this.audioEpoch || turnId !== this.activeTurnId) return;
+  _schedulePlayback(audioBuffer, epoch, turnId, decodeGen) {
+    if (
+      epoch !== this.audioEpoch ||
+      decodeGen !== this.decodeGeneration ||
+      turnId !== this.activeTurnId ||
+      this.state === STATE.LISTENING ||
+      this.state === STATE.IDLE
+    ) {
+      return;
+    }
 
     if (this.playbackGain && this.audioContext) {
       this.playbackGain.gain.setValueAtTime(1, this.audioContext.currentTime);
@@ -834,7 +866,7 @@ class CascadeClient {
 
     const currentTime = this.audioContext.currentTime;
     if (this.nextPlaybackTime === null || this.nextPlaybackTime < currentTime) {
-      this.nextPlaybackTime = currentTime + 0.1;
+      this.nextPlaybackTime = currentTime + 0.02;
     }
 
     const source = this.audioContext.createBufferSource();
@@ -845,7 +877,13 @@ class CascadeClient {
       source.connect(this.audioContext.destination);
     }
 
-    if (epoch !== this.audioEpoch || turnId !== this.activeTurnId) return;
+    if (
+      epoch !== this.audioEpoch ||
+      decodeGen !== this.decodeGeneration ||
+      turnId !== this.activeTurnId
+    ) {
+      return;
+    }
 
     source.start(this.nextPlaybackTime);
     this.activeSourceNodes.push(source);
@@ -1101,7 +1139,6 @@ class CascadeClient {
     ctx.font = "10px Inter, sans-serif";
     ctx.textAlign = "left";
     [
-      { key: "stt", label: "STT" },
       { key: "llm", label: "LLM" },
       { key: "tts", label: "TTS" },
     ].forEach(({ key, label }) => {
@@ -1113,6 +1150,16 @@ class CascadeClient {
       ctx.fillText(label, legendX + 12, legendY + 8);
       legendX += ctx.measureText(label).width + 28;
     });
+    ctx.strokeStyle = colors.stt;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.moveTo(legendX, legendY + 4);
+    ctx.lineTo(legendX + 16, legendY + 4);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.fillText("STT", legendX + 20, legendY + 8);
+    legendX += ctx.measureText("STT").width + 36;
     ctx.strokeStyle = "rgba(255,255,255,0.3)";
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -1160,7 +1207,7 @@ class CascadeClient {
       let yBase = scaleY(0);
       let yTop = yBase;
 
-      ["stt", "llm", "tts"].forEach((key) => {
+      ["llm", "tts"].forEach((key) => {
         const val = d[key] || 0;
         const barH = (val / maxMs) * chartH;
         yBase -= barH;
@@ -1177,10 +1224,11 @@ class CascadeClient {
       ctx.textAlign = "center";
       ctx.fillText(`${d.total}ms`, scaleX(i), yTop - 6);
 
-      // Turn label
+      // Turn label (STT endpointing shown separately — not part of pipeline total)
       ctx.fillStyle = "rgba(255,255,255,0.25)";
       ctx.font = "9px Inter, sans-serif";
-      ctx.fillText(`T${d.turn}`, scaleX(i), H - PAD.bottom + 14);
+      const sttNote = d.stt ? ` · stt ${d.stt}ms` : "";
+      ctx.fillText(`T${d.turn}${sttNote}`, scaleX(i), H - PAD.bottom + 14);
     });
   }
 

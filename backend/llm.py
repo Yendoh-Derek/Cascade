@@ -81,6 +81,7 @@ class LLMGenerator:
             logger.warning("[LLM] Invalid messages, skipping generation")
             return
 
+        sentence_buffer = ""
         try:
             # Build the messages list - messages already contains full history
             # DO NOT append transcript again - it's already in the messages
@@ -88,64 +89,55 @@ class LLMGenerator:
 
             logger.debug(f"[LLM] Requesting {len(request_messages)} messages, model={self.model}")
 
-            # Stream from Groq with timeout
-            stream = await asyncio.wait_for(
-                self.client.chat.completions.create(
+            async with asyncio.timeout(timeout_sec):
+                stream = await self.client.chat.completions.create(
                     model=self.model,
                     messages=request_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=True,
-                ),
-                timeout=timeout_sec,
-            )
+                )
 
-            sentence_buffer = ""
-            token_count = 0
-            token_count_in_buffer = 0
-            MAX_TOKENS_BEFORE_YIELD = 25
+                sentence_buffer = ""
+                token_count = 0
+                token_count_in_buffer = 0
+                MAX_TOKENS_BEFORE_YIELD = 25
 
-            async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    token = delta.content
-                    token_count += 1
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        token = delta.content
+                        token_count += 1
 
-                    # Check soft token limit before appending to preserve word boundaries
-                    if token_count_in_buffer >= MAX_TOKENS_BEFORE_YIELD and (token.startswith(' ') or token.startswith('\n')):
-                        sentence = sentence_buffer.strip()
-                        if sentence:
-                            logger.debug(f"[LLM] Yielding chunk on soft token limit ({token_count_in_buffer} tokens): {sentence[:60]}...")
-                            yield sentence
-                        sentence_buffer = ""
-                        token_count_in_buffer = 0
-
-                    sentence_buffer += token
-                    token_count_in_buffer += 1
-
-                    # ── FIX [Bug 7]: Pre-filter before expensive regex ──
-                    # _has_sentence_boundary calls multiple regex scans. For a 300-token
-                    # response, this means 300 regex operations on a growing string.
-                    # Cheap pre-filter: check if boundary punctuation is in the last few characters
-                    # (to allow closing quotes/parenthesis to be parsed correctly).
-                    if sentence_buffer:
-                        last_chars = sentence_buffer[-3:].rstrip()
-                        if any(c in last_chars for c in '.?!'):
-                            if self._has_sentence_boundary(sentence_buffer):
-                                # Sentence complete - yield it
-                                sentence = sentence_buffer.strip()
-                                logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens): {sentence[:60]}...")
+                        # Check soft token limit before appending to preserve word boundaries
+                        if token_count_in_buffer >= MAX_TOKENS_BEFORE_YIELD and (token.startswith(' ') or token.startswith('\n')):
+                            sentence = sentence_buffer.strip()
+                            if sentence:
+                                logger.debug(f"[LLM] Yielding chunk on soft token limit ({token_count_in_buffer} tokens): {sentence[:60]}...")
                                 yield sentence
-                                sentence_buffer = ""
-                                token_count_in_buffer = 0
+                            sentence_buffer = ""
+                            token_count_in_buffer = 0
 
-            # Yield any remaining buffer
-            if sentence_buffer.strip():
-                sentence = sentence_buffer.strip()
-                logger.info(f"[LLM] Final buffer yielded: {sentence[:60]}...")
-                yield sentence
+                        sentence_buffer += token
+                        token_count_in_buffer += 1
 
-            logger.info(f"[LLM] Stream complete: {token_count} tokens total")
+                        if sentence_buffer:
+                            last_chars = sentence_buffer[-3:].rstrip()
+                            if any(c in last_chars for c in '.?!'):
+                                if self._has_sentence_boundary(sentence_buffer):
+                                    sentence = sentence_buffer.strip()
+                                    logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens): {sentence[:60]}...")
+                                    yield sentence
+                                    sentence_buffer = ""
+                                    token_count_in_buffer = 0
+
+                # Yield any remaining buffer
+                if sentence_buffer.strip():
+                    sentence = sentence_buffer.strip()
+                    logger.info(f"[LLM] Final buffer yielded: {sentence[:60]}...")
+                    yield sentence
+
+                logger.info(f"[LLM] Stream complete: {token_count} tokens total")
 
         except asyncio.TimeoutError:
             logger.error(f"[LLM] Generation timed out after {timeout_sec}s")
