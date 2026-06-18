@@ -93,6 +93,8 @@ async def websocket_endpoint(
         subject = subject.strip()[:200] or None
 
     session: Optional[PipelineSession] = None
+    sender_task: Optional[asyncio.Task] = None
+    sender_running = False
 
     try:
         await websocket.accept()
@@ -106,8 +108,10 @@ async def websocket_endpoint(
             await websocket.close()
             return
 
-        send_lock = asyncio.Lock()
-
+        # Create outbound message queue first
+        outbound_queue = asyncio.Queue()
+        
+        # Initialize session first
         session = PipelineSession(
             api_keys={"deepgram": keys.deepgram, "groq": keys.groq},
             model_config={
@@ -120,9 +124,32 @@ async def websocket_endpoint(
             subject=subject,
             tts_engine=tts_engine,
         )
-        session.send_message = lambda msg: asyncio.create_task(
-            _send_ws_message(websocket, msg, send_lock, session.can_send_message)
-        )
+        session.send_message = lambda _msg: outbound_queue.put_nowait(_msg)
+        session.outbound_queue = outbound_queue
+        
+        # Now create and start sender task
+        sender_running = True
+
+        async def sender_coroutine():
+            """Single coroutine responsible for all outbound WebSocket messages."""
+            nonlocal sender_running
+            while sender_running:
+                try:
+                    msg = await outbound_queue.get()
+                    if msg is None:  # Sentinel value to stop sender
+                        break
+                    await _send_ws_message(websocket, msg, session.can_send_message)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.debug(f"[WS] Sender error: {e}")
+                finally:
+                    try:
+                        outbound_queue.task_done()
+                    except ValueError:
+                        pass
+
+        sender_task = asyncio.create_task(sender_coroutine())
 
         try:
             await asyncio.wait_for(session.initialize(), timeout=10)
@@ -218,6 +245,18 @@ async def websocket_endpoint(
         except Exception:
             pass
     finally:
+        # Clean up sender task
+        try:
+            sender_running = False
+            if sender_task is not None and not sender_task.done():
+                sender_task.cancel()
+                try:
+                    await asyncio.wait_for(sender_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+        except Exception as e:
+            logger.error(f"[WS] Error cleaning up sender: {e}")
+
         if session:
             try:
                 await session.close()
@@ -228,30 +267,28 @@ async def websocket_endpoint(
 async def _send_ws_message(
     websocket: WebSocket,
     message: Dict[str, Any],
-    lock: asyncio.Lock,
     can_send: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ):
     """Route a message to the WebSocket — binary for audio, JSON for everything else."""
-    async with lock:
-        try:
-            if can_send and not can_send(message):
-                return
-            if message.get("type") == "audio":
-                audio_data = message.get("data", b"")
-                if isinstance(audio_data, str):
-                    audio_data = bytes.fromhex(audio_data)
-                if audio_data:
-                    turn_id = message.get("turn_id")
-                    if turn_id is not None:
-                        frame = turn_id.to_bytes(4, "big") + audio_data
-                    else:
-                        frame = audio_data
-                    await websocket.send_bytes(frame)
-            else:
-                await websocket.send_json(message)
-        except Exception as e:
-            # Client likely disconnected mid-send — not a server error
-            logger.debug(f"[WS] Send failed (client likely gone): {e}")
+    try:
+        if can_send and not can_send(message):
+            return
+        if message.get("type") == "audio":
+            audio_data = message.get("data", b"")
+            if isinstance(audio_data, str):
+                audio_data = bytes.fromhex(audio_data)
+            if audio_data:
+                turn_id = message.get("turn_id")
+                if turn_id is not None:
+                    frame = turn_id.to_bytes(4, "big") + audio_data
+                else:
+                    frame = audio_data
+                await websocket.send_bytes(frame)
+        else:
+            await websocket.send_json(message)
+    except Exception as e:
+        # Client likely disconnected mid-send — not a server error
+        logger.debug(f"[WS] Send failed (client likely gone): {e}")
 
 
 # Mount frontend static files — must be registered last so it doesn't

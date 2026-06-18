@@ -76,9 +76,13 @@ class CascadeClient {
   }
 
   _restoreTTSSelection() {
-    const activeBtn = document.querySelector(`.tts-toggle-btn[data-engine="${this.selectedTTSEngine}"]`);
+    const activeBtn = document.querySelector(
+      `.tts-toggle-btn[data-engine="${this.selectedTTSEngine}"]`,
+    );
     if (activeBtn) {
-      document.querySelectorAll(".tts-toggle-btn").forEach(btn => btn.classList.remove("active"));
+      document
+        .querySelectorAll(".tts-toggle-btn")
+        .forEach((btn) => btn.classList.remove("active"));
       activeBtn.classList.add("active");
     }
   }
@@ -125,83 +129,87 @@ class CascadeClient {
       });
     }
 
-    [this.btnToggleSession, this.btnClearTranscript, this.btnStats].forEach((btn) => {
-      if (!btn) return;
+    [this.btnToggleSession, this.btnClearTranscript, this.btnStats].forEach(
+      (btn) => {
+        if (!btn) return;
 
-      const createCircle = (x, y) => {
-        const buttonWidth = btn.offsetWidth || 0;
-        const xPos = x / buttonWidth;
-        const color = `linear-gradient(to right, rgba(160, 217, 248, 0.8) ${xPos * 100}%, rgba(58, 91, 191, 0.8) ${xPos * 100}%)`;
+        const createCircle = (x, y) => {
+          const buttonWidth = btn.offsetWidth || 0;
+          const xPos = x / buttonWidth;
+          const color = `linear-gradient(to right, rgba(160, 217, 248, 0.8) ${xPos * 100}%, rgba(58, 91, 191, 0.8) ${xPos * 100}%)`;
 
-        const circle = document.createElement("div");
-        circle.className = "menu-btn-circle";
-        circle.style.left = `${x}px`;
-        circle.style.top = `${y}px`;
-        circle.style.background = color;
+          const circle = document.createElement("div");
+          circle.className = "menu-btn-circle";
+          circle.style.left = `${x}px`;
+          circle.style.top = `${y}px`;
+          circle.style.background = color;
 
-        btn.appendChild(circle);
+          btn.appendChild(circle);
 
-        setTimeout(() => {
-          circle.classList.add("fade-in");
-        }, 0);
+          setTimeout(() => {
+            circle.classList.add("fade-in");
+          }, 0);
 
-        setTimeout(() => {
-          circle.classList.remove("fade-in");
-          circle.classList.add("fade-out");
-        }, 1000);
+          setTimeout(() => {
+            circle.classList.remove("fade-in");
+            circle.classList.add("fade-out");
+          }, 1000);
 
-        setTimeout(() => {
-          if (circle.parentNode) {
-            circle.parentNode.removeChild(circle);
+          setTimeout(() => {
+            if (circle.parentNode) {
+              circle.parentNode.removeChild(circle);
+            }
+          }, 2200);
+        };
+
+        let isListening = false;
+        let lastAdded = 0;
+
+        btn.addEventListener("pointermove", (evt) => {
+          if (!isListening) return;
+
+          const currentTime = Date.now();
+          if (currentTime - lastAdded > 100) {
+            lastAdded = currentTime;
+            const rect = btn.getBoundingClientRect();
+            const x = evt.clientX - rect.left;
+            const y = evt.clientY - rect.top;
+            createCircle(x, y);
           }
-        }, 2200);
-      };
-
-      let isListening = false;
-      let lastAdded = 0;
-
-      btn.addEventListener("pointermove", (evt) => {
-        if (!isListening) return;
-
-        const currentTime = Date.now();
-        if (currentTime - lastAdded > 100) {
-          lastAdded = currentTime;
-          const rect = btn.getBoundingClientRect();
-          const x = evt.clientX - rect.left;
-          const y = evt.clientY - rect.top;
-          createCircle(x, y);
-        }
-      });
-
-      btn.addEventListener("pointerenter", () => {
-        isListening = true;
-      });
-
-      btn.addEventListener("pointerleave", () => {
-        isListening = false;
-      });
-
-      if (btn.id === "btn-toggle-session") {
-        btn.addEventListener("click", () => this.toggleSession());
-      } else if (btn.id === "btn-clear-transcript") {
-        btn.addEventListener("click", () => {
-          if (this.transcriptPanel) this.transcriptPanel.innerHTML = "";
-          this._resetTurnState();
-          this._updateStatsBar();
-          this._showEmptyStateIfNeeded();
         });
-      } else if (btn.id === "btn-stats") {
-        btn.addEventListener("click", () => this._openStatsPanel());
-      }
-    });
+
+        btn.addEventListener("pointerenter", () => {
+          isListening = true;
+        });
+
+        btn.addEventListener("pointerleave", () => {
+          isListening = false;
+        });
+
+        if (btn.id === "btn-toggle-session") {
+          btn.addEventListener("click", () => this.toggleSession());
+        } else if (btn.id === "btn-clear-transcript") {
+          btn.addEventListener("click", () => {
+            if (this.transcriptPanel) this.transcriptPanel.innerHTML = "";
+            this._resetTurnState();
+            this._updateStatsBar();
+            this._showEmptyStateIfNeeded();
+          });
+        } else if (btn.id === "btn-stats") {
+          btn.addEventListener("click", () => this._openStatsPanel());
+        }
+      },
+    );
 
     // Custom TTS Engine Selector Toggles
-    document.querySelectorAll(".tts-toggle-btn").forEach(btn => {
+    document.querySelectorAll(".tts-toggle-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const engine = btn.getAttribute("data-engine");
         this.selectedTTSEngine = engine;
         localStorage.setItem("cascade_tts_engine", engine);
-        document.querySelectorAll(".tts-toggle-btn").forEach(b => b.classList.remove("active"));
+        document
+          .querySelectorAll(".tts-toggle-btn")
+          .forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         console.log(`[Client] TTS Engine changed to: ${engine}`);
       });
@@ -466,11 +474,7 @@ class CascadeClient {
       return;
     }
 
-    if (
-      !this.isMuted &&
-      this.ws &&
-      this.ws.readyState === WebSocket.OPEN
-    ) {
+    if (!this.isMuted && this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(bytes);
     }
 
@@ -498,7 +502,8 @@ class CascadeClient {
     if (rms > this.maxAudioLevel) this.maxAudioLevel = rms;
     const threshold = Math.max(0.02, this.maxAudioLevel * 0.05);
 
-    if (this.orb && this.state === STATE.LISTENING) this.orb.style.setProperty("--rms", rms.toFixed(3));
+    if (this.orb && this.state === STATE.LISTENING)
+      this.orb.style.setProperty("--rms", rms.toFixed(3));
 
     if (this.sessionStartTime && Date.now() - this.sessionStartTime < 1500)
       return;
@@ -507,17 +512,25 @@ class CascadeClient {
       if (rms >= threshold) {
         this.lastUtteredTime = Date.now();
       }
-    } else if (this.state === STATE.SPEAKING || this.state === STATE.PROCESSING) {
+    } else if (
+      this.state === STATE.SPEAKING ||
+      this.state === STATE.PROCESSING
+    ) {
       this._detectInterruption(rms);
     }
   }
 
   _isTurnActive(turnId) {
-    return turnId != null && this.activeTurnId != null && turnId === this.activeTurnId;
+    return (
+      turnId != null &&
+      this.activeTurnId != null &&
+      turnId === this.activeTurnId
+    );
   }
 
   _detectInterruption(rms) {
-    if (this.state !== STATE.SPEAKING && this.state !== STATE.PROCESSING) return;
+    if (this.state !== STATE.SPEAKING && this.state !== STATE.PROCESSING)
+      return;
     if (this._interrupting) return;
     if (
       this.state === STATE.SPEAKING &&
@@ -545,14 +558,21 @@ class CascadeClient {
   }
 
   _stopAllPlayback() {
+    const now = this.audioContext ? this.audioContext.currentTime : 0;
+
     if (this.playbackGain && this.audioContext) {
-      this.playbackGain.gain.setValueAtTime(0, this.audioContext.currentTime);
+      // First cancel any existing scheduled values
+      this.playbackGain.gain.cancelScheduledValues(now);
+      // Add 15ms fade-out instead of instant cut
+      this.playbackGain.gain.setValueAtTime(this.playbackGain.gain.value, now);
+      this.playbackGain.gain.linearRampToValueAtTime(0, now + 0.015);
     }
 
-    const now = this.audioContext ? this.audioContext.currentTime : 0;
+    // Stop sources after the fade-out completes
+    const stopTime = now + 0.015;
     this.activeSourceNodes.forEach((source) => {
       try {
-        source.stop(now);
+        source.stop(stopTime);
       } catch (_) {}
       try {
         source.disconnect();
@@ -561,13 +581,26 @@ class CascadeClient {
     this.activeSourceNodes = [];
     this.nextPlaybackTime = null;
     this.isPlaying = false;
+
+    // Reset playback gain to 1 after fade-out completes
+    if (this.playbackGain && this.audioContext) {
+      setTimeout(() => {
+        this.playbackGain.gain.cancelScheduledValues(
+          this.audioContext.currentTime,
+        );
+        this.playbackGain.gain.setValueAtTime(1, this.audioContext.currentTime);
+      }, 20);
+    }
   }
 
   _triggerInterruption() {
-    if (this.state !== STATE.SPEAKING && this.state !== STATE.PROCESSING) return;
+    if (this.state !== STATE.SPEAKING && this.state !== STATE.PROCESSING)
+      return;
     if (this._interrupting) return;
     this._interrupting = true;
-    console.log("[Client] Interruption triggered! Stopping playback and cancelling server pipeline.");
+    console.log(
+      "[Client] Interruption triggered! Stopping playback and cancelling server pipeline.",
+    );
 
     this._pendingCancelTurnId = this.activeTurnId ?? this.playbackTurnId;
     this.audioEpoch += 1;
@@ -687,7 +720,10 @@ class CascadeClient {
       case "response_end":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (this.currentResponse && this.currentResponse.trim()) {
-          const bubble = this.addTranscriptItem("tutor", this.currentResponse.trim());
+          const bubble = this.addTranscriptItem(
+            "tutor",
+            this.currentResponse.trim(),
+          );
           if (bubble) {
             bubble.classList.add("message-complete");
             setTimeout(() => bubble.classList.remove("message-complete"), 1200);
@@ -742,7 +778,11 @@ class CascadeClient {
         }
         break;
       case "busy":
-        this.showToast(msg.message || "⏳ Still responding — please wait a moment.", 4000, "info");
+        this.showToast(
+          msg.message || "⏳ Still responding — please wait a moment.",
+          4000,
+          "info",
+        );
         break;
       case "stt_reconnecting":
         this.showToast(
@@ -792,11 +832,19 @@ class CascadeClient {
     const turnId = view.getUint32(0, false);
     const audioPayload = arrayBuffer.slice(4);
 
+    // Snapshot all guard values at the start
     const epoch = this.audioEpoch;
     const decodeGen = this.decodeGeneration;
+    const activeTurnAtStart = this.activeTurnId;
+    const stateAtStart = this.state;
 
+    // Early guards
     if (!this._isTurnActive(turnId)) return;
-    if (this.state === STATE.LISTENING || this.state === STATE.IDLE || this.state === STATE.CONNECTING) {
+    if (
+      stateAtStart === STATE.LISTENING ||
+      stateAtStart === STATE.IDLE ||
+      stateAtStart === STATE.CONNECTING
+    ) {
       return;
     }
 
@@ -804,6 +852,7 @@ class CascadeClient {
       await this._resumeAudioContext();
     }
 
+    // Check guards again after async resume
     if (
       epoch !== this.audioEpoch ||
       decodeGen !== this.decodeGeneration ||
@@ -832,11 +881,14 @@ class CascadeClient {
         );
       }
 
+      // FINAL guard check before playback
       if (
         audioBuffer &&
         epoch === this.audioEpoch &&
         decodeGen === this.decodeGeneration &&
-        turnId === this.activeTurnId
+        turnId === this.activeTurnId &&
+        this.state !== STATE.LISTENING &&
+        this.state !== STATE.IDLE
       ) {
         this._schedulePlayback(audioBuffer, epoch, turnId, decodeGen);
       }
@@ -856,10 +908,6 @@ class CascadeClient {
       return;
     }
 
-    if (this.playbackGain && this.audioContext) {
-      this.playbackGain.gain.setValueAtTime(1, this.audioContext.currentTime);
-    }
-
     this.setState(STATE.SPEAKING);
     this.isPlaying = true;
     this.playbackTurnId = turnId;
@@ -871,11 +919,30 @@ class CascadeClient {
 
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
+
+    // Create a gain node for fade-in/fade-out per audio chunk
+    const chunkGain = this.audioContext.createGain();
+
+    // Connect: source -> chunkGain -> analyser -> playbackGain -> destination
     if (this.analyser) {
-      source.connect(this.analyser);
+      source.connect(chunkGain);
+      chunkGain.connect(this.analyser);
     } else {
-      source.connect(this.audioContext.destination);
+      source.connect(chunkGain);
+      chunkGain.connect(this.audioContext.destination);
     }
+
+    // Add fade-in (10ms)
+    chunkGain.gain.setValueAtTime(0, this.nextPlaybackTime);
+    chunkGain.gain.linearRampToValueAtTime(1, this.nextPlaybackTime + 0.01);
+
+    // Add fade-out (10ms) at end
+    const fadeOutStart = this.nextPlaybackTime + audioBuffer.duration - 0.01;
+    chunkGain.gain.setValueAtTime(1, fadeOutStart);
+    chunkGain.gain.linearRampToValueAtTime(
+      0,
+      this.nextPlaybackTime + audioBuffer.duration,
+    );
 
     if (
       epoch !== this.audioEpoch ||
@@ -1182,7 +1249,8 @@ class CascadeClient {
       ctx.fillStyle = "rgba(255,255,255,0.25)";
       ctx.font = "10px JetBrains Mono, monospace";
       ctx.textAlign = "right";
-      const label = v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`;
+      const label =
+        v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`;
       ctx.fillText(label, PAD.left - 8, y + 4);
     }
 
