@@ -39,7 +39,7 @@ class PipelineSession:
         model_config: Dict[str, str],
         send_message: Callable,
         subject: Optional[str] = None,
-        tts_engine: str = "edge"
+        tts_engine: str = "edge",
     ):
         self.api_keys = api_keys
         self.model_config = model_config
@@ -58,7 +58,7 @@ class PipelineSession:
 
         # Turn tracking for interrupt safety
         self.turn_id: int = 0
-        self._active_turn_id: int = 0
+        self._active_turn_id: Optional[int] = 0
         self._tts_tasks: Set[asyncio.Task] = set()
         self._tts_semaphore = asyncio.Semaphore(2)
 
@@ -66,6 +66,9 @@ class PipelineSession:
         self.is_processing_transcript = False
         self.processing_task: Optional[asyncio.Task] = None
         self._cancel_event = asyncio.Event()
+        
+        # Outbound message queue (set by main.py)
+        self.outbound_queue: Optional[asyncio.Queue] = None
 
         logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject}, tts_engine={tts_engine})")
 
@@ -321,11 +324,32 @@ class PipelineSession:
     async def cancel(self):
         """Cancel the active processing task on user interruption."""
         cancelled_turn = self._active_turn_id
+        
+        # 1. First invalidate active turn ID immediately
+        self._active_turn_id = None
+        
+        # 2. Set cancel event
         self._cancel_event.set()
-
+        
+        # 3. Flush outbound queue FIRST to stop stale audio
+        queue = self.outbound_queue
+        if queue is not None:
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                    queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+        
+        # 4. Cancel all TTS tasks
         for task in list(self._tts_tasks):
             task.cancel()
-
+        
+        # 5. Wait for TTS tasks to complete
+        if self._tts_tasks:
+            await asyncio.gather(*self._tts_tasks, return_exceptions=True)
+        
+        # 6. Cancel processing task
         if self.processing_task and not self.processing_task.done():
             logger.info("[Pipeline] Cancelling active processing task")
             self.processing_task.cancel()
@@ -336,17 +360,16 @@ class PipelineSession:
             except Exception as e:
                 logger.error(f"[Pipeline] Error waiting for cancelled task: {e}")
             self.processing_task = None
-
+        
         self.is_processing_transcript = False
-
+        
         if self.stt_handler:
             self.stt_handler.clear_buffer()
-
+        
+        # Send turn cancelled message
         if cancelled_turn:
             self.send_message({"type": "turn_cancelled", "turn_id": cancelled_turn})
-
-        self._active_turn_id = None
-
+        
         logger.info(f"[Pipeline] Cancellation complete for turn {cancelled_turn}")
 
     def _on_stt_status(self, status: str, data: dict):
