@@ -78,12 +78,8 @@ class PipelineSession:
         # Start with concurrency=1, can increase to 4 based on queue depth
         self._tts_max_concurrency: int = 2
         self._tts_current_concurrency: int = 0  # Track active TTS tasks
-        self._tts_concurrency_semaphore = asyncio.Semaphore(1)  # Start conservative
         self._pending_tts_jobs: int = 0
-        self._first_audio_sent_for_turn: Dict[int, float] = {}
-        
-        # Queue depth monitoring for optimization
-        self._queue_depth_history: list = []  # Track recent queue depths
+        self._first_audio_sent_turn_id: Optional[int] = None
 
         # Prevent concurrent transcript processing
         self.is_processing_transcript = False
@@ -155,9 +151,6 @@ class PipelineSession:
         Returns the ideal concurrency level (1-2).
         """
         pending_jobs = max(self._pending_tts_jobs, self._tts_current_concurrency)
-        self._queue_depth_history.append(pending_jobs)
-        if len(self._queue_depth_history) > 20:
-            self._queue_depth_history.pop(0)
 
         if pending_jobs <= 1:
             return 1
@@ -469,11 +462,11 @@ class PipelineSession:
                             if self._can_send(turn_id):
                                 self.send_message({"type": "audio", "data": chunk, "turn_id": turn_id})
                                 # Log for latency diagnostics
-                                if turn_id not in self._first_audio_sent_for_turn:
+                                if turn_id != self._first_audio_sent_turn_id:
+                                    self._first_audio_sent_turn_id = turn_id
                                     utterance_end_time = self.utterance_end_time
                                     if utterance_end_time is not None:
                                         elapsed = (time.time() - utterance_end_time) * 1000
-                                        self._first_audio_sent_for_turn[turn_id] = elapsed
                                         logger.debug(f"[Pipeline] First audio sent: turn={turn_id}, time_since_utterance_end={elapsed:.1f}ms")
                             sentence_queue.task_done()
                     except Exception as e:
@@ -562,4 +555,9 @@ class PipelineSession:
                 await self.tts_engine.close()
             except Exception as e:
                 logger.error(f"[Pipeline] TTS close error: {e}")
+        if self.llm_generator:
+            try:
+                await self.llm_generator.close()
+            except Exception as e:
+                logger.error(f"[Pipeline] LLM close error: {e}")
         logger.info("[Pipeline] Session closed")

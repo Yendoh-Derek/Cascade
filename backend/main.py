@@ -15,6 +15,7 @@ Fixes applied:
        so the user knows to wait.
 """
 
+import os
 import json
 import logging
 import asyncio
@@ -37,10 +38,14 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Process-wide concurrent WebSocket sessions cap
+MAX_CONCURRENT_SESSIONS = int(os.getenv("CASCADE_MAX_CONCURRENT_SESSIONS", "5"))
+session_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SESSIONS)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -75,6 +80,7 @@ async def websocket_endpoint(
     websocket: WebSocket,
     subject: Optional[str] = Query(default=None),
     tts_engine: str = Query(default="deepgram"),
+    secret: Optional[str] = Query(default=None),
 ):
     """
     WebSocket endpoint for the streaming voice pipeline.
@@ -89,179 +95,198 @@ async def websocket_endpoint(
       JSON    — {type: "transcript"|"response_chunk"|"response_end"|
                         "latency"|"error"|"busy"}
     """
-    if subject is not None:
-        subject = subject.strip()[:200] or None
-
-    session: Optional[PipelineSession] = None
-    sender_task: Optional[asyncio.Task] = None
-    sender_running = False
-
-    try:
+    # 1. Auth Secret Verification
+    auth_secret = os.getenv("CASCADE_AUTH_SECRET")
+    if auth_secret and secret != auth_secret:
         await websocket.accept()
-        logger.info(f"[WS] Client connected (subject={subject})")
+        await websocket.send_json({"type": "error", "message": "Unauthorized: Invalid or missing auth secret"})
+        await websocket.close(code=4001)
+        return
+
+    # 2. Concurrency Capacity Cap Check
+    if session_semaphore.locked():
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "busy",
+            "message": "Server is at maximum capacity. Please try again later."
+        })
+        await websocket.close()
+        return
+
+    async with session_semaphore:
+        if subject is not None:
+            subject = subject.strip()[:200] or None
+
+        session: Optional[PipelineSession] = None
+        sender_task: Optional[asyncio.Task] = None
+        sender_running = False
 
         try:
-            keys = get_api_keys()
-            config = get_model_config()
-        except EnvironmentError as e:
-            await websocket.send_json({"type": "error", "message": str(e)})
-            await websocket.close()
-            return
+            await websocket.accept()
+            logger.info(f"[WS] Client connected (subject={subject})")
 
-        # Create outbound message queue first
-        outbound_queue = asyncio.Queue()
-        
-        # Initialize session first
-        session = PipelineSession(
-            api_keys={"deepgram": keys.deepgram, "groq": keys.groq},
-            model_config={
-                "deepgram_model": config.deepgram_model,
-                "groq_model": config.groq_model,
-                "edge_tts_voice": config.edge_tts_voice,
-                "deepgram_tts_model": config.deepgram_tts_model,
-            },
-            send_message=lambda msg: None,
-            subject=subject,
-            tts_engine=tts_engine,
-        )
-        session.send_message = lambda _msg: outbound_queue.put_nowait(_msg)
-        session.outbound_queue = outbound_queue
-        
-        # Now create and start sender task
-        sender_running = True
+            try:
+                keys = get_api_keys()
+                config = get_model_config()
+            except EnvironmentError as e:
+                await websocket.send_json({"type": "error", "message": str(e)})
+                await websocket.close()
+                return
 
-        async def sender_coroutine():
-            """Single coroutine responsible for all outbound WebSocket messages."""
-            nonlocal sender_running
-            while sender_running:
-                try:
-                    msg = await outbound_queue.get()
-                    if msg is None:  # Sentinel value to stop sender
-                        break
-                    await _send_ws_message(websocket, msg, session.can_send_message)
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.debug(f"[WS] Sender error: {e}")
-                finally:
+            # Create outbound message queue first
+            outbound_queue = asyncio.Queue()
+            
+            # Initialize session first
+            session = PipelineSession(
+                api_keys={"deepgram": keys.deepgram, "groq": keys.groq},
+                model_config={
+                    "deepgram_model": config.deepgram_model,
+                    "groq_model": config.groq_model,
+                    "edge_tts_voice": config.edge_tts_voice,
+                    "deepgram_tts_model": config.deepgram_tts_model,
+                },
+                send_message=lambda msg: None,
+                subject=subject,
+                tts_engine=tts_engine,
+            )
+            session.send_message = lambda _msg: outbound_queue.put_nowait(_msg)
+            session.outbound_queue = outbound_queue
+            
+            # Now create and start sender task
+            sender_running = True
+
+            async def sender_coroutine():
+                """Single coroutine responsible for all outbound WebSocket messages."""
+                nonlocal sender_running
+                while sender_running:
                     try:
-                        outbound_queue.task_done()
-                    except ValueError:
+                        msg = await outbound_queue.get()
+                        if msg is None:  # Sentinel value to stop sender
+                            break
+                        await _send_ws_message(websocket, msg, session.can_send_message)
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logger.debug(f"[WS] Sender error: {e}")
+                    finally:
+                        try:
+                            outbound_queue.task_done()
+                        except ValueError:
+                            pass
+
+            sender_task = asyncio.create_task(sender_coroutine())
+
+            try:
+                await asyncio.wait_for(session.initialize(), timeout=10)
+            except asyncio.TimeoutError:
+                await websocket.send_json(
+                    {"type": "error", "message": "Pipeline initialization timed out"}
+                )
+                await websocket.close()
+                return
+            except Exception as e:
+                await websocket.send_json(
+                    {"type": "error", "message": f"Pipeline initialization failed: {e}"}
+                )
+                await websocket.close()
+                return
+
+            idle_timeout = 300  # 5 minutes
+
+            while True:
+                try:
+                    message = await asyncio.wait_for(
+                        websocket.receive(), timeout=idle_timeout
+                    )
+                except asyncio.TimeoutError:
+                    logger.info("[WS] Session idle — closing")
+                    await websocket.send_json(
+                        {"type": "error", "message": "Session idle timeout"}
+                    )
+                    break
+
+                # ── FIX [C1] ─────────────────────────────────────────────────
+                # When the browser closes the connection, Starlette's receive()
+                # returns {"type": "websocket.disconnect", "code": N, "reason": ""}.
+                # The original code only checked for "bytes" and "text" keys,
+                # so this message was logged as an unknown format and receive()
+                # was called again — which raised the crash seen in the logs.
+                # Solution: check the message type first, break immediately.
+                msg_type = message.get("type", "")
+                if msg_type == "websocket.disconnect":
+                    logger.info(
+                        f"[WS] Client disconnected (code={message.get('code', '?')})"
+                    )
+                    break
+
+                # Binary — raw PCM16 audio from the browser mic
+                raw_bytes = message.get("bytes")
+                if raw_bytes:
+                    if len(raw_bytes) > 10_000_000:
+                        logger.warning(
+                            f"[WS] Dropping oversized audio chunk ({len(raw_bytes)}B)"
+                        )
+                        continue
+                    if len(raw_bytes) >= 2:
+                        await session.handle_audio(raw_bytes)
+                    continue
+
+                # Text — control signals from the browser
+                raw_text = message.get("text", "")
+                if raw_text:
+                    stripped_text = raw_text.strip()
+                    if stripped_text == "stop":
+                        logger.info("[WS] Stop signal received — ending session")
+                        break
+                    
+                    try:
+                        control_msg = json.loads(stripped_text)
+                        if isinstance(control_msg, dict):
+                            ctrl_type = control_msg.get("type")
+                            if ctrl_type == "cancel":
+                                logger.info("[WS] Cancel signal received")
+                                if session:
+                                    await session.cancel()
+                                continue
+                            elif ctrl_type == "finalize":
+                                logger.info("[WS] Finalize signal received")
+                                if session and session.stt_handler:
+                                    await session.stt_handler.finalize()
+                                continue
+                    except json.JSONDecodeError:
                         pass
 
-        sender_task = asyncio.create_task(sender_coroutine())
-
-        try:
-            await asyncio.wait_for(session.initialize(), timeout=10)
-        except asyncio.TimeoutError:
-            await websocket.send_json(
-                {"type": "error", "message": "Pipeline initialization timed out"}
-            )
-            await websocket.close()
-            return
-        except Exception as e:
-            await websocket.send_json(
-                {"type": "error", "message": f"Pipeline initialization failed: {e}"}
-            )
-            await websocket.close()
-            return
-
-        idle_timeout = 300  # 5 minutes
-
-        while True:
-            try:
-                message = await asyncio.wait_for(
-                    websocket.receive(), timeout=idle_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.info("[WS] Session idle — closing")
-                await websocket.send_json(
-                    {"type": "error", "message": "Session idle timeout"}
-                )
-                break
-
-            # ── FIX [C1] ─────────────────────────────────────────────────
-            # When the browser closes the connection, Starlette's receive()
-            # returns {"type": "websocket.disconnect", "code": N, "reason": ""}.
-            # The original code only checked for "bytes" and "text" keys,
-            # so this message was logged as an unknown format and receive()
-            # was called again — which raised the crash seen in the logs.
-            # Solution: check the message type first, break immediately.
-            msg_type = message.get("type", "")
-            if msg_type == "websocket.disconnect":
-                logger.info(
-                    f"[WS] Client disconnected (code={message.get('code', '?')})"
-                )
-                break
-
-            # Binary — raw PCM16 audio from the browser mic
-            raw_bytes = message.get("bytes")
-            if raw_bytes:
-                if len(raw_bytes) > 10_000_000:
-                    logger.warning(
-                        f"[WS] Dropping oversized audio chunk ({len(raw_bytes)}B)"
-                    )
+                    logger.debug(f"[WS] Unrecognised text message: {raw_text[:80]}")
                     continue
-                if len(raw_bytes) >= 2:
-                    await session.handle_audio(raw_bytes)
-                continue
 
-            # Text — control signals from the browser
-            raw_text = message.get("text", "")
-            if raw_text:
-                stripped_text = raw_text.strip()
-                if stripped_text == "stop":
-                    logger.info("[WS] Stop signal received — ending session")
-                    break
-                
-                try:
-                    control_msg = json.loads(stripped_text)
-                    if isinstance(control_msg, dict):
-                        ctrl_type = control_msg.get("type")
-                        if ctrl_type == "cancel":
-                            logger.info("[WS] Cancel signal received")
-                            if session:
-                                await session.cancel()
-                            continue
-                        elif ctrl_type == "finalize":
-                            logger.info("[WS] Finalize signal received")
-                            if session and session.stt_handler:
-                                await session.stt_handler.finalize()
-                            continue
-                except json.JSONDecodeError:
-                    pass
+                logger.debug(f"[WS] Unhandled message type: {msg_type!r}")
 
-                logger.debug(f"[WS] Unrecognised text message: {raw_text[:80]}")
-                continue
-
-            logger.debug(f"[WS] Unhandled message type: {msg_type!r}")
-
-    except WebSocketDisconnect:
-        logger.info("[WS] WebSocketDisconnect exception — client disconnected")
-    except Exception as e:
-        logger.error(f"[WS] Unexpected server error: {e}")
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
-    finally:
-        # Clean up sender task
-        try:
-            sender_running = False
-            if sender_task is not None and not sender_task.done():
-                sender_task.cancel()
-                try:
-                    await asyncio.wait_for(sender_task, timeout=1.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
+        except WebSocketDisconnect:
+            logger.info("[WS] WebSocketDisconnect exception — client disconnected")
         except Exception as e:
-            logger.error(f"[WS] Error cleaning up sender: {e}")
-
-        if session:
+            logger.error(f"[WS] Unexpected server error: {e}")
             try:
-                await session.close()
+                await websocket.send_json({"type": "error", "message": str(e)})
+            except Exception:
+                pass
+        finally:
+            # Clean up sender task
+            try:
+                sender_running = False
+                if sender_task is not None and not sender_task.done():
+                    sender_task.cancel()
+                    try:
+                        await asyncio.wait_for(sender_task, timeout=1.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
             except Exception as e:
-                logger.error(f"[WS] Error during session cleanup: {e}")
+                logger.error(f"[WS] Error cleaning up sender: {e}")
+
+            if session:
+                try:
+                    await session.close()
+                except Exception as e:
+                    logger.error(f"[WS] Error during session cleanup: {e}")
 
 
 async def _send_ws_message(
@@ -285,6 +310,8 @@ async def _send_ws_message(
         if message.get("type") == "audio":
             audio_data = message.get("data", b"")
             if isinstance(audio_data, str):
+                # Defensive check: nothing in the codebase currently sends audio as a hex string,
+                # as pipeline.py puts raw bytes directly. Kept for backwards/defensive compatibility.
                 audio_data = bytes.fromhex(audio_data)
             if audio_data:
                 turn_id = message.get("turn_id")

@@ -244,3 +244,12 @@ class LLMGenerator:
 
         # Likely a real sentence boundary
         return True
+
+    async def close(self):
+        """Close the AsyncGroq client and its underlying HTTP client connection pool."""
+        if hasattr(self, "client") and self.client:
+            try:
+                await self.client.close()
+                logger.info("[LLM] AsyncGroq client closed successfully")
+            except Exception as e:
+                logger.error(f"[LLM] Error closing AsyncGroq client: {e}")
