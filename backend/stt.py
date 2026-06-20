@@ -71,13 +71,13 @@ class STTHandler:
     async def _establish_connection(self):
         """Open WebSocket and start listener/keepalive tasks."""
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(trust_env=True)
 
         headers = {"Authorization": f"Token {self.api_key}"}
         self.ws = await self.session.ws_connect(
             self._build_ws_url(),
             headers=headers,
-            heartbeat=None,
+            heartbeat=10.0,
             receive_timeout=None,
         )
         self.is_open = True
@@ -90,7 +90,7 @@ class STTHandler:
         """Open an async WebSocket connection to Deepgram."""
         self._closing_intentionally = False
         try:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(trust_env=True)
             await self._establish_connection()
         except Exception as e:
             logger.error(f"[STT] Connection failed: {e}")

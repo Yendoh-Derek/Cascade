@@ -5,11 +5,19 @@ Text-to-Speech module supporting both Microsoft edge-tts (free) and Deepgram Aur
 
 Responsibility: Accept sentence strings and stream audio bytes back to
 the caller.
+
+Latency Measurement:
+  Each synthesise() call yields a metadata dict first, then audio chunks.
+  Metadata includes:
+    - t_tts_request_sent: time when API request is sent
+    - t_first_audio_chunk: time when first audio byte is yielded
 """
 
 import logging
 import os
-from typing import AsyncGenerator, Optional
+import time
+import json
+from typing import AsyncGenerator, Optional, Union, Dict, Any
 from abc import ABC, abstractmethod
 
 import edge_tts
@@ -22,9 +30,13 @@ class BaseTTSEngine(ABC):
     """Abstract base class for TTS engines."""
 
     @abstractmethod
-    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
-        """Convert text to speech and stream audio bytes."""
-        yield b""
+    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
+        """Convert text to speech and stream audio bytes.
+        
+        First yield: dict with metadata {"type": "tts_metadata", "t_tts_request_sent": ..., "t_first_audio_chunk": ...}
+        Subsequent yields: bytes of audio data
+        """
+        yield {}
 
     async def close(self):
         """Clean up resources."""
@@ -41,7 +53,7 @@ class EdgeTTSEngine(BaseTTSEngine):
         self.voice = voice
         logger.info(f"[TTS] EdgeTTS Engine initialized with voice: {voice}")
 
-    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
+    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
         if not text or not text.strip():
             logger.warning("[TTS] Empty text provided, skipping synthesis")
             return
@@ -52,6 +64,11 @@ class EdgeTTSEngine(BaseTTSEngine):
 
         try:
             logger.debug(f"[TTS] Synthesizing (Edge): {text[:60]}...")
+            
+            # Record request start time
+            t_tts_request_sent = time.time()
+            t_first_audio_chunk = None
+            
             communicate = edge_tts.Communicate(text, self.voice)
             total_bytes = 0
             try:
@@ -59,6 +76,18 @@ class EdgeTTSEngine(BaseTTSEngine):
                     if chunk.get("type") == "audio":
                         audio_data = chunk.get("data")
                         if audio_data:
+                            # Record first audio chunk time (on first audio byte)
+                            if t_first_audio_chunk is None:
+                                t_first_audio_chunk = time.time()
+                                # Yield metadata on first audio chunk
+                                yield {
+                                    "type": "tts_metadata",
+                                    "engine": "edge",
+                                    "text": text[:60],
+                                    "t_tts_request_sent": t_tts_request_sent,
+                                    "t_first_audio_chunk": t_first_audio_chunk,
+                                    "latency_ms": int((t_first_audio_chunk - t_tts_request_sent) * 1000),
+                                }
                             total_bytes += len(audio_data)
                             yield audio_data
             except Exception as e:
@@ -87,14 +116,14 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(trust_env=True)
         return self._session
 
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
+    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
         if not text or not text.strip():
             logger.warning("[TTS] Empty text provided, skipping synthesis")
             return
@@ -105,6 +134,11 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
         try:
             logger.debug(f"[TTS] Synthesizing (Deepgram): {text[:60]}...")
+            
+            # Record request start time
+            t_tts_request_sent = time.time()
+            t_first_audio_chunk = None
+            
             url = f"https://api.deepgram.com/v1/speak?model={self.model}&encoding=linear16&sample_rate=24000"
             headers = {
                 "Authorization": f"Token {self.api_key}",
@@ -118,6 +152,18 @@ class DeepgramTTSEngine(BaseTTSEngine):
                 resp.raise_for_status()
                 async for chunk in resp.content.iter_chunked(4096):
                     if chunk:
+                        # Record first audio chunk time (on first audio byte)
+                        if t_first_audio_chunk is None:
+                            t_first_audio_chunk = time.time()
+                            # Yield metadata on first audio chunk
+                            yield {
+                                "type": "tts_metadata",
+                                "engine": "deepgram",
+                                "text": text[:60],
+                                "t_tts_request_sent": t_tts_request_sent,
+                                "t_first_audio_chunk": t_first_audio_chunk,
+                                "latency_ms": int((t_first_audio_chunk - t_tts_request_sent) * 1000),
+                            }
                         yield chunk
 
             logger.info("[TTS] DeepgramTTS audio complete")
@@ -150,7 +196,7 @@ class TTSEngine:
 
         logger.info(f"[TTS] TTSEngine wrapper initialized with: {engine}")
 
-    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[bytes, None]:
+    async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
         async for chunk in self._engine.synthesise(text, timeout_sec):
             yield chunk
 

@@ -73,15 +73,15 @@ def run() -> bool:
     Run all TTS verification checks.
     Returns True if all pass, False otherwise.
     """
-    print("\n── Edge-TTS Verification ─────────────────────────────────")
+    print("\n-- Edge-TTS Verification ---------------------------------")
 
     # Step 1: Package import
     print("  [1/3] Checking edge-tts package...")
     try:
         import edge_tts  # noqa: F401
-        print("        ✓ edge-tts imported successfully")
+        print("        v edge-tts imported successfully")
     except ImportError:
-        print("        ✗ edge-tts not installed. Run: pip install edge-tts")
+        print("        x edge-tts not installed. Run: pip install edge-tts")
         return False
 
     # Step 2: Voice availability
@@ -91,26 +91,26 @@ def run() -> bool:
     try:
         available = asyncio.run(_fetch_available_voices())
         if voice not in available:
-            print(f"        ✗ Voice '{voice}' not found.")
+            print(f"        x Voice '{voice}' not found.")
             print(f"        Available English voices (sample):")
             en_voices = [v for v in available if v.startswith("en-US")][:5]
             for v in en_voices:
                 print(f"          - {v}")
             return False
-        print(f"        ✓ Voice confirmed available")
+        print(f"        v Voice confirmed available")
     except Exception as e:
-        print(f"        ✗ Could not fetch voice list: {e}")
+        print(f"        x Could not fetch voice list: {e}")
         return False
 
     # Step 3: Streaming audio
     print("  [3/3] Testing streaming audio generation...")
     result = asyncio.run(_test_streaming_tts(voice))
     if not result["success"]:
-        print(f"        ✗ Streaming failed: {result['error']}")
+        print(f"        x Streaming failed: {result['error']}")
         return False
-    print(f"        ✓ First chunk in {result['first_chunk_ms']}ms")
-    print(f"        ✓ {result['chunk_count']} chunks, {result['total_bytes']:,} bytes total")
-    print("  ✓ Edge-TTS — ALL CHECKS PASSED\n")
+    print(f"        v First chunk in {result['first_chunk_ms']}ms")
+    print(f"        v {result['chunk_count']} chunks, {result['total_bytes']:,} bytes total")
+    print("  v Edge-TTS - ALL CHECKS PASSED\n")
     return True
 
 
