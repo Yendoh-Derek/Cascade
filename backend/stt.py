@@ -139,6 +139,7 @@ class STTHandler:
 
     async def _reconnect_loop(self):
         """Reconnect with exponential backoff (1s, 2s, 4s)."""
+        self.clear_buffer()
         await self._stop_tasks_and_ws()
 
         for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):

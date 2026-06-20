@@ -9,6 +9,7 @@ conversation history trimming and subject-aware system prompts.
 """
 
 import logging
+import re
 from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -65,14 +66,17 @@ class TutorSession:
             if not isinstance(subject, str):
                 logger.warning(f"[TutorSession] Invalid subject type: {type(subject)}, ignoring")
                 subject = None
-            elif len(subject) > 200:
-                logger.warning(f"[TutorSession] Subject too long ({len(subject)} chars), truncating")
-                subject = subject[:200]
-            elif not subject.strip():
-                subject = None
+            else:
+                # Remove characters that are not alphanumeric, space, hyphens, or underscores
+                # to prevent prompt injection, and limit length to 100 characters.
+                subject_clean = re.sub(r"[^a-zA-Z0-9\s\-_]", "", subject).strip()
+                if len(subject_clean) > 100:
+                    logger.warning(f"[TutorSession] Subject too long ({len(subject_clean)} chars), truncating")
+                    subject_clean = subject_clean[:100]
+                subject = subject_clean or None
 
         self.history: List[Dict[str, str]] = []
-        self.subject = subject.strip() if subject else None
+        self.subject = subject
         logger.info(f"[TutorSession] Initialized (subject={self.subject})")
 
     def add_user_message(self, content: str):
