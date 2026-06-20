@@ -245,9 +245,9 @@ class PipelineSession:
 
     def _on_processing_done(self, task: asyncio.Task):
         """Reset the processing flag when the pipeline task completes."""
-        self.is_processing_transcript = False
         if task == self.processing_task:
             self.processing_task = None
+            self.is_processing_transcript = False
         if task.cancelled():
             logger.info("[Pipeline] Processing task was cancelled")
         elif task.exception():
@@ -291,7 +291,6 @@ class PipelineSession:
                     logger.debug(f"[Pipeline] TTS slot acquired: {self._tts_current_concurrency}/{ideal_concurrency} concurrent")
                     
                     try:
-                        sentence_audio = bytearray()
                         async for chunk in tts_engine.synthesise(text):
                             if self._cancel_event.is_set() or turn_id != self._active_turn_id:
                                 logger.info("[Pipeline] TTS synthesis cancelled")
@@ -322,12 +321,10 @@ class PipelineSession:
                                             "engine": chunk.get("engine", "unknown"),
                                         })
                             elif chunk:
-                                # Accumulate audio bytes
-                                sentence_audio.extend(chunk)
+                                # Stream audio chunk directly to queue instead of buffering
+                                if not self._cancel_event.is_set() and turn_id == self._active_turn_id:
+                                    await sentence_queue.put(bytes(chunk))
                         
-                        # Queue the full sentence audio as a single chunk
-                        if sentence_audio and not self._cancel_event.is_set() and turn_id == self._active_turn_id:
-                            await sentence_queue.put(bytes(sentence_audio))
                         await sentence_queue.put(None)
                     finally:
                         # Release concurrency slot
@@ -437,7 +434,7 @@ class PipelineSession:
                         raise item
 
                     sentence, sentence_queue = item
-                    full_response += sentence
+                    full_response = f"{full_response} {sentence}".strip() if full_response else sentence
                     try:
                         while True:
                             if self._cancel_event.is_set() or turn_id != self._active_turn_id:

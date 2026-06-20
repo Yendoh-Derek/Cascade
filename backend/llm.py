@@ -224,15 +224,15 @@ class LLMGenerator:
             return False
 
         # Check for decimal numbers (e.g., "3.14")
-        if re.search(r'\d+\.\d+$', stripped):
+        if before_period[-1].isdigit():
             return False
 
         # Check for URLs (e.g., "example.com")
-        if re.search(r'\w+\.\w{2,}$', stripped):
+        if re.search(r'\w+\.\w{2,}$', before_period):
             return False
 
         # Check for email-like patterns
-        if re.search(r'\w+\.\w+@', stripped):
+        if re.search(r'\w+\.\w+@', before_period):
             return False
 
         # Check for common abbreviations
