@@ -71,14 +71,6 @@
 - ✓ No console errors
 - ✓ UI renders: header, subject dropdown, start button, transcript area
 
-**Visual Checklist:**
-
-- [ ] Purple gradient background visible
-- [ ] "Cascade" title visible
-- [ ] Subject dropdown with options
-- [ ] "Start Session" button enabled
-- [ ] Status badge shows "Ready"
-- [ ] Latency display shows "—"
 
 **Failure Scenarios:**
 

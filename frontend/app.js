@@ -51,6 +51,12 @@ class CascadeClient {
     this._interrupting = false;
     this._pendingCancelTurnId = null;
     this._interruptTimeout = null;
+    this._interruptionBuffer = [];
+    this._speechDetected = false;
+    this._finalizeTimeout = null;
+    this._lastFinalizeAt = 0;
+    this.localFinalizeSilenceMs = 450;
+    this.localFinalizeCooldownMs = 800;
     this.ttsConfig = { format: "linear16", sampleRate: 24000 };
     this.selectedTTSEngine =
       localStorage.getItem("cascade_tts_engine") || "deepgram";
@@ -347,6 +353,7 @@ class CascadeClient {
       clearTimeout(this._interruptTimeout);
       this._interruptTimeout = null;
     }
+    this._clearFinalizeTimer();
     if (this.playbackGain) {
       this.playbackGain.gain.value = 1;
     }
@@ -357,20 +364,67 @@ class CascadeClient {
   }
 
   _resetTurnState() {
+    this._clearFinalizeTimer();
     this.utteranceStartTime = null;
     this.firstAudioTime = null;
     this.lastUtteredTime = null;
     this.nextPlaybackTime = null;
     this.isAudioSourceEnded = false;
-    this.activeSourceNodes = [];
     this.maxAudioLevel = 0;
+    this._speechDetected = false;
   }
 
   _resetPlaybackOnly() {
     this.nextPlaybackTime = null;
     this.isAudioSourceEnded = false;
-    this.activeSourceNodes = [];
     this._interruptionBuffer = [];
+  }
+
+  _clearFinalizeTimer() {
+    if (this._finalizeTimeout) {
+      clearTimeout(this._finalizeTimeout);
+      this._finalizeTimeout = null;
+    }
+  }
+
+  _markSpeechDetected(now = Date.now()) {
+    if (!this._speechDetected) {
+      this._speechDetected = true;
+      this.utteranceStartTime = now;
+    }
+    this.lastUtteredTime = now;
+    this._clearFinalizeTimer();
+  }
+
+  _sendFinalize(reason = "local_vad") {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - this._lastFinalizeAt < this.localFinalizeCooldownMs) return;
+    this._lastFinalizeAt = now;
+    this._speechDetected = false;
+    this.utteranceStartTime = null;
+    this.lastUtteredTime = null;
+    this._clearFinalizeTimer();
+    this.ws.send(JSON.stringify({ type: "finalize", reason }));
+    console.log(`[Client] Sent finalize signal (${reason})`);
+  }
+
+  _scheduleFinalizeIfSilent(now = Date.now()) {
+    if (
+      !this._speechDetected ||
+      !this.lastUtteredTime ||
+      this.state !== STATE.LISTENING
+    ) {
+      return;
+    }
+    if (now - this.lastUtteredTime < this.localFinalizeSilenceMs) return;
+    if (this._finalizeTimeout) return;
+    this._finalizeTimeout = setTimeout(() => {
+      this._finalizeTimeout = null;
+      if (this.state === STATE.LISTENING && this._speechDetected) {
+        this._sendFinalize("local_silence");
+      }
+    }, 60);
   }
 
   async _initAudioProcessing() {
@@ -499,6 +553,8 @@ class CascadeClient {
     }
     const rms = numSamples > 0 ? Math.sqrt(sum / numSamples) : 0;
 
+    // Leaky peak detector: decay maxAudioLevel over time to prevent desensitization
+    this.maxAudioLevel = Math.max(0.05, this.maxAudioLevel * 0.995);
     if (rms > this.maxAudioLevel) this.maxAudioLevel = rms;
     const threshold = Math.max(0.02, this.maxAudioLevel * 0.05);
 
@@ -510,7 +566,9 @@ class CascadeClient {
 
     if (this.state === STATE.LISTENING) {
       if (rms >= threshold) {
-        this.lastUtteredTime = Date.now();
+        this._markSpeechDetected();
+      } else {
+        this._scheduleFinalizeIfSilent();
       }
     } else if (
       this.state === STATE.SPEAKING ||
@@ -560,37 +618,34 @@ class CascadeClient {
   _stopAllPlayback() {
     const now = this.audioContext ? this.audioContext.currentTime : 0;
 
+    // CRITICAL FIX: Immediately disconnect old sources to prevent overlap
+    // (don't fade out - that creates a timing window for audio overlap)
     if (this.playbackGain && this.audioContext) {
-      // First cancel any existing scheduled values
+      // Immediately mute the playback gain
       this.playbackGain.gain.cancelScheduledValues(now);
-      // Add 15ms fade-out instead of instant cut
-      this.playbackGain.gain.setValueAtTime(this.playbackGain.gain.value, now);
-      this.playbackGain.gain.linearRampToValueAtTime(0, now + 0.015);
+      this.playbackGain.gain.setValueAtTime(0, now);
     }
 
-    // Stop sources after the fade-out completes
-    const stopTime = now + 0.015;
+    // Stop all sources immediately (not scheduled)
     this.activeSourceNodes.forEach((source) => {
       try {
-        source.stop(stopTime);
+        source.stop(now); // Stop immediately, not after fade-out
       } catch (_) {}
       try {
-        source.disconnect();
+        source.disconnect(); // Disconnect from audio graph
       } catch (_) {}
     });
     this.activeSourceNodes = [];
     this.nextPlaybackTime = null;
     this.isPlaying = false;
 
-    // Reset playback gain to 1 after fade-out completes
+    // Reset playback gain immediately (no delay needed)
     if (this.playbackGain && this.audioContext) {
-      setTimeout(() => {
-        this.playbackGain.gain.cancelScheduledValues(
-          this.audioContext.currentTime,
-        );
-        this.playbackGain.gain.setValueAtTime(1, this.audioContext.currentTime);
-      }, 20);
+      this.playbackGain.gain.cancelScheduledValues(now);
+      this.playbackGain.gain.setValueAtTime(1, now);
     }
+
+    console.log("[Client] All playback stopped immediately (interrupt safety)");
   }
 
   _triggerInterruption() {
@@ -598,8 +653,13 @@ class CascadeClient {
       return;
     if (this._interrupting) return;
     this._interrupting = true;
+
+    const prevTurnId = this.activeTurnId;
+    const prevEpoch = this.audioEpoch;
+    const prevGen = this.decodeGeneration;
+
     console.log(
-      "[Client] Interruption triggered! Stopping playback and cancelling server pipeline.",
+      `[Client] Interruption triggered! Previous turn=${prevTurnId}, epoch=${prevEpoch}, generation=${prevGen}, state=${this.state}`,
     );
 
     this._pendingCancelTurnId = this.activeTurnId ?? this.playbackTurnId;
@@ -608,11 +668,17 @@ class CascadeClient {
     this.activeTurnId = null;
     this.playbackTurnId = null;
 
+    console.log(
+      `[Client] Epoch incremented to ${this.audioEpoch}, generation to ${this.decodeGeneration}, activeTurnId set to null`,
+    );
+
     this._stopAllPlayback();
     this.isAudioSourceEnded = false;
     this._interruptionBuffer = [];
+    this._markSpeechDetected();
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.log("[Client] Sending cancel message to backend");
       this.ws.send(JSON.stringify({ type: "cancel" }));
     }
 
@@ -700,6 +766,9 @@ class CascadeClient {
         break;
       case "transcript":
         if (msg.text) {
+          if (this.activeSourceNodes.length > 0 || this.isPlaying) {
+            this._stopAllPlayback();
+          }
           if (msg.turn_id != null) {
             this.activeTurnId = msg.turn_id;
             this.playbackTurnId = msg.turn_id;
@@ -757,15 +826,29 @@ class CascadeClient {
         if (typeof msg.total_ms === "number") {
           this.lastLatencyMs = msg.total_ms;
 
-          this.latencyHistory.push({
-            turn: this.totalTurns,
-            total: msg.total_ms,
-            llm: msg.llm_ms || 0,
-            tts: msg.tts_ms || 0,
-            stt: msg.stt_ms || 0,
-            timestamp: Date.now(),
-          });
-          if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+          const turnNum = msg.turn_id != null ? msg.turn_id : this.totalTurns;
+          let entry = this.latencyHistory.find((d) => d.turn === turnNum);
+          if (!entry) {
+            entry = {
+              turn: turnNum,
+              timestamp: Date.now(),
+            };
+            this.latencyHistory.push(entry);
+            if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+          }
+
+          entry.total = msg.total_ms;
+          entry.stt = msg.stt_ms || 0;
+          entry.llm = msg.llm_ms || 0;
+          entry.tts = msg.tts_ms || 0;
+          entry.system = Math.max(0, entry.total - (entry.stt + entry.llm + entry.tts));
+
+          // Maintain backward compatibility for underlying fields if needed
+          entry.llm_queue = entry.llm_queue || 0;
+          entry.llm_ttft = entry.llm_ttft || 0;
+          entry.llm_streaming = entry.llm_streaming || 0;
+          entry.tts_first_sentence = entry.tts || 0;
+
           this._updateStatsBar();
 
           const panel = document.getElementById("stats-panel");
@@ -775,6 +858,82 @@ class CascadeClient {
         } else if (typeof msg.ms === "number") {
           this.lastLatencyMs = msg.ms;
           this._updateStatsBar();
+        }
+        break;
+      case "llm_metrics":
+        // Phase 1: Detailed LLM latency breakdown
+        if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
+        const llmTurnNum = msg.turn_id != null ? msg.turn_id : this.totalTurns;
+        let llmEntry = this.latencyHistory.find((d) => d.turn === llmTurnNum);
+        if (!llmEntry) {
+          llmEntry = {
+            turn: llmTurnNum,
+            total: 0,
+            stt: 0,
+            llm: msg.total_ms || 0,
+            tts: 0,
+            system: 0,
+            llm_queue: msg.queue_ms || 0,
+            llm_ttft: msg.ttft_ms || 0,
+            llm_streaming: msg.streaming_delay_ms || 0,
+            tts_first_sentence: 0,
+            timestamp: Date.now(),
+          };
+          this.latencyHistory.push(llmEntry);
+          if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+        } else {
+          llmEntry.llm = msg.total_ms || 0;
+          llmEntry.llm_queue = msg.queue_ms || 0;
+          llmEntry.llm_ttft = msg.ttft_ms || 0;
+          llmEntry.llm_streaming = msg.streaming_delay_ms || 0;
+          if (llmEntry.total > 0) {
+            llmEntry.system = Math.max(
+              0,
+              llmEntry.total - (llmEntry.stt + llmEntry.llm + llmEntry.tts),
+            );
+          }
+        }
+        const panel1 = document.getElementById("stats-panel");
+        if (panel1 && panel1.classList.contains("open")) {
+          this._renderLatencyChart();
+        }
+        break;
+      case "tts_metrics":
+        // Phase 2: TTS latency tracking
+        if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
+        const ttsTurnNum = msg.turn_id != null ? msg.turn_id : this.totalTurns;
+        let ttsEntry = this.latencyHistory.find((d) => d.turn === ttsTurnNum);
+        if (!ttsEntry) {
+          ttsEntry = {
+            turn: ttsTurnNum,
+            total: 0,
+            stt: 0,
+            llm: 0,
+            tts: msg.first_sentence_latency_ms || 0,
+            system: 0,
+            llm_queue: 0,
+            llm_ttft: 0,
+            llm_streaming: 0,
+            tts_first_sentence: msg.first_sentence_latency_ms || 0,
+            tts_engine: msg.engine || "unknown",
+            timestamp: Date.now(),
+          };
+          this.latencyHistory.push(ttsEntry);
+          if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+        } else {
+          ttsEntry.tts = msg.first_sentence_latency_ms || 0;
+          ttsEntry.tts_first_sentence = msg.first_sentence_latency_ms || 0;
+          ttsEntry.tts_engine = msg.engine || "unknown";
+          if (ttsEntry.total > 0) {
+            ttsEntry.system = Math.max(
+              0,
+              ttsEntry.total - (ttsEntry.stt + ttsEntry.llm + ttsEntry.tts),
+            );
+          }
+        }
+        const panel2 = document.getElementById("stats-panel");
+        if (panel2 && panel2.classList.contains("open")) {
+          this._renderLatencyChart();
         }
         break;
       case "busy":
@@ -838,8 +997,13 @@ class CascadeClient {
     const activeTurnAtStart = this.activeTurnId;
     const stateAtStart = this.state;
 
-    // Early guards
-    if (!this._isTurnActive(turnId)) return;
+    // Early guards - GUARD 1: Check if this turn is still active
+    if (!this._isTurnActive(turnId)) {
+      console.debug(
+        `[Client] Audio chunk dropped (Guard 1): turnId=${turnId}, activeTurnId=${this.activeTurnId}, epoch=${epoch}, audioEpoch=${this.audioEpoch}`,
+      );
+      return;
+    }
     if (
       stateAtStart === STATE.LISTENING ||
       stateAtStart === STATE.IDLE ||
@@ -852,12 +1016,15 @@ class CascadeClient {
       await this._resumeAudioContext();
     }
 
-    // Check guards again after async resume
+    // Check guards again after async resume - GUARD 2: Epoch/generation validation
     if (
       epoch !== this.audioEpoch ||
       decodeGen !== this.decodeGeneration ||
       turnId !== this.activeTurnId
     ) {
+      console.debug(
+        `[Client] Audio chunk dropped (Guard 2): turnId=${turnId}, epoch check: ${epoch} vs ${this.audioEpoch}, gen check: ${decodeGen} vs ${this.decodeGeneration}, turn check: ${turnId} vs ${this.activeTurnId}`,
+      );
       return;
     }
 
@@ -881,7 +1048,7 @@ class CascadeClient {
         );
       }
 
-      // FINAL guard check before playback
+      // FINAL guard check before playback - GUARD 3: Pre-playback validation
       if (
         audioBuffer &&
         epoch === this.audioEpoch &&
@@ -890,7 +1057,14 @@ class CascadeClient {
         this.state !== STATE.LISTENING &&
         this.state !== STATE.IDLE
       ) {
+        console.debug(
+          `[Client] Audio chunk APPROVED for playback: turnId=${turnId}, epoch=${epoch}, gen=${decodeGen}, bufferDuration=${audioBuffer.duration.toFixed(3)}s`,
+        );
         this._schedulePlayback(audioBuffer, epoch, turnId, decodeGen);
+      } else if (audioBuffer) {
+        console.debug(
+          `[Client] Audio chunk dropped (Guard 3): state=${this.state}, turnId=${turnId}`,
+        );
       }
     } catch (err) {
       console.error("Audio decode failed:", err);
@@ -898,6 +1072,7 @@ class CascadeClient {
   }
 
   _schedulePlayback(audioBuffer, epoch, turnId, decodeGen) {
+    // GUARD 4: Final sanity check before scheduling source
     if (
       epoch !== this.audioEpoch ||
       decodeGen !== this.decodeGeneration ||
@@ -905,6 +1080,9 @@ class CascadeClient {
       this.state === STATE.LISTENING ||
       this.state === STATE.IDLE
     ) {
+      console.debug(
+        `[Client] Audio NOT scheduled (Guard 4): Guard check failed for turnId=${turnId}`,
+      );
       return;
     }
 
@@ -917,32 +1095,19 @@ class CascadeClient {
       this.nextPlaybackTime = currentTime + 0.02;
     }
 
+    console.log(
+      `[Client] Scheduling audio: turnId=${turnId}, epoch=${epoch}, gen=${decodeGen}, buffer=${audioBuffer.duration.toFixed(3)}s, playAt=${this.nextPlaybackTime.toFixed(3)}, totalSources=${this.activeSourceNodes.length + 1}`,
+    );
+
     const source = this.audioContext.createBufferSource();
     source.buffer = audioBuffer;
-
-    // Create a gain node for fade-in/fade-out per audio chunk
-    const chunkGain = this.audioContext.createGain();
-
-    // Connect: source -> chunkGain -> analyser -> playbackGain -> destination
     if (this.analyser) {
-      source.connect(chunkGain);
-      chunkGain.connect(this.analyser);
+      source.connect(this.analyser);
+    } else if (this.playbackGain) {
+      source.connect(this.playbackGain);
     } else {
-      source.connect(chunkGain);
-      chunkGain.connect(this.audioContext.destination);
+      source.connect(this.audioContext.destination);
     }
-
-    // Add fade-in (10ms)
-    chunkGain.gain.setValueAtTime(0, this.nextPlaybackTime);
-    chunkGain.gain.linearRampToValueAtTime(1, this.nextPlaybackTime + 0.01);
-
-    // Add fade-out (10ms) at end
-    const fadeOutStart = this.nextPlaybackTime + audioBuffer.duration - 0.01;
-    chunkGain.gain.setValueAtTime(1, fadeOutStart);
-    chunkGain.gain.linearRampToValueAtTime(
-      0,
-      this.nextPlaybackTime + audioBuffer.duration,
-    );
 
     if (
       epoch !== this.audioEpoch ||
@@ -1172,7 +1337,14 @@ class CascadeClient {
     const chartW = W - PAD.left - PAD.right;
     const chartH = H - PAD.top - PAD.bottom;
     const TARGET_MS = 600;
-    const colors = { stt: "#818cf8", llm: "#c084fc", tts: "#34d399" };
+
+    // Refactored colors: keep only STT, LLM, TTS, and System latency with distinctive, warm/vibrant colors
+    const colors = {
+      stt: "#818cf8",     // Indigo
+      llm: "#c084fc",     // Purple
+      tts: "#34d399",     // Emerald
+      system: "#fb923c"   // Warm Orange
+    };
 
     ctx.clearRect(0, 0, W, H);
 
@@ -1184,7 +1356,16 @@ class CascadeClient {
       return;
     }
 
-    const peakTotal = Math.max(...data.map((d) => d.total), 100);
+    const peakTotal = Math.max(
+      ...data.map((d) => {
+        const sttVal = d.stt || 0;
+        const llmVal = d.llm || 0;
+        const ttsVal = d.tts || 0;
+        const systemVal = d.system != null ? d.system : (d.total > 0 ? Math.max(0, d.total - (sttVal + llmVal + ttsVal)) : 0);
+        return Math.max(d.total || 0, sttVal + llmVal + ttsVal + systemVal);
+      }),
+      100,
+    );
     const tickStep = this._chartTickStep(peakTotal);
     const maxMs = this._chartNiceMax(peakTotal);
     const scaleY = (v) => PAD.top + chartH - (v / maxMs) * chartH;
@@ -1200,15 +1381,20 @@ class CascadeClient {
     ctx.fillText("Latency (ms)", 0, 0);
     ctx.restore();
 
-    // In-chart legend (top-left)
+    // In-chart legend (top-left) - Refactored to represent exactly 4 sources
     let legendX = PAD.left;
     const legendY = 12;
     ctx.font = "10px Inter, sans-serif";
     ctx.textAlign = "left";
-    [
+
+    const legendItems = [
+      { key: "stt", label: "STT" },
       { key: "llm", label: "LLM" },
       { key: "tts", label: "TTS" },
-    ].forEach(({ key, label }) => {
+      { key: "system", label: "System" }
+    ];
+
+    legendItems.forEach(({ key, label }) => {
       ctx.fillStyle = colors[key];
       ctx.beginPath();
       ctx.arc(legendX + 4, legendY + 4, 4, 0, Math.PI * 2);
@@ -1217,16 +1403,7 @@ class CascadeClient {
       ctx.fillText(label, legendX + 12, legendY + 8);
       legendX += ctx.measureText(label).width + 28;
     });
-    ctx.strokeStyle = colors.stt;
-    ctx.setLineDash([2, 2]);
-    ctx.beginPath();
-    ctx.moveTo(legendX, legendY + 4);
-    ctx.lineTo(legendX + 16, legendY + 4);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
-    ctx.fillText("STT", legendX + 20, legendY + 8);
-    legendX += ctx.measureText("STT").width + 36;
+
     ctx.strokeStyle = "rgba(255,255,255,0.3)";
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -1267,7 +1444,7 @@ class CascadeClient {
       ctx.setLineDash([]);
     }
 
-    // Stacked bars
+    // Stacked bars: Draw STT -> LLM -> TTS -> System
     const BAR_W = Math.min(36, (chartW / data.length) * 0.55);
 
     data.forEach((d, i) => {
@@ -1275,28 +1452,68 @@ class CascadeClient {
       let yBase = scaleY(0);
       let yTop = yBase;
 
-      ["llm", "tts"].forEach((key) => {
-        const val = d[key] || 0;
-        const barH = (val / maxMs) * chartH;
+      // 1. STT bar (bottom of the stack)
+      const sttVal = d.stt || 0;
+      if (sttVal > 0) {
+        const barH = (sttVal / maxMs) * chartH;
         yBase -= barH;
         yTop = Math.min(yTop, yBase);
-        ctx.fillStyle = colors[key];
+        ctx.fillStyle = colors.stt;
         ctx.globalAlpha = 0.85;
         ctx.fillRect(x, yBase, BAR_W, barH);
         ctx.globalAlpha = 1;
-      });
+      }
 
-      // Total label above bar
-      ctx.fillStyle = "rgba(255,255,255,0.55)";
-      ctx.font = "9px JetBrains Mono, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`${d.total}ms`, scaleX(i), yTop - 6);
+      // 2. LLM bar
+      const llmVal = d.llm || 0;
+      if (llmVal > 0) {
+        const barH = (llmVal / maxMs) * chartH;
+        yBase -= barH;
+        yTop = Math.min(yTop, yBase);
+        ctx.fillStyle = colors.llm;
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x, yBase, BAR_W, barH);
+        ctx.globalAlpha = 1;
+      }
 
-      // Turn label (STT endpointing shown separately — not part of pipeline total)
+      // 3. TTS bar
+      const ttsVal = d.tts || 0;
+      if (ttsVal > 0) {
+        const barH = (ttsVal / maxMs) * chartH;
+        yBase -= barH;
+        yTop = Math.min(yTop, yBase);
+        ctx.fillStyle = colors.tts;
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x, yBase, BAR_W, barH);
+        ctx.globalAlpha = 1;
+      }
+
+      // 4. System bar (top of the stack)
+      const systemVal = d.system != null ? d.system : (d.total > 0 ? Math.max(0, d.total - (sttVal + llmVal + ttsVal)) : 0);
+      if (systemVal > 0) {
+        const barH = (systemVal / maxMs) * chartH;
+        yBase -= barH;
+        yTop = Math.min(yTop, yBase);
+        ctx.fillStyle = colors.system;
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x, yBase, BAR_W, barH);
+        ctx.globalAlpha = 1;
+      }
+
+      // Total label above bar (only shown if not crowded)
+      const isCrowded = data.length > 10;
+      if (!isCrowded) {
+        const displayTotal = d.total || (sttVal + llmVal + ttsVal + systemVal);
+        ctx.fillStyle = "rgba(255,255,255,0.55)";
+        ctx.font = "9px JetBrains Mono, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 6);
+      }
+
+      // Turn label
       ctx.fillStyle = "rgba(255,255,255,0.25)";
       ctx.font = "9px Inter, sans-serif";
-      const sttNote = d.stt ? ` · stt ${d.stt}ms` : "";
-      ctx.fillText(`T${d.turn}${sttNote}`, scaleX(i), H - PAD.bottom + 14);
+      ctx.fillText(`T${d.turn}`, scaleX(i), H - PAD.bottom + 14);
     });
   }
 

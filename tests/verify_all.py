@@ -14,7 +14,7 @@ from tests.test_stt import run as verify_stt
 from tests.test_llm import run as verify_llm
 from tests.test_tts import run as verify_tts
 
-DIVIDER = "═" * 56
+DIVIDER = "=" * 56
 
 
 def print_header():
@@ -39,9 +39,9 @@ def print_summary(results: dict, elapsed: float):
     for key, label in labels.items():
         status = results.get(key)
         if status is True:
-            icon, text = "✓", "PASSED"
+            icon, text = "v", "PASSED"
         elif status is False:
-            icon, text = "✗", "FAILED"
+            icon, text = "x", "FAILED"
             all_passed = False
         else:
             icon, text = "–", "SKIPPED"
@@ -52,9 +52,9 @@ def print_summary(results: dict, elapsed: float):
     print(f"{DIVIDER}")
 
     if all_passed:
-        print("  ✓  All checks passed. Ready to build Phase 2.\n")
+        print("  v  All checks passed. Ready to build Phase 2.\n")
     else:
-        print("  ✗  Some checks failed. Fix the issues above.\n")
+        print("  x  Some checks failed. Fix the issues above.\n")
         print("  Tip: Copy .env.example → .env and add your API keys.\n")
 
     return all_passed
@@ -73,7 +73,7 @@ def run() -> bool:
         try:
             results[key] = fn()
         except Exception as e:
-            print(f"  ✗ {label} verification crashed: {e}\n")
+            print(f"  x {label} verification crashed: {e}\n")
             results[key] = False
 
     elapsed = time.perf_counter() - start

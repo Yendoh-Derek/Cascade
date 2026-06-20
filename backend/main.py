@@ -269,10 +269,19 @@ async def _send_ws_message(
     message: Dict[str, Any],
     can_send: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ):
-    """Route a message to the WebSocket — binary for audio, JSON for everything else."""
+    """Route a message to the WebSocket — binary for audio, JSON for everything else.
+    
+    Implements atomic turn_id validation at final consumer point to prevent stale
+    audio from interrupted turns from reaching the client (Phase 3 interruption hardening).
+    """
     try:
+        # Final atomic validation at send time (checks if turn is still active)
         if can_send and not can_send(message):
+            msg_type = message.get("type", "unknown")
+            turn_id = message.get("turn_id", "none")
+            logger.debug(f"[WS] Dropping {msg_type} for turn {turn_id} (turn no longer active)")
             return
+        
         if message.get("type") == "audio":
             audio_data = message.get("data", b"")
             if isinstance(audio_data, str):
@@ -284,8 +293,12 @@ async def _send_ws_message(
                 else:
                     frame = audio_data
                 await websocket.send_bytes(frame)
+                logger.debug(f"[WS] Audio sent for turn {turn_id}: {len(audio_data)} bytes")
         else:
+            msg_type = message.get("type", "unknown")
+            turn_id = message.get("turn_id")
             await websocket.send_json(message)
+            logger.debug(f"[WS] {msg_type} sent for turn {turn_id}")
     except Exception as e:
         # Client likely disconnected mid-send — not a server error
         logger.debug(f"[WS] Send failed (client likely gone): {e}")

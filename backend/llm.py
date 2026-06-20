@@ -8,13 +8,21 @@ stream tokens from Groq, and emit complete sentence chunks as they form.
 
 The chunker bridges LLM streaming and TTS — TTS needs complete sentences
 for natural-sounding speech; yielding word-by-word would produce choppy audio.
+
+Latency Measurement:
+  - t_request_created: time when generate() is called
+  - t_request_sent: time when API request is actually sent to Groq
+  - t_first_token: time when first token is received from Groq (TTFT start)
+  - t_first_sentence_emitted: time when first complete sentence is yielded
 """
 
 import logging
 import asyncio
 import re
-from typing import AsyncGenerator, List, Dict
+import time
+from typing import AsyncGenerator, List, Dict, Optional, cast
 from groq import AsyncGroq
+from groq.types.chat import ChatCompletionMessageParam
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +58,17 @@ class LLMGenerator:
         self.api_key = api_key
         self.model = model
         self.client = AsyncGroq(api_key=api_key)
+        
+        # Latency tracking (populated during generate())
+        self.t_request_created: Optional[float] = None
+        self.t_request_sent: Optional[float] = None
+        self.t_first_token: Optional[float] = None
+        self.t_first_sentence_emitted: Optional[float] = None
 
     async def generate(
         self,
         transcript: str,
-        messages: List[Dict[str, str]],
+        messages: List[ChatCompletionMessageParam],
         temperature: float = 0.3,
         max_tokens: int = 500,
         timeout_sec: int = 30,
@@ -82,14 +96,21 @@ class LLMGenerator:
             return
 
         sentence_buffer = ""
+        first_token_received = False
+        
+        # Record request creation time (start of generate() call)
+        self.t_request_created = time.time()
+        
         try:
             # Build the messages list - messages already contains full history
             # DO NOT append transcript again - it's already in the messages
-            request_messages = list(messages)
+            request_messages = cast(List[ChatCompletionMessageParam], list(messages))
 
             logger.debug(f"[LLM] Requesting {len(request_messages)} messages, model={self.model}")
 
             async with asyncio.timeout(timeout_sec):
+                # Record the time when request is actually sent to Groq
+                self.t_request_sent = time.time()
                 stream = await self.client.chat.completions.create(
                     model=self.model,
                     messages=request_messages,
@@ -101,22 +122,17 @@ class LLMGenerator:
                 sentence_buffer = ""
                 token_count = 0
                 token_count_in_buffer = 0
-                MAX_TOKENS_BEFORE_YIELD = 25
 
                 async for chunk in stream:
                     delta = chunk.choices[0].delta
                     if delta.content:
+                        # Record the time of first token received (marks TTFT start point)
+                        if not first_token_received:
+                            first_token_received = True
+                            self.t_first_token = time.time()
+                        
                         token = delta.content
                         token_count += 1
-
-                        # Check soft token limit before appending to preserve word boundaries
-                        if token_count_in_buffer >= MAX_TOKENS_BEFORE_YIELD and (token.startswith(' ') or token.startswith('\n')):
-                            sentence = sentence_buffer.strip()
-                            if sentence:
-                                logger.debug(f"[LLM] Yielding chunk on soft token limit ({token_count_in_buffer} tokens): {sentence[:60]}...")
-                                yield sentence
-                            sentence_buffer = ""
-                            token_count_in_buffer = 0
 
                         sentence_buffer += token
                         token_count_in_buffer += 1
@@ -127,6 +143,9 @@ class LLMGenerator:
                                 if self._has_sentence_boundary(sentence_buffer):
                                     sentence = sentence_buffer.strip()
                                     logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens): {sentence[:60]}...")
+                                    # Record first sentence emission time (for streaming delay calculation)
+                                    if self.t_first_sentence_emitted is None:
+                                        self.t_first_sentence_emitted = time.time()
                                     yield sentence
                                     sentence_buffer = ""
                                     token_count_in_buffer = 0
@@ -134,6 +153,9 @@ class LLMGenerator:
                 # Yield any remaining buffer
                 if sentence_buffer.strip():
                     sentence = sentence_buffer.strip()
+                    # Ensure t_first_sentence_emitted is set for final buffer (edge case: no sentence boundaries)
+                    if self.t_first_sentence_emitted is None:
+                        self.t_first_sentence_emitted = time.time()
                     logger.info(f"[LLM] Final buffer yielded: {sentence[:60]}...")
                     yield sentence
 
@@ -142,6 +164,9 @@ class LLMGenerator:
         except asyncio.TimeoutError:
             logger.error(f"[LLM] Generation timed out after {timeout_sec}s")
             if sentence_buffer.strip():
+                # Record timestamp for any buffered content on timeout (edge case)
+                if self.t_first_sentence_emitted is None:
+                    self.t_first_sentence_emitted = time.time()
                 yield sentence_buffer.strip()
             raise
         except Exception as e:
@@ -149,6 +174,9 @@ class LLMGenerator:
             if sentence_buffer.strip():
                 # Yield partial buffer on error before raising
                 logger.warning(f"[LLM] Yielding partial buffer on error")
+                # Record timestamp for any buffered content on error (edge case)
+                if self.t_first_sentence_emitted is None:
+                    self.t_first_sentence_emitted = time.time()
                 yield sentence_buffer.strip()
             raise
 
