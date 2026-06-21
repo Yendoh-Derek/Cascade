@@ -83,6 +83,7 @@ cascade/
 │   ├── transport.js    # WebSocket connection module
 │   ├── chart.js        # Canvas latency chart module
 │   ├── ui.js           # UI layout and interactive elements module
+│   ├── state.js        # Shared state constants module
 │   └── style.css       # Styling
 ├── tests/
 │   ├── verify_all.py   # Master verification runner

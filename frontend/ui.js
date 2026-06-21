@@ -1,4 +1,4 @@
-import { STATE } from "./app.js";
+import { STATE } from "./state.js";
 
 export class UIController {
   constructor(client) {

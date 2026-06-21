@@ -8,13 +8,7 @@ import { AudioOutputController } from "./audio-output.js";
 import { WebSocketTransport } from "./transport.js";
 import { ChartRenderer } from "./chart.js";
 
-export const STATE = {
-  IDLE: "IDLE",
-  CONNECTING: "CONNECTING",
-  LISTENING: "LISTENING",
-  PROCESSING: "PROCESSING",
-  SPEAKING: "SPEAKING",
-};
+import { STATE } from "./state.js";
 
 class CascadeClient {
   constructor() {
@@ -267,7 +261,7 @@ class CascadeClient {
               timestamp: Date.now(),
             };
             this.latencyHistory.push(entry);
-            if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+            if (this.latencyHistory.length > 10) this.latencyHistory.shift();
           }
 
           entry.total = msg.total_ms;
@@ -311,7 +305,7 @@ class CascadeClient {
             timestamp: Date.now(),
           };
           this.latencyHistory.push(llmEntry);
-          if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+          if (this.latencyHistory.length > 10) this.latencyHistory.shift();
         } else {
           llmEntry.llm = msg.total_ms || 0;
           llmEntry.llm_queue = msg.queue_ms || 0;
@@ -349,7 +343,7 @@ class CascadeClient {
             timestamp: Date.now(),
           };
           this.latencyHistory.push(ttsEntry);
-          if (this.latencyHistory.length > 20) this.latencyHistory.shift();
+          if (this.latencyHistory.length > 10) this.latencyHistory.shift();
         } else {
           ttsEntry.tts = msg.first_sentence_latency_ms || 0;
           ttsEntry.tts_first_sentence = msg.first_sentence_latency_ms || 0;
