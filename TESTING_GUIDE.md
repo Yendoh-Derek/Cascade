@@ -4,7 +4,7 @@
 
 ### Environment Setup
 
-- [ ] Python 3.9+ installed
+- [ ] Python 3.11+ installed
 - [ ] Node.js 14+ installed (for frontend validation)
 - [ ] DEEPGRAM_API_KEY set in `.env` file
 - [ ] GROQ_API_KEY set in `.env` file

@@ -12,6 +12,10 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# Save original environment variables
+_orig_auth_secret = os.environ.get("CASCADE_AUTH_SECRET")
+_orig_max_sessions = os.environ.get("CASCADE_MAX_CONCURRENT_SESSIONS")
+
 # Set env var before importing app so it picks it up or we can test auth config
 os.environ["CASCADE_AUTH_SECRET"] = "test-secret"
 os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"] = "3"
@@ -19,6 +23,21 @@ os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"] = "3"
 # Import app
 from backend.main import app, session_semaphore
 import backend.main
+
+
+@pytest.fixture(scope="module", autouse=True)
+def clean_env():
+    yield
+    # Restore original environment variables after all tests in this module run
+    if _orig_auth_secret is not None:
+        os.environ["CASCADE_AUTH_SECRET"] = _orig_auth_secret
+    elif "CASCADE_AUTH_SECRET" in os.environ:
+        del os.environ["CASCADE_AUTH_SECRET"]
+
+    if _orig_max_sessions is not None:
+        os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"] = _orig_max_sessions
+    elif "CASCADE_MAX_CONCURRENT_SESSIONS" in os.environ:
+        del os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"]
 
 
 def test_cors_allow_credentials():
@@ -65,6 +84,18 @@ def test_websocket_auth_authorized():
         except Exception:
             # If it closed for other reasons (e.g. key initialization), that's fine
             pass
+
+
+def test_websocket_auth_first_message():
+    """Verify WebSocket connection succeeds using the first-message JSON handshake."""
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as websocket:
+        websocket.send_json({"type": "auth", "secret": "test-secret"})
+        try:
+            msg = websocket.receive_json()
+            assert msg["type"] == "auth_ok"
+        except Exception as e:
+            pytest.fail(f"First-message handshake failed: {e}")
 
 
 def test_websocket_concurrency_limit():

@@ -94,12 +94,14 @@ class LLMGenerator:
         if not messages or not isinstance(messages, list):
             logger.warning("[LLM] Invalid messages, skipping generation")
             return
-
         sentence_buffer = ""
         first_token_received = False
         
         # Record request creation time (start of generate() call)
         self.t_request_created = time.time()
+        self.t_request_sent = None
+        self.t_first_token = None
+        self.t_first_sentence_emitted = None
         
         try:
             # Build the messages list - messages already contains full history

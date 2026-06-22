@@ -20,9 +20,8 @@ export class WebSocketTransport {
       
       const urlParams = new URLSearchParams(window.location.search);
       const secret = urlParams.get("secret") || localStorage.getItem("cascade_secret") || "";
-      const secretParam = secret ? `&secret=${encodeURIComponent(secret)}` : "";
       
-      const wsUrl = `${wsProtocol}//${this.WS_HOST}:${this.WS_PORT}/ws?tts_engine=${encodeURIComponent(this.client.selectedTTSEngine)}${secretParam}`;
+      const wsUrl = `${wsProtocol}//${this.WS_HOST}:${this.WS_PORT}/ws?tts_engine=${encodeURIComponent(this.client.selectedTTSEngine)}`;
       console.log(`[Transport] Connecting to ${wsUrl}`);
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = "arraybuffer";
@@ -37,6 +36,12 @@ export class WebSocketTransport {
         clearTimeout(timeout);
         this.reconnectAttempts = 0;
         console.log("✓ [Transport] WebSocket connected");
+        
+        // Hardened OSS Launch Readiness: Send auth credentials via secure first-message handshake
+        if (secret) {
+          this.send(JSON.stringify({ type: "auth", secret: secret }));
+        }
+        
         resolve();
       };
 

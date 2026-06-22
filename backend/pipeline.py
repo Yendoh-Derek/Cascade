@@ -14,6 +14,7 @@ Fixes applied:
 
 import asyncio
 import logging
+import re
 import time
 from typing import Callable, Dict, Optional, Set
 
@@ -23,6 +24,12 @@ from backend.tts import TTSEngine
 from backend.tutor import TutorSession
 
 logger = logging.getLogger(__name__)
+
+
+def strip_markdown(text: str) -> str:
+    """Strip common markdown formatting characters so TTS doesn't read them literally."""
+    cleaned = re.sub(r'[*_#`\-\[\]\(\)]', '', text)
+    return cleaned.strip()
 
 
 class PipelineSession:
@@ -63,7 +70,6 @@ class PipelineSession:
         
         # TTS latency per-sentence tracking
         self._tts_first_sentence_latency_ms: int = 0
-        self._tts_sentence_metrics: Dict[str, int] = {}  # text -> latency_ms
         self._tts_metrics_sent: bool = False  # Track if TTS metrics have been sent for this turn
         
         # Interruption tracking (Phase 3)
@@ -75,11 +81,12 @@ class PipelineSession:
         self._tts_tasks: Set[asyncio.Task] = set()
         
         # Adaptive TTS concurrency (Phase 4: Queue Optimization)
-        # Start with concurrency=1, can increase to 4 based on queue depth
+        # Start with concurrency=1, can increase to 2 based on queue depth
         self._tts_max_concurrency: int = 2
         self._tts_current_concurrency: int = 0  # Track active TTS tasks
         self._pending_tts_jobs: int = 0
         self._first_audio_sent_turn_id: Optional[int] = None
+        self._tts_cond = asyncio.Condition()
 
         # Prevent concurrent transcript processing
         self.is_processing_transcript = False
@@ -186,33 +193,26 @@ class PipelineSession:
                 self.send_message({"type": "response_end"})
             return
 
-        if self.is_processing_transcript:
-            logger.info("[Pipeline] Busy — dropping concurrent transcript")
-            self.send_message(
-                {
-                    "type": "busy",
-                    "message": "Still responding — please wait a moment.",
-                }
-            )
-            return
+        # Newest wins: if a new transcript arrives while we are already processing a turn,
+        # cancel the active turn cleanly and prepare to start the new one.
+        if self.is_processing_transcript or self._active_turn_id is not None:
+            old_turn = self._active_turn_id
+            logger.warning(f"[Pipeline] Turn {old_turn} interrupted by new transcript")
+            self._final_turn_cutoff_time = time.time()
+            self._cancel_active_turn_tasks()
+            if old_turn is not None:
+                self.send_message({"type": "turn_cancelled", "turn_id": old_turn})
+            self.is_processing_transcript = False
+            self.processing_task = None
 
         self.turn_id += 1
         current_turn_id = self.turn_id
-        
-        # Log interruption if we were processing a previous turn (fix: check _active_turn_id, not is_processing_transcript)
-        if self._active_turn_id is not None and self._active_turn_id != current_turn_id:
-            old_turn = self._active_turn_id
-            logger.warning(f"[Pipeline] Turn {old_turn} interrupted by new turn {current_turn_id}")
-            self._final_turn_cutoff_time = time.time()
-            self._cancel_active_turn_tasks()
-            self.send_message({"type": "turn_cancelled", "turn_id": old_turn})
         
         self._active_turn_id = current_turn_id
         self._cancel_event.clear()
         
         # Reset metrics for new turn
         self._tts_first_sentence_latency_ms = 0
-        self._tts_sentence_metrics.clear()
         self._tts_metrics_sent = False
 
         self.utterance_end_time = time.time()
@@ -269,18 +269,19 @@ class PipelineSession:
                 slot_acquired = False
                 try:
                     # Adaptive concurrency (Phase 4): Check ideal concurrency and wait for slot
-                    ideal_concurrency = self._compute_ideal_concurrency()
+                    async with self._tts_cond:
+                        while True:
+                            ideal_concurrency = self._compute_ideal_concurrency()
+                            if self._tts_current_concurrency < ideal_concurrency:
+                                break
+                            await self._tts_cond.wait()
+                            if self._cancel_event.is_set() or turn_id != self._active_turn_id:
+                                logger.debug(f"[Pipeline] TTS slot acquisition cancelled for '{text[:40]}'")
+                                return  # Don't increment, we're bailing out
+                        
+                        self._tts_current_concurrency += 1
+                        slot_acquired = True
                     
-                    # Acquire a concurrency slot (wait if at max)
-                    while self._tts_current_concurrency >= ideal_concurrency:
-                        await asyncio.sleep(0.01)  # Brief wait before rechecking
-                        if self._cancel_event.is_set() or turn_id != self._active_turn_id:
-                            logger.debug(f"[Pipeline] TTS slot acquisition cancelled for '{text[:40]}'")
-                            return  # Don't increment, we're bailing out
-                        ideal_concurrency = self._compute_ideal_concurrency()
-                    
-                    self._tts_current_concurrency += 1
-                    slot_acquired = True
                     logger.debug(f"[Pipeline] TTS slot acquired: {self._tts_current_concurrency}/{ideal_concurrency} concurrent")
                     
                     try:
@@ -300,8 +301,6 @@ class PipelineSession:
                                     latency_ms = int(latency_ms)
                                 
                                 logger.debug(f"[Pipeline] TTS metadata received: latency={latency_ms}ms")
-                                # Store per-sentence TTS latency
-                                self._tts_sentence_metrics[text[:60]] = latency_ms
                                 if not self._tts_first_sentence_latency_ms:
                                     self._tts_first_sentence_latency_ms = latency_ms
                                     # Send first-sentence TTS metrics to client (only once per turn)
@@ -322,7 +321,9 @@ class PipelineSession:
                     finally:
                         # Release concurrency slot
                         if slot_acquired:
-                            self._tts_current_concurrency -= 1
+                            async with self._tts_cond:
+                                self._tts_current_concurrency -= 1
+                                self._tts_cond.notify_all()
                         logger.debug(f"[Pipeline] TTS slot released: {self._tts_current_concurrency} concurrent remaining")
                         
                 except asyncio.CancelledError:
@@ -331,16 +332,19 @@ class PipelineSession:
                     logger.error(f"[Pipeline] TTS synthesis failed for '{text[:20]}': {e}")
                     await sentence_queue.put(e)
                 finally:
-                    self._pending_tts_jobs = max(0, self._pending_tts_jobs - 1)
+                    async with self._tts_cond:
+                        self._pending_tts_jobs = max(0, self._pending_tts_jobs - 1)
+                        self._tts_cond.notify_all()
 
             async def produce_sentences():
                 nonlocal first_token_received
+                gen = llm_generator.generate(
+                    transcript=transcript,
+                    messages=messages,
+                    timeout_sec=30,
+                )
                 try:
-                    async for sentence in llm_generator.generate(
-                        transcript=transcript,
-                        messages=messages,
-                        timeout_sec=30,
-                    ):
+                    async for sentence in gen:
                         if self._cancel_event.is_set() or turn_id != self._active_turn_id:
                             logger.info("[Pipeline] Cancelled during LLM generation")
                             break
@@ -398,10 +402,14 @@ class PipelineSession:
 
                         self._send_for_turn(turn_id, {"type": "response_chunk", "text": sentence})
 
+                        # Sanitise markdown from sentence before TTS
+                        clean_sentence = strip_markdown(sentence)
                         sentence_queue = asyncio.Queue()
                         self._pending_tts_jobs += 1
+                        async with self._tts_cond:
+                            self._tts_cond.notify_all()
                         tts_task = asyncio.create_task(
-                            synthesize_sentence_to_queue(sentence, sentence_queue)
+                            synthesize_sentence_to_queue(clean_sentence, sentence_queue)
                         )
                         self._tts_tasks.add(tts_task)
                         tts_task.add_done_callback(self._tts_tasks.discard)
@@ -411,6 +419,8 @@ class PipelineSession:
                 except Exception as e:
                     logger.error(f"[Pipeline] LLM generator error: {e}")
                     await queue.put(e)
+                finally:
+                    await gen.aclose()
 
             async def consume_audio():
                 nonlocal full_response
@@ -418,7 +428,11 @@ class PipelineSession:
                 while True:
                     if self._cancel_event.is_set() or turn_id != self._active_turn_id:
                         break
-                    item = await queue.get()
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("[Pipeline] consume_audio: Timeout waiting for next sentence queue item")
+                        break
                     if item is None:
                         queue.task_done()
                         break
@@ -432,7 +446,11 @@ class PipelineSession:
                         while True:
                             if self._cancel_event.is_set() or turn_id != self._active_turn_id:
                                 break
-                            chunk = await sentence_queue.get()
+                            try:
+                                chunk = await asyncio.wait_for(sentence_queue.get(), timeout=15.0)
+                            except asyncio.TimeoutError:
+                                logger.warning("[Pipeline] consume_audio: Timeout waiting for audio chunk")
+                                break
                             if chunk is None:
                                 sentence_queue.task_done()
                                 break
@@ -471,6 +489,11 @@ class PipelineSession:
                             sentence_queue.task_done()
                     except Exception as e:
                         logger.error(f"[Pipeline] Error sending audio for sentence: {e}")
+                        self._send_for_turn(turn_id, {
+                            "type": "tts_error",
+                            "message": str(e),
+                            "sentence": sentence,
+                        })
                     finally:
                         queue.task_done()
 
@@ -490,6 +513,7 @@ class PipelineSession:
         finally:
             if self._can_send(turn_id):
                 self._send_for_turn(turn_id, {"type": "response_end"})
+                self._active_turn_id = None
 
     def _cancel_active_turn_tasks(self):
         """Synchronously cancels all running tasks of the active turn.
@@ -545,6 +569,7 @@ class PipelineSession:
 
     async def close(self):
         """Shut down all pipeline components cleanly."""
+        self._cancel_active_turn_tasks()
         if self.stt_handler:
             try:
                 await self.stt_handler.close()

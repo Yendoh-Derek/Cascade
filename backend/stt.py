@@ -51,6 +51,7 @@ class STTHandler:
         self._closing_intentionally = False
 
         self._last_audio_sent_time: Optional[float] = None
+        self._utterance_start_time: Optional[float] = None
         self.last_stt_processing_ms: int = 0
 
     def _build_ws_url(self) -> str:
@@ -237,6 +238,8 @@ class STTHandler:
                     speech_final = data.get("speech_final", False)
 
                     if transcript and is_final:
+                        if not self.transcript_buffer.strip():
+                            self._utterance_start_time = time.time()
                         self.transcript_buffer = (
                             self.transcript_buffer + " " + transcript
                             if self.transcript_buffer
@@ -284,6 +287,7 @@ class STTHandler:
     def clear_buffer(self):
         """Reset accumulated transcript buffer (e.g. after user interruption)."""
         self.transcript_buffer = ""
+        self._utterance_start_time = None
 
     async def finalize(self):
         """Send a Finalize message to Deepgram to flush any remaining audio buffer."""
@@ -325,12 +329,17 @@ class STTHandler:
         if not confirmed:
             return
 
-        if self._last_audio_sent_time is not None:
+        if self._utterance_start_time is not None:
+            self.last_stt_processing_ms = int(
+                (time.time() - self._utterance_start_time) * 1000
+            )
+        elif self._last_audio_sent_time is not None:
             self.last_stt_processing_ms = int(
                 (time.time() - self._last_audio_sent_time) * 1000
             )
         else:
             self.last_stt_processing_ms = 0
+        self._utterance_start_time = None
         self._last_audio_sent_time = None
 
         self.transcript_buffer = ""
