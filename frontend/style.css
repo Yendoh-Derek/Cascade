@@ -715,6 +715,18 @@ body {
   word-wrap: break-word;
 }
 
+.message-tutor.streaming p::after {
+  content: "▋";
+  animation: cursorBlink 1s step-end infinite;
+  color: rgba(52, 211, 153, 0.8);
+  margin-left: 4px;
+}
+
+@keyframes cursorBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 /* User — right-aligned, indigo-tinted glass */
 .message-user {
   background: rgba(99, 102, 241, 0.06);

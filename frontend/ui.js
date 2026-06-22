@@ -156,6 +156,9 @@ export class UIController {
           .forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         console.log(`[Client] TTS Engine changed to: ${engine}`);
+        if (this.client.state !== STATE.IDLE) {
+          this.client.stopSession().then(() => this.client.startSession());
+        }
       });
     });
 

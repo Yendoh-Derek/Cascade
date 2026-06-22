@@ -29,6 +29,7 @@ class CascadeClient {
     this._interruptTimeout = null;
     
     this.currentResponse = "";
+    this.currentStreamingBubble = null;
     this.selectedTTSEngine =
       localStorage.getItem("cascade_tts_engine") || "deepgram";
 
@@ -101,6 +102,10 @@ class CascadeClient {
     this.audioOutput.stopAllPlayback();
 
     this.currentResponse = "";
+    if (this.currentStreamingBubble) {
+      this.currentStreamingBubble.remove();
+      this.currentStreamingBubble = null;
+    }
     this.activeTurnId = null;
     this.playbackTurnId = null;
     this.audioEpoch += 1;
@@ -170,6 +175,10 @@ class CascadeClient {
     }
 
     this.currentResponse = "";
+    if (this.currentStreamingBubble) {
+      this.currentStreamingBubble.remove();
+      this.currentStreamingBubble = null;
+    }
     this.setState(STATE.LISTENING);
     this._resetPlaybackOnly();
 
@@ -202,6 +211,7 @@ class CascadeClient {
           this._interrupting = false;
           this._resetTurnState();
           this.ui.addTranscriptItem("student", msg.text);
+          this.currentStreamingBubble = null;
           this.totalTurns++;
           this.ui._updateStatsBar();
           this.setState(STATE.PROCESSING);
@@ -209,14 +219,31 @@ class CascadeClient {
         break;
       case "response_chunk":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
-        if (msg.text)
+        if (msg.text) {
           this.currentResponse = this.currentResponse
             ? `${this.currentResponse} ${msg.text}`
             : msg.text;
+          
+          if (!this.currentStreamingBubble) {
+            this.currentStreamingBubble = this.ui.addTranscriptItem("tutor", this.currentResponse);
+            if (this.currentStreamingBubble) this.currentStreamingBubble.classList.add("streaming");
+          } else {
+            const p = this.currentStreamingBubble.querySelector("p");
+            if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
+            if (this.ui.transcriptPanel) this.ui.transcriptPanel.scrollTop = this.ui.transcriptPanel.scrollHeight;
+          }
+        }
         break;
       case "response_end":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
-        if (this.currentResponse && this.currentResponse.trim()) {
+        if (this.currentStreamingBubble) {
+          this.currentStreamingBubble.classList.remove("streaming");
+          this.currentStreamingBubble.classList.add("message-complete");
+          setTimeout(() => {
+            if (this.currentStreamingBubble) this.currentStreamingBubble.classList.remove("message-complete");
+            this.currentStreamingBubble = null;
+          }, 1200);
+        } else if (this.currentResponse && this.currentResponse.trim()) {
           const bubble = this.ui.addTranscriptItem(
             "tutor",
             this.currentResponse.trim(),
@@ -227,6 +254,7 @@ class CascadeClient {
           }
         }
         this.currentResponse = "";
+        this.currentStreamingBubble = null;
         this.audioOutput.isAudioSourceEnded = true;
         this.audioOutput._checkPlaybackFinished();
         break;
@@ -239,6 +267,10 @@ class CascadeClient {
           this.audioOutput.stopAllPlayback();
           this.audioOutput.isAudioSourceEnded = true;
           this.audioOutput._checkPlaybackFinished();
+          if (this.currentStreamingBubble) {
+            this.currentStreamingBubble.remove();
+            this.currentStreamingBubble = null;
+          }
         }
         if (msg.turn_id != null && msg.turn_id === this._pendingCancelTurnId) {
           this._pendingCancelTurnId = null;

@@ -157,7 +157,7 @@ class TutorSession:
         # Second pass: estimate token count and trim if needed
         # Rough estimate: 1 token ≈ 4 characters for English text
         total_tokens = self._estimate_tokens()
-        max_tokens = 4000  # Conservative limit to stay under context window
+        max_tokens = 16000  # Increased limit for Groq Llama 3.3 70B
 
         if total_tokens > max_tokens:
             # Remove oldest messages one at a time until under limit

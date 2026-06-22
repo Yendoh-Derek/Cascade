@@ -9,6 +9,7 @@ export class AudioOutputController {
     
     this.isPlaying = false;
     this.nextPlaybackTime = null;
+    this.speakingStartTime = null;
     this.activeSourceNodes = [];
     this.playbackTurnId = null;
     this.ttsConfig = { format: "linear16", sampleRate: 24000 };
@@ -162,6 +163,7 @@ export class AudioOutputController {
   }
 
   _schedulePlayback(audioBuffer, epoch, turnId, decodeGen) {
+    this.speakingStartTime = Date.now();
     // GUARD 4: Final sanity check before scheduling source
     if (
       epoch !== this.client.audioEpoch ||
@@ -182,7 +184,7 @@ export class AudioOutputController {
 
     const currentTime = this.audioContext.currentTime;
     if (this.nextPlaybackTime === null || this.nextPlaybackTime < currentTime) {
-      this.nextPlaybackTime = currentTime + 0.02;
+      this.nextPlaybackTime = currentTime + 0.01;
     }
 
     console.log(

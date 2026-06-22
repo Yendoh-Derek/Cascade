@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 def strip_markdown(text: str) -> str:
     """Strip common markdown formatting characters so TTS doesn't read them literally."""
-    cleaned = re.sub(r'[*_#`\-\[\]\(\)]', '', text)
+    text = re.sub(r'(?<!\w)-(?!\w)', ' ', text)
+    cleaned = re.sub(r'[*_#`\[\]]', '', text)
     return cleaned.strip()
 
 
@@ -208,8 +209,8 @@ class PipelineSession:
         self.turn_id += 1
         current_turn_id = self.turn_id
         
-        self._active_turn_id = current_turn_id
         self._cancel_event.clear()
+        self._active_turn_id = current_turn_id
         
         # Reset metrics for new turn
         self._tts_first_sentence_latency_ms = 0
@@ -231,20 +232,21 @@ class PipelineSession:
             loop = asyncio.get_running_loop()
             task = loop.create_task(self._process_transcript(transcript, current_turn_id))
             self.processing_task = task
-            task.add_done_callback(self._on_processing_done)
+            
+            _captured_task = task
+            def _on_done(t):
+                if t is _captured_task and self.processing_task is _captured_task:
+                    self.processing_task = None
+                    self.is_processing_transcript = False
+                elif t.cancelled():
+                    logger.info("[Pipeline] Processing task was cancelled")
+                elif t.exception():
+                    logger.error(f"[Pipeline] Processing task failed: {t.exception()}")
+                    
+            task.add_done_callback(_on_done)
         except RuntimeError:
             logger.error("[Pipeline] No running event loop")
             self.is_processing_transcript = False
-
-    def _on_processing_done(self, task: asyncio.Task):
-        """Reset the processing flag when the pipeline task completes."""
-        if task == self.processing_task:
-            self.processing_task = None
-            self.is_processing_transcript = False
-        if task.cancelled():
-            logger.info("[Pipeline] Processing task was cancelled")
-        elif task.exception():
-            logger.error(f"[Pipeline] Processing task failed: {task.exception()}")
 
     async def _process_transcript(self, transcript: str, turn_id: int):
         """Core pipeline: transcript → LLM streaming → TTS streaming → WebSocket."""
@@ -450,6 +452,10 @@ class PipelineSession:
                                 chunk = await asyncio.wait_for(sentence_queue.get(), timeout=15.0)
                             except asyncio.TimeoutError:
                                 logger.warning("[Pipeline] consume_audio: Timeout waiting for audio chunk")
+                                try:
+                                    sentence_queue.task_done()
+                                except ValueError:
+                                    pass
                                 break
                             if chunk is None:
                                 sentence_queue.task_done()

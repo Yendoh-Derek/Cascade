@@ -14,7 +14,6 @@ Fixes applied:
   [M4] Sends user-visible "busy" message when a concurrent transcript is dropped
        so the user knows to wait.
 """
-
 import os
 import json
 import logging
@@ -129,7 +128,7 @@ async def websocket_endpoint(
             pre_auth_audio = []
             if auth_secret:
                 authorized = False
-                if secret and hmac.compare_digest(secret, auth_secret):
+                if isinstance(secret, str) and hmac.compare_digest(secret, auth_secret):
                     authorized = True
                 
                 if not authorized:
@@ -147,7 +146,8 @@ async def websocket_endpoint(
                             if raw_text:
                                 try:
                                     auth_msg = json.loads(raw_text.strip())
-                                    if auth_msg.get("type") == "auth" and auth_msg.get("secret") and hmac.compare_digest(auth_msg.get("secret"), auth_secret):
+                                    candidate = auth_msg.get("secret")
+                                    if auth_msg.get("type") == "auth" and isinstance(candidate, str) and hmac.compare_digest(candidate, auth_secret):
                                         await websocket.send_json({"type": "auth_ok"})
                                         authorized = True
                                         break
