@@ -35,11 +35,15 @@ class STTHandler:
         on_transcript: Callable[[str], None],
         on_error: Optional[Callable[[str], None]] = None,
         on_status: Optional[Callable[[str, dict], None]] = None,
+        model: str = "nova-2",
+        language: str = "en-US",
     ):
         self.api_key = api_key
         self.on_transcript = on_transcript
         self.on_error = on_error or (lambda e: logger.error(f"[STT] {e}"))
         self.on_status = on_status
+        self.model = model
+        self.language = language
 
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -57,22 +61,23 @@ class STTHandler:
     def _build_ws_url(self) -> str:
         base_url = "wss://api.deepgram.com/v1/listen"
         params = {
-            "model": "nova-2",
-            "language": "en-US",
+            "model": self.model,
+            "language": self.language,
             "smart_format": "true",
             "encoding": "linear16",
             "channels": "1",
             "sample_rate": "16000",
             "interim_results": "true",
-            "endpointing": "600",
+            "endpointing": "300",
             "vad_events": "true",
         }
         return base_url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
     async def _establish_connection(self):
         """Open WebSocket and start listener/keepalive tasks."""
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(trust_env=True)
+        if self.session and not self.session.closed:
+            await self.session.close()
+        self.session = aiohttp.ClientSession(trust_env=True)
 
         headers = {"Authorization": f"Token {self.api_key}"}
         self.ws = await self.session.ws_connect(
@@ -91,7 +96,6 @@ class STTHandler:
         """Open an async WebSocket connection to Deepgram."""
         self._closing_intentionally = False
         try:
-            self.session = aiohttp.ClientSession(trust_env=True)
             await self._establish_connection()
         except Exception as e:
             logger.error(f"[STT] Connection failed: {e}")
@@ -252,6 +256,10 @@ class STTHandler:
 
             elif msg_type == "UtteranceEnd":
                 self._flush_buffer("utterance_end")
+
+            elif msg_type == "SpeechStarted":
+                if self._utterance_start_time is None:
+                    self._utterance_start_time = time.time()
 
             elif msg_type == "Error":
                 err_msg = data.get("description", "Unknown error")

@@ -175,7 +175,11 @@ export class AudioInputController {
           Math.floor(inputData.length / ratio),
         );
         for (let i = 0; i < downsampled.length; i++) {
-          downsampled[i] = inputData[Math.floor(i * ratio)];
+          let sum = 0;
+          const start = Math.floor(i * ratio);
+          const end = Math.min(Math.ceil((i + 1) * ratio), inputData.length);
+          for (let j = start; j < end; j++) sum += inputData[j];
+          downsampled[i] = sum / Math.max(1, end - start);
         }
         const pcm16 = new Int16Array(downsampled.length);
         for (let i = 0; i < downsampled.length; i++) {
@@ -207,7 +211,11 @@ export class AudioInputController {
             const ratio = sampleRate / 16000;
             const downsampled = new Float32Array(Math.floor(input.length / ratio));
             for (let i = 0; i < downsampled.length; i++) {
-              downsampled[i] = input[Math.floor(i * ratio)];
+              let sum = 0;
+              const start = Math.floor(i * ratio);
+              const end = Math.min(Math.ceil((i + 1) * ratio), input.length);
+              for (let j = start; j < end; j++) sum += input[j];
+              downsampled[i] = sum / Math.max(1, end - start);
             }
             
             for (let i = 0; i < downsampled.length; i++) {
