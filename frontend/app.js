@@ -89,6 +89,7 @@ class CascadeClient {
   }
 
   async stopSession() {
+    this.transport.intentionalDisconnect = true;
     if (this.transport.isOpen()) {
       try {
         this.transport.send("stop");
@@ -365,6 +366,16 @@ class CascadeClient {
           msg.message || "⏳ Still responding — please wait a moment.",
           4000,
           "info",
+        );
+        if (msg.reason === "capacity") {
+          this.stopSession();
+        }
+        break;
+      case "tts_error":
+        this.ui.showToast(
+          `⚠️ Audio synthesis failed: ${msg.message || "Unknown error"}`,
+          4000,
+          "warning",
         );
         break;
       case "stt_reconnecting":

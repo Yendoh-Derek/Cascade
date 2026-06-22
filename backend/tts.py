@@ -17,6 +17,7 @@ import logging
 import os
 import time
 import json
+import asyncio
 from typing import AsyncGenerator, Optional, Union, Dict, Any
 from abc import ABC, abstractmethod
 
@@ -72,24 +73,25 @@ class EdgeTTSEngine(BaseTTSEngine):
             communicate = edge_tts.Communicate(text, self.voice)
             total_bytes = 0
             try:
-                async for chunk in communicate.stream():
-                    if chunk.get("type") == "audio":
-                        audio_data = chunk.get("data")
-                        if audio_data:
-                            # Record first audio chunk time (on first audio byte)
-                            if t_first_audio_chunk is None:
-                                t_first_audio_chunk = time.time()
-                                # Yield metadata on first audio chunk
-                                yield {
-                                    "type": "tts_metadata",
-                                    "engine": "edge",
-                                    "text": text[:60],
-                                    "t_tts_request_sent": t_tts_request_sent,
-                                    "t_first_audio_chunk": t_first_audio_chunk,
-                                    "latency_ms": int((t_first_audio_chunk - t_tts_request_sent) * 1000),
-                                }
-                            total_bytes += len(audio_data)
-                            yield audio_data
+                async with asyncio.timeout(timeout_sec):
+                    async for chunk in communicate.stream():
+                        if chunk.get("type") == "audio":
+                            audio_data = chunk.get("data")
+                            if audio_data:
+                                # Record first audio chunk time (on first audio byte)
+                                if t_first_audio_chunk is None:
+                                    t_first_audio_chunk = time.time()
+                                    # Yield metadata on first audio chunk
+                                    yield {
+                                        "type": "tts_metadata",
+                                        "engine": "edge",
+                                        "text": text[:60],
+                                        "t_tts_request_sent": t_tts_request_sent,
+                                        "t_first_audio_chunk": t_first_audio_chunk,
+                                        "latency_ms": int((t_first_audio_chunk - t_tts_request_sent) * 1000),
+                                    }
+                                total_bytes += len(audio_data)
+                                yield audio_data
             except Exception as e:
                 logger.error(f"[TTS] EdgeTTS streaming error: {e}")
                 raise

@@ -19,6 +19,8 @@ import os
 import json
 import logging
 import asyncio
+import hmac
+import time
 from typing import Any, Callable, Dict, Optional
 from pathlib import Path
 
@@ -95,25 +97,22 @@ async def websocket_endpoint(
       JSON    — {type: "transcript"|"response_chunk"|"response_end"|
                         "latency"|"error"|"busy"}
     """
-    # 1. Auth Secret Verification
-    auth_secret = os.getenv("CASCADE_AUTH_SECRET")
-    if auth_secret and secret != auth_secret:
-        await websocket.accept()
-        await websocket.send_json({"type": "error", "message": "Unauthorized: Invalid or missing auth secret"})
-        await websocket.close(code=4001)
-        return
 
-    # 2. Concurrency Capacity Cap Check
-    if session_semaphore.locked():
+
+    # 2. Concurrency Capacity Cap Check / Acquire
+    try:
+        await asyncio.wait_for(session_semaphore.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
         await websocket.accept()
         await websocket.send_json({
             "type": "busy",
+            "reason": "capacity",
             "message": "Server is at maximum capacity. Please try again later."
         })
         await websocket.close()
         return
 
-    async with session_semaphore:
+    try:
         if subject is not None:
             subject = subject.strip()[:200] or None
 
@@ -124,6 +123,48 @@ async def websocket_endpoint(
         try:
             await websocket.accept()
             logger.info(f"[WS] Client connected (subject={subject})")
+
+            # 1. Auth Secret Verification (supports both query param and first-message handshake)
+            auth_secret = os.getenv("CASCADE_AUTH_SECRET")
+            pre_auth_audio = []
+            if auth_secret:
+                authorized = False
+                if secret and hmac.compare_digest(secret, auth_secret):
+                    authorized = True
+                
+                if not authorized:
+                    try:
+                        start_time = time.time()
+                        while time.time() - start_time < 5.0 and not authorized:
+                            message = await asyncio.wait_for(websocket.receive(), timeout=5.0 - (time.time() - start_time))
+                            
+                            msg_type = message.get("type", "")
+                            if msg_type == "websocket.disconnect":
+                                break
+                            
+                            # If it's a text message, parse and check if it's the auth message
+                            raw_text = message.get("text", "")
+                            if raw_text:
+                                try:
+                                    auth_msg = json.loads(raw_text.strip())
+                                    if auth_msg.get("type") == "auth" and auth_msg.get("secret") and hmac.compare_digest(auth_msg.get("secret"), auth_secret):
+                                        await websocket.send_json({"type": "auth_ok"})
+                                        authorized = True
+                                        break
+                                except json.JSONDecodeError:
+                                    pass
+                            
+                            # If it's a binary message (early audio), buffer it
+                            raw_bytes = message.get("bytes")
+                            if raw_bytes:
+                                pre_auth_audio.append(raw_bytes)
+                    except (asyncio.TimeoutError, WebSocketDisconnect):
+                        pass
+
+                if not authorized:
+                    await websocket.send_json({"type": "error", "message": "Unauthorized: Invalid or missing auth secret"})
+                    await websocket.close(code=4001)
+                    return
 
             try:
                 keys = get_api_keys()
@@ -190,6 +231,13 @@ async def websocket_endpoint(
                 )
                 await websocket.close()
                 return
+
+            # Feed any buffered pre-authorization audio chunks into the session
+            if pre_auth_audio:
+                logger.info(f"[WS] Feeding {len(pre_auth_audio)} buffered pre-authorization audio chunks into session")
+                for chunk in pre_auth_audio:
+                    if len(chunk) >= 2:
+                        await session.handle_audio(chunk)
 
             idle_timeout = 300  # 5 minutes
 
@@ -287,6 +335,8 @@ async def websocket_endpoint(
                     await session.close()
                 except Exception as e:
                     logger.error(f"[WS] Error during session cleanup: {e}")
+    finally:
+        session_semaphore.release()
 
 
 async def _send_ws_message(
