@@ -15,14 +15,32 @@ Usage:
 """
 
 import asyncio
+import json
 import time
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Import components to test
 from backend.pipeline import PipelineSession
 from backend.llm import LLMGenerator
 from backend.tts import EdgeTTSEngine, DeepgramTTSEngine
+
+
+def make_pipeline_session() -> PipelineSession:
+    """Create a test pipeline session using the current constructor."""
+    return PipelineSession(
+        api_keys={"deepgram": "test_key", "groq": "test_key"},
+        model_config={
+            "deepgram_model": "nova-2",
+            "groq_model": "mixtral-8x7b",
+            "edge_tts_voice": "en-US-AriaNeural",
+            "deepgram_tts_model": "aura-asteria-en",
+        },
+        outbound_queue=asyncio.Queue(),
+        subject="Test",
+        tts_engine="edge",
+    )
 
 
 class TestLLMLatencyTracking:
@@ -148,21 +166,29 @@ class TestTTSLatencyTracking:
         with patch('aiohttp.ClientSession') as mock_session_class:
             mock_session = MagicMock()
             mock_session_class.return_value = mock_session
-            
-            # Mock HTTP response
-            mock_response = AsyncMock()
-            mock_response.__aenter__.return_value = mock_response
-            mock_response.__aexit__.return_value = None
-            mock_response.raise_for_status = MagicMock()
-            
-            async def mock_iter_chunked(chunk_size):
-                yield b"audio_chunk_1"
-                yield b"audio_chunk_2"
-            
-            mock_response.content.iter_chunked = mock_iter_chunked
-            mock_session.post.return_value = mock_response
-            
-            engine._session = mock_session
+
+            class MockWebSocket:
+                def __init__(self):
+                    self.closed = False
+                    self.send_json = AsyncMock()
+
+                def __aiter__(self):
+                    async def iterator():
+                        yield SimpleNamespace(
+                            type=1,
+                            data=json.dumps({"type": "Metadata"}),
+                        )
+                        yield SimpleNamespace(type=2, data=b"audio_chunk_1")
+                        yield SimpleNamespace(
+                            type=1,
+                            data=json.dumps({"type": "Flushed"}),
+                        )
+
+                    return iterator()
+
+            mock_ws = MockWebSocket()
+            mock_session.closed = False
+            mock_session.ws_connect = AsyncMock(return_value=mock_ws)
             
             # Collect yields
             yields = []
@@ -175,6 +201,8 @@ class TestTTSLatencyTracking:
             assert isinstance(first_item, dict)
             assert first_item.get("type") == "tts_metadata"
             assert first_item.get("engine") == "deepgram"
+            assert yields[1] == b"audio_chunk_1"
+            mock_session.ws_connect.assert_awaited_once()
 
 
 class TestInterruptionHardening:
@@ -183,18 +211,7 @@ class TestInterruptionHardening:
     @pytest.fixture
     def pipeline_session(self):
         """Create a pipeline session for testing."""
-        return PipelineSession(
-            api_keys={"deepgram": "test_key", "groq": "test_key"},
-            model_config={
-                "deepgram_model": "nova-2",
-                "groq_model": "mixtral-8x7b",
-                "edge_tts_voice": "en-US-AriaNeural",
-                "deepgram_tts_model": "aura-asteria-en",
-            },
-            send_message=lambda msg: None,
-            subject="Test",
-            tts_engine="edge",
-        )
+        return make_pipeline_session()
     
     def test_turn_id_validation_blocks_stale_messages(self, pipeline_session):
         """Test that turn_id validation prevents stale audio from being sent."""
@@ -249,7 +266,10 @@ class TestInterruptionHardening:
         # Cancel should invalidate the turn without racing the queue.
         await session.cancel()
         
-        assert session.outbound_queue.qsize() == 2
+        assert session.outbound_queue.qsize() == 3
+        queued_messages = [await session.outbound_queue.get() for _ in range(3)]
+        cancelled_msg = queued_messages[-1]
+        assert cancelled_msg == {"type": "turn_cancelled", "turn_id": 1}
         assert session.can_send_message(old_msg) is False
 
 
@@ -259,40 +279,25 @@ class TestQueueOptimization:
     @pytest.fixture
     def pipeline_session_with_queue(self):
         """Create a pipeline session with initialized queue counters."""
-        return PipelineSession(
-            api_keys={"deepgram": "test_key", "groq": "test_key"},
-            model_config={
-                "deepgram_model": "nova-2",
-                "groq_model": "mixtral-8x7b",
-                "edge_tts_voice": "en-US-AriaNeural",
-                "deepgram_tts_model": "aura-asteria-en",
-            },
-            send_message=lambda msg: None,
-            subject="Test",
-            tts_engine="edge",
-        )
+        return make_pipeline_session()
     
     def test_adaptive_concurrency_low_queue_depth(self, pipeline_session_with_queue):
-        """Test adaptive concurrency returns 1 for an empty TTS backlog."""
+        """Test current fixed TTS concurrency target."""
         session = pipeline_session_with_queue
         
         ideal_concurrency = session._compute_ideal_concurrency()
-        assert ideal_concurrency == 1
+        assert ideal_concurrency == 2
     
     def test_adaptive_concurrency_medium_queue_depth(self, pipeline_session_with_queue):
-        """Test adaptive concurrency returns 2 for a small TTS backlog."""
+        """Test fixed concurrency remains stable for a small backlog."""
         session = pipeline_session_with_queue
-        
-        session._pending_tts_jobs = 2
         
         ideal_concurrency = session._compute_ideal_concurrency()
         assert ideal_concurrency == 2
     
     def test_adaptive_concurrency_high_queue_depth(self, pipeline_session_with_queue):
-        """Test adaptive concurrency stays capped to avoid buffering spikes."""
+        """Test fixed concurrency stays capped under a larger backlog."""
         session = pipeline_session_with_queue
-        
-        session._pending_tts_jobs = 5
         
         ideal_concurrency = session._compute_ideal_concurrency()
         assert ideal_concurrency == 2
@@ -362,19 +367,7 @@ class TestEndToEndFlow:
     @pytest.mark.asyncio
     async def test_metrics_flow_with_interruption(self):
         """Test complete flow: metrics tracked and interruption handled correctly."""
-        session = PipelineSession(
-            api_keys={"deepgram": "test_key", "groq": "test_key"},
-            model_config={
-                "deepgram_model": "nova-2",
-                "groq_model": "mixtral-8x7b",
-                "edge_tts_voice": "en-US-AriaNeural",
-                "deepgram_tts_model": "aura-asteria-en",
-            },
-            send_message=lambda msg: None,
-            subject="Test",
-            tts_engine="edge",
-        )
-        session.outbound_queue = asyncio.Queue()
+        session = make_pipeline_session()
         
         # Simulate turn 1
         session.turn_id = 1
@@ -399,25 +392,12 @@ class TestEndToEndFlow:
     
     def test_concurrent_tts_concurrency_tracking(self):
         """Test concurrent TTS tracking."""
-        session = PipelineSession(
-            api_keys={"deepgram": "test_key", "groq": "test_key"},
-            model_config={
-                "deepgram_model": "nova-2",
-                "groq_model": "mixtral-8x7b",
-                "edge_tts_voice": "en-US-AriaNeural",
-                "deepgram_tts_model": "aura-asteria-en",
-            },
-            send_message=lambda msg: None,
-            subject="Test",
-            tts_engine="edge",
-        )
+        session = make_pipeline_session()
         
-        # Verify concurrency tracking attributes exist
-        assert hasattr(session, '_tts_current_concurrency')
-        assert hasattr(session, '_tts_max_concurrency')
-        assert hasattr(session, '_pending_tts_jobs')
-        assert session._tts_current_concurrency == 0
-        assert session._tts_max_concurrency == 2
+        # Verify current concurrency primitives exist
+        assert isinstance(session._tts_semaphore, asyncio.Semaphore)
+        assert session._tts_semaphore._value == 2
+        assert session._tts_tasks == set()
 
 
 if __name__ == "__main__":

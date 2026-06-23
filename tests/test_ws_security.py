@@ -7,8 +7,11 @@ Integration tests to verify CORS credentials, WebSocket authentication, and conc
 import sys
 import os
 import asyncio
+import hmac
 import pytest
 from fastapi.testclient import TestClient
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -40,6 +43,34 @@ def clean_env():
         del os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"]
 
 
+@pytest.fixture
+def mock_pipeline_dependencies():
+    """Mock backend dependencies so auth tests can focus on the WS handshake."""
+    with (
+        patch("backend.main.get_api_keys", return_value=SimpleNamespace(deepgram="dg", groq="gq")),
+        patch(
+            "backend.main.get_model_config",
+            return_value=SimpleNamespace(
+                deepgram_model="nova-2",
+                groq_model="llama",
+                edge_tts_voice="en-US-AriaNeural",
+                deepgram_tts_model="aura-asteria-en",
+            ),
+        ),
+        patch("backend.main.PipelineSession.initialize", new=AsyncMock()),
+        patch("backend.main.PipelineSession.close", new=AsyncMock()),
+    ):
+        yield
+
+
+def _authenticate_websocket(websocket, secret: str = "test-secret"):
+    """Complete the HMAC challenge-response handshake used by the server."""
+    challenge = websocket.receive_json()
+    assert challenge["type"] == "challenge"
+    response = hmac.new(secret.encode(), challenge["nonce"].encode(), "sha256").hexdigest()
+    websocket.send_json({"type": "auth", "response": response})
+
+
 def test_cors_allow_credentials():
     """Verify CORS headers do not allow credentials when allow_origins is '*'."""
     client = TestClient(app)
@@ -55,50 +86,46 @@ def test_cors_allow_credentials():
 def test_websocket_auth_unauthorized():
     """Verify WebSocket connection fails when CASCADE_AUTH_SECRET is set and no/wrong secret is sent."""
     client = TestClient(app)
-    # 1. No secret query param
+
+    # 1. No auth response after challenge
     with client.websocket_connect("/ws") as websocket:
         msg = websocket.receive_json()
+        assert msg["type"] == "challenge"
+        msg = websocket.receive_json()
         assert msg["type"] == "error"
         assert "Unauthorized" in msg["message"]
 
-    # 2. Incorrect secret
-    with client.websocket_connect("/ws?secret=wrong-secret") as websocket:
+    # 2. Incorrect HMAC response
+    with client.websocket_connect("/ws") as websocket:
+        msg = websocket.receive_json()
+        assert msg["type"] == "challenge"
+        websocket.send_json({"type": "auth", "response": "wrong-secret"})
         msg = websocket.receive_json()
         assert msg["type"] == "error"
         assert "Unauthorized" in msg["message"]
 
 
-def test_websocket_auth_authorized():
+def test_websocket_auth_authorized(mock_pipeline_dependencies):
     """Verify WebSocket connection succeeds when correct CASCADE_AUTH_SECRET is sent."""
     client = TestClient(app)
-    # Bypass API key checks for health validation so pipeline does not throw error immediately
-    # We can connect and check if initialization starts.
-    # Note: TestClient websocket_connect will connect and block.
-    with client.websocket_connect("/ws?secret=test-secret") as websocket:
-        # Check that we didn't receive an Unauthorized error immediately
-        # Pipeline initialization might fail due to empty keys in test environment,
-        # but it should NOT be an Unauthorized close.
-        try:
-            msg = websocket.receive_json()
-            assert msg["type"] != "error" or "Unauthorized" not in msg["message"]
-        except Exception:
-            # If it closed for other reasons (e.g. key initialization), that's fine
-            pass
+    with client.websocket_connect("/ws") as websocket:
+        _authenticate_websocket(websocket)
+        msg = websocket.receive_json()
+        assert msg["type"] == "auth_ok"
+        websocket.send_text("stop")
 
 
-def test_websocket_auth_first_message():
+def test_websocket_auth_first_message(mock_pipeline_dependencies):
     """Verify WebSocket connection succeeds using the first-message JSON handshake."""
     client = TestClient(app)
     with client.websocket_connect("/ws") as websocket:
-        websocket.send_json({"type": "auth", "secret": "test-secret"})
-        try:
-            msg = websocket.receive_json()
-            assert msg["type"] == "auth_ok"
-        except Exception as e:
-            pytest.fail(f"First-message handshake failed: {e}")
+        _authenticate_websocket(websocket)
+        msg = websocket.receive_json()
+        assert msg["type"] == "auth_ok"
+        websocket.send_text("stop")
 
 
-def test_websocket_concurrency_limit():
+def test_websocket_concurrency_limit(mock_pipeline_dependencies):
     """Verify concurrent connections limit semaphore works."""
     # Temporarily set semaphore capacity to 2 for test predictability
     original_semaphore = backend.main.session_semaphore
@@ -107,14 +134,20 @@ def test_websocket_concurrency_limit():
     client = TestClient(app)
     try:
         # Establish connection 1
-        with client.websocket_connect("/ws?secret=test-secret") as _ws1:
+        with client.websocket_connect("/ws") as ws1:
+            _authenticate_websocket(ws1)
+            assert ws1.receive_json()["type"] == "auth_ok"
             # Establish connection 2
-            with client.websocket_connect("/ws?secret=test-secret") as _ws2:
+            with client.websocket_connect("/ws") as ws2:
+                _authenticate_websocket(ws2)
+                assert ws2.receive_json()["type"] == "auth_ok"
                 # Connection 3 should exceed cap (capacity is 2)
-                with client.websocket_connect("/ws?secret=test-secret") as ws3:
+                with client.websocket_connect("/ws") as ws3:
                     msg = ws3.receive_json()
                     assert msg["type"] == "busy"
                     assert "maximum capacity" in msg["message"]
+                ws2.send_text("stop")
+            ws1.send_text("stop")
     finally:
         # Restore original semaphore
         backend.main.session_semaphore = original_semaphore
