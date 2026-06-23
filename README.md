@@ -35,6 +35,15 @@ Cascade:    [STT ██▒▒▒▒▒▒]
 
 ## Architectural Decisions & Latency Measurement
 
+### In-Memory Conversation History (ARCH-05)
+Conversation history is kept purely in-memory for the lifetime of a WebSocket session. There is no external persistence layer (database, Redis, etc.). This is a deliberate scope decision:
+
+- Avoids adding infrastructure dependencies (SQLite, Redis) that would complicate local development and deployment.
+- Aligns with the project's focus on **pipeline latency** rather than long-term session management.
+- Conversation context resets on page refresh or disconnect, which is acceptable for a demo/prototype workload.
+
+*If you need multi-session persistence in a production fork, key `TutorSession.history` by a session UUID in Redis or SQLite.*
+
 ### Why WebSockets?
 To achieve sub-second voice interactions, HTTP requests are too heavy. Cascade uses a full-duplex WebSocket connection to stream raw PCM16 audio from the microphone to the server and stream back MP3/PCM audio chunks concurrently.
 
@@ -149,5 +158,7 @@ Open: [http://localhost:8000](http://localhost:8000)
 ## Known Limitations
 
 - **Sentence-Boundary Heuristic**: Boundary splitting in `llm.py` handles decimals and typical abbreviations (e.g. `Dr.`, `e.g.`) but may occasionally mis-split on atypical abbreviations (e.g. `approx. 12kg`, `No. 5`).
-- **Per-Sentence TTS Latency Floor**: The TTS engines synthesize a full sentence before yielding the first byte (essential for natural phrasing). Consequently, a very long first sentence sets a higher latency floor.
-- **Built-in Authentication**: Minimal access control is supported via the optional `CASCADE_AUTH_SECRET` environment variable for basic private setups, but this does not replace production-grade gateway access controls.
+- **First-Sentence Latency Floor**: TTS engines need a complete sentence to produce natural-sounding audio. A very long first sentence from the LLM sets a higher latency floor. The `EARLY_FLUSH_TOKENS = 12` threshold partially mitigates this by flushing early on long sentences.
+- **Deepgram TTS Serial Protocol**: The persistent Deepgram WebSocket TTS connection processes one sentence at a time (Speak → Flush → Flushed). A second concurrent sentence is queued and starts immediately after `Flushed`. This serialization is inherent to the single-connection protocol.
+- **Single-Process Session Cap**: The `CASCADE_MAX_CONCURRENT_SESSIONS` semaphore is process-local. Under multi-worker `uvicorn` deployments the effective cap is `N × MAX`, not `MAX`. Single-process deployment is recommended.
+- **Built-in Authentication**: `CASCADE_AUTH_SECRET` uses an HMAC challenge-response for basic private setups. This does not replace production-grade gateway controls (OAuth, mTLS, etc.).

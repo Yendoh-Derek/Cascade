@@ -67,7 +67,6 @@ class LLMGenerator:
 
     async def generate(
         self,
-        transcript: str,
         messages: List[ChatCompletionMessageParam],
         temperature: float = 0.3,
         max_tokens: int = 500,
@@ -77,7 +76,6 @@ class LLMGenerator:
         Stream tokens from Groq and yield complete sentences.
 
         Args:
-            transcript: The user's confirmed transcript
             messages: Full conversation history (list of {"role": "...", "content": "..."})
             temperature: Sampling temperature (0.0-2.0)
             max_tokens: Max tokens to generate
@@ -87,10 +85,6 @@ class LLMGenerator:
             Complete sentence strings (including punctuation)
         """
         # Validate inputs
-        if not transcript or not isinstance(transcript, str):
-            logger.warning("[LLM] Empty transcript, skipping generation")
-            return
-
         if not messages or not isinstance(messages, list):
             logger.warning("[LLM] Invalid messages, skipping generation")
             return
@@ -111,19 +105,34 @@ class LLMGenerator:
             logger.debug(f"[LLM] Requesting {len(request_messages)} messages, model={self.model}")
 
             async with asyncio.timeout(timeout_sec):
-                # Record the time when request is actually sent to Groq
-                self.t_request_sent = time.time()
-                stream = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=request_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                )
+                # Retry loop for Groq 503s
+                stream = None
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        self.t_request_sent = time.time()
+                        stream = await self.client.chat.completions.create(
+                            model=self.model,
+                            messages=request_messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            stream=True,
+                        )
+                        break
+                    except Exception as e:
+                        if "503" in str(e) and attempt < retries - 1:
+                            logger.warning(f"[LLM] Groq 503 error, retrying in 1s... ({attempt + 1}/{retries})")
+                            await asyncio.sleep(1.0)
+                        else:
+                            raise
+                
+                if stream is None:
+                    raise Exception("Failed to get stream from Groq")
 
                 sentence_buffer = ""
                 token_count = 0
                 token_count_in_buffer = 0
+                EARLY_FLUSH_TOKENS = 12
 
                 async for chunk in stream:
                     delta = chunk.choices[0].delta
@@ -141,16 +150,19 @@ class LLMGenerator:
 
                         if sentence_buffer:
                             last_chars = sentence_buffer[-3:].rstrip()
-                            if any(c in last_chars for c in '.?!'):
-                                if self._has_sentence_boundary(sentence_buffer):
-                                    sentence = sentence_buffer.strip()
-                                    logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens): {sentence[:60]}...")
-                                    # Record first sentence emission time (for streaming delay calculation)
-                                    if self.t_first_sentence_emitted is None:
-                                        self.t_first_sentence_emitted = time.time()
-                                    yield sentence
-                                    sentence_buffer = ""
-                                    token_count_in_buffer = 0
+                            
+                            is_boundary = any(c in last_chars for c in '.?!') and self._has_sentence_boundary(sentence_buffer)
+                            is_first_sentence = (self.t_first_sentence_emitted is None)
+                            
+                            if is_boundary or (is_first_sentence and token_count_in_buffer >= EARLY_FLUSH_TOKENS):
+                                sentence = sentence_buffer.strip()
+                                logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens): {sentence[:60]}...")
+                                # Record first sentence emission time (for streaming delay calculation)
+                                if self.t_first_sentence_emitted is None:
+                                    self.t_first_sentence_emitted = time.time()
+                                yield sentence
+                                sentence_buffer = ""
+                                token_count_in_buffer = 0
 
                 # Yield any remaining buffer
                 if sentence_buffer.strip():

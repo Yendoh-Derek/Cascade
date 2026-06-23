@@ -203,15 +203,12 @@ export class ChartRenderer {
         ctx.globalAlpha = 1;
       }
 
-      // Total label above bar (only shown if not crowded)
-      const isCrowded = data.length > 10;
-      if (!isCrowded) {
-        const displayTotal = d.total || (sttVal + llmVal + ttsVal + systemVal);
-        ctx.fillStyle = "rgba(255,255,255,0.55)";
-        ctx.font = "9px JetBrains Mono, monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 6);
-      }
+      // Total label above bar
+      const displayTotal = d.total || (sttVal + llmVal + ttsVal + systemVal);
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.font = "9px JetBrains Mono, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 6);
 
       // Turn label
       ctx.fillStyle = "rgba(255,255,255,0.25)";
