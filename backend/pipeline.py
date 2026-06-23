@@ -255,7 +255,7 @@ class PipelineSession:
                             logger.debug(f"[Pipeline] TTS slot acquisition cancelled for '{text[:40]}'")
                             return
                         
-                        logger.debug(f"[Pipeline] TTS slot acquired")
+                        logger.debug("[Pipeline] TTS slot acquired")
                         
                         async for chunk in tts_engine.synthesise(text):
                             if self._cancel_event.is_set() or turn_id != self._active_turn_id:
@@ -290,7 +290,7 @@ class PipelineSession:
                                     await sentence_queue.put(bytes(chunk))
                         
                         await sentence_queue.put(None)
-                        logger.debug(f"[Pipeline] TTS slot released")
+                        logger.debug("[Pipeline] TTS slot released")
                         
                 except asyncio.CancelledError:
                     pass

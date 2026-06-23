@@ -20,7 +20,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import AsyncGenerator, List, Dict, Optional, cast
+from typing import AsyncGenerator, List, Optional, cast
 from groq import AsyncGroq
 from groq.types.chat import ChatCompletionMessageParam
 
@@ -187,7 +187,7 @@ class LLMGenerator:
             logger.error(f"[LLM] Error during generation: {e}")
             if sentence_buffer.strip():
                 # Yield partial buffer on error before raising
-                logger.warning(f"[LLM] Yielding partial buffer on error")
+                logger.warning("[LLM] Yielding partial buffer on error")
                 # Record timestamp for any buffered content on error (edge case)
                 if self.t_first_sentence_emitted is None:
                     self.t_first_sentence_emitted = time.time()

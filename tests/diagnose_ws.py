@@ -1,7 +1,6 @@
 import asyncio
 import json
 import websockets
-import sys
 
 async def run_diagnostics():
     uri = "ws://localhost:8000/ws?tts_engine=edge"

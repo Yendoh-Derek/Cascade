@@ -21,8 +21,8 @@ os.environ["CASCADE_AUTH_SECRET"] = "test-secret"
 os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"] = "3"
 
 # Import app
-from backend.main import app, session_semaphore
-import backend.main
+from backend.main import app  # noqa: E402
+import backend.main  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -107,9 +107,9 @@ def test_websocket_concurrency_limit():
     client = TestClient(app)
     try:
         # Establish connection 1
-        with client.websocket_connect("/ws?secret=test-secret") as ws1:
+        with client.websocket_connect("/ws?secret=test-secret") as _ws1:
             # Establish connection 2
-            with client.websocket_connect("/ws?secret=test-secret") as ws2:
+            with client.websocket_connect("/ws?secret=test-secret") as _ws2:
                 # Connection 3 should exceed cap (capacity is 2)
                 with client.websocket_connect("/ws?secret=test-secret") as ws3:
                     msg = ws3.receive_json()

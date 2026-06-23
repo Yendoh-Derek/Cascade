@@ -70,7 +70,7 @@ def run() -> bool:
     if not result["success"]:
         print(f"        x Connection failed: {result['error']}")
         return False
-    print(f"        v Live connection established successfully")
+    print("        v Live connection established successfully")
     print("  v Deepgram STT -- ALL CHECKS PASSED\n")
     return True
 

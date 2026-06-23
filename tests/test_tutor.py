@@ -170,11 +170,11 @@ def main():
         return True
 
     except AssertionError as e:
-        print(f"✗ FAILED")
+        print("✗ FAILED")
         print(f"\n  Error: {e}\n")
         return False
     except Exception as e:
-        print(f"✗ ERROR")
+        print("✗ ERROR")
         print(f"\n  Unexpected error: {e}\n")
         return False
 

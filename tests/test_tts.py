@@ -92,12 +92,12 @@ def run() -> bool:
         available = asyncio.run(_fetch_available_voices())
         if voice not in available:
             print(f"        x Voice '{voice}' not found.")
-            print(f"        Available English voices (sample):")
+            print("        Available English voices (sample):")
             en_voices = [v for v in available if v.startswith("en-US")][:5]
             for v in en_voices:
                 print(f"          - {v}")
             return False
-        print(f"        v Voice confirmed available")
+        print("        v Voice confirmed available")
     except Exception as e:
         print(f"        x Could not fetch voice list: {e}")
         return False
