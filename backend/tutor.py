@@ -39,7 +39,7 @@ def build_messages(
     system_content = SYSTEM_PROMPT
 
     if subject:
-        system_content += f"\n\nThe student is studying: {subject}."
+        system_content += f'\n\nThe student is studying: "{subject}".'
 
     messages = [{"role": "system", "content": system_content}] + history
 
@@ -69,7 +69,8 @@ class TutorSession:
             else:
                 # Remove characters that are not alphanumeric, space, hyphens, or underscores
                 # to prevent prompt injection, and limit length to 100 characters.
-                subject_clean = re.sub(r"[^a-zA-Z0-9\s\-_]", "", subject).strip()
+                subject_clean = re.sub(r"[\r\n]", "", subject)
+                subject_clean = re.sub(r"[^a-zA-Z0-9 \-_]", "", subject_clean).strip()
                 if len(subject_clean) > 100:
                     logger.warning(f"[TutorSession] Subject too long ({len(subject_clean)} chars), truncating")
                     subject_clean = subject_clean[:100]

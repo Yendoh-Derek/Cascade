@@ -20,6 +20,7 @@ import logging
 import asyncio
 import hmac
 import time
+import secrets
 from typing import Any, Callable, Dict, Optional
 from pathlib import Path
 
@@ -117,49 +118,60 @@ async def websocket_endpoint(
 
         session: Optional[PipelineSession] = None
         sender_task: Optional[asyncio.Task] = None
+        ping_task: Optional[asyncio.Task] = None
         sender_running = False
 
         try:
             await websocket.accept()
             logger.info(f"[WS] Client connected (subject={subject})")
+            
+            # Explicit Origin validation (SEC-02)
+            origin = websocket.headers.get("origin")
+            if origin:
+                host = websocket.headers.get("host", "")
+                if host not in origin and "localhost" not in origin and "127.0.0.1" not in origin:
+                    logger.warning(f"[WS] Rejecting connection from origin {origin} (host={host})")
+                    await websocket.close(code=4003)
+                    return
 
-            # 1. Auth Secret Verification (supports both query param and first-message handshake)
+            # 1. Auth Secret Verification (HMAC challenge-response)
             auth_secret = os.getenv("CASCADE_AUTH_SECRET")
             pre_auth_audio = []
             if auth_secret:
                 authorized = False
-                if isinstance(secret, str) and hmac.compare_digest(secret, auth_secret):
-                    authorized = True
+                nonce = secrets.token_hex(16)
+                await websocket.send_json({"type": "challenge", "nonce": nonce})
                 
-                if not authorized:
-                    try:
-                        start_time = time.time()
-                        while time.time() - start_time < 5.0 and not authorized:
-                            message = await asyncio.wait_for(websocket.receive(), timeout=5.0 - (time.time() - start_time))
-                            
-                            msg_type = message.get("type", "")
-                            if msg_type == "websocket.disconnect":
-                                break
-                            
-                            # If it's a text message, parse and check if it's the auth message
-                            raw_text = message.get("text", "")
-                            if raw_text:
-                                try:
-                                    auth_msg = json.loads(raw_text.strip())
-                                    candidate = auth_msg.get("secret")
-                                    if auth_msg.get("type") == "auth" and isinstance(candidate, str) and hmac.compare_digest(candidate, auth_secret):
+                try:
+                    start_time = time.time()
+                    while time.time() - start_time < 5.0 and not authorized:
+                        message = await asyncio.wait_for(websocket.receive(), timeout=5.0 - (time.time() - start_time))
+                        
+                        msg_type = message.get("type", "")
+                        if msg_type == "websocket.disconnect":
+                            break
+                        
+                        # If it's a text message, parse and check if it's the auth message
+                        raw_text = message.get("text", "")
+                        if raw_text:
+                            try:
+                                auth_msg = json.loads(raw_text.strip())
+                                if auth_msg.get("type") == "auth":
+                                    candidate_hmac = auth_msg.get("response")
+                                    expected_hmac = hmac.new(auth_secret.encode(), nonce.encode(), "sha256").hexdigest()
+                                    if isinstance(candidate_hmac, str) and hmac.compare_digest(candidate_hmac, expected_hmac):
                                         await websocket.send_json({"type": "auth_ok"})
                                         authorized = True
                                         break
-                                except json.JSONDecodeError:
-                                    pass
-                            
-                            # If it's a binary message (early audio), buffer it
-                            raw_bytes = message.get("bytes")
-                            if raw_bytes:
-                                pre_auth_audio.append(raw_bytes)
-                    except (asyncio.TimeoutError, WebSocketDisconnect):
-                        pass
+                            except json.JSONDecodeError:
+                                pass
+                        
+                        # If it's a binary message (early audio), buffer it
+                        raw_bytes = message.get("bytes")
+                        if raw_bytes:
+                            pre_auth_audio.append(raw_bytes)
+                except (asyncio.TimeoutError, WebSocketDisconnect):
+                    pass
 
                 if not authorized:
                     await websocket.send_json({"type": "error", "message": "Unauthorized: Invalid or missing auth secret"})
@@ -186,12 +198,10 @@ async def websocket_endpoint(
                     "edge_tts_voice": config.edge_tts_voice,
                     "deepgram_tts_model": config.deepgram_tts_model,
                 },
-                send_message=lambda msg: None,
+                outbound_queue=outbound_queue,
                 subject=subject,
                 tts_engine=tts_engine,
             )
-            session.send_message = lambda _msg: outbound_queue.put_nowait(_msg)
-            session.outbound_queue = outbound_queue
             
             # Now create and start sender task
             sender_running = True
@@ -216,6 +226,19 @@ async def websocket_endpoint(
                             pass
 
             sender_task = asyncio.create_task(sender_coroutine())
+
+            # Heartbeat — sends a ping every 15s to detect silent disconnections (IMP-02)
+            async def ping_coroutine():
+                while sender_running:
+                    await asyncio.sleep(15)
+                    if not sender_running:
+                        break
+                    try:
+                        await websocket.send_json({"type": "ping"})
+                    except Exception:
+                        break
+
+            ping_task = asyncio.create_task(ping_coroutine())
 
             try:
                 await asyncio.wait_for(session.initialize(), timeout=10)
@@ -291,7 +314,9 @@ async def websocket_endpoint(
                         control_msg = json.loads(stripped_text)
                         if isinstance(control_msg, dict):
                             ctrl_type = control_msg.get("type")
-                            if ctrl_type == "cancel":
+                            if ctrl_type == "pong":
+                                continue
+                            elif ctrl_type == "cancel":
                                 logger.info("[WS] Cancel signal received")
                                 if session:
                                     await session.cancel()
@@ -321,6 +346,14 @@ async def websocket_endpoint(
             # Clean up sender task
             try:
                 sender_running = False
+                # Cancel heartbeat
+                if ping_task is not None and not ping_task.done():
+                    ping_task.cancel()
+                    try:
+                        await asyncio.wait_for(ping_task, timeout=0.5)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                # Cancel sender
                 if sender_task is not None and not sender_task.done():
                     sender_task.cancel()
                     try:

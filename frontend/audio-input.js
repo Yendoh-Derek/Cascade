@@ -200,7 +200,7 @@ export class AudioInputController {
       class AudioProcessor extends AudioWorkletProcessor {
         constructor() {
             super();
-            this.bufferSize = 512; // ~32ms of audio at 16kHz
+            this.bufferSize = 160; // 10ms of audio at 16kHz
             this.buffer = new Int16Array(this.bufferSize);
             this.bufferWriteIndex = 0;
         }

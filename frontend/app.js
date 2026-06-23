@@ -211,7 +211,13 @@ class CascadeClient {
           this._interrupting = false;
           this._resetTurnState();
           this.ui.addTranscriptItem("student", msg.text);
-          this.currentStreamingBubble = null;
+          // Reset response state for the new turn — prevents previous turn's
+          // partial text from bleeding into this turn's streaming bubble.
+          this.currentResponse = "";
+          if (this.currentStreamingBubble) {
+            this.currentStreamingBubble.remove();
+            this.currentStreamingBubble = null;
+          }
           this.totalTurns++;
           this.ui._updateStatsBar();
           this.setState(STATE.PROCESSING);
