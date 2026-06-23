@@ -30,8 +30,8 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, TypeAlias, cast
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, TypeAlias, cast
 
 from groq.types.chat import ChatCompletionMessageParam
 from backend.stt import STTHandler
