@@ -156,7 +156,7 @@ async def websocket_endpoint(
 
             # 1. Auth Secret Verification (HMAC challenge-response)
             auth_secret = os.getenv("CASCADE_AUTH_SECRET")
-            pre_auth_audio = []
+            pre_auth_audio: list[bytes] = []
             if auth_secret:
                 authorized = False
                 nonce = secrets.token_hex(16)
@@ -199,7 +199,7 @@ async def websocket_endpoint(
                         # early, not enough for an unauthenticated flood.
                         raw_bytes = message.get("bytes")
                         if raw_bytes:
-                            pre_auth_total = sum(len(c) for c in pre_auth_audio)
+                            pre_auth_total: int = sum(len(chunk) for chunk in pre_auth_audio)
                             if (
                                 len(raw_bytes) <= 10_000_000
                                 and pre_auth_total + len(raw_bytes) <= 256 * 1024
