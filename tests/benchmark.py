@@ -38,7 +38,16 @@ def calculate_percentiles(data: List[float]) -> Dict[str, float]:
     }
 
 async def mock_benchmark_run(trials: int = 5):
+    """
+    Run a mock benchmark simulation.
+
+    NOTE: All latency numbers here are SIMULATED — they are not real API measurements.
+    For real end-to-end latency, use the live "latency" message emitted by the
+    backend WebSocket pipeline (type="latency", fields: total_ms, stt_ms, llm_ms,
+    tts_ms). The live metrics are displayed in the frontend latency chart.
+    """
     print(f"Running {trials} mock benchmark trials to simulate pipeline processing...")
+
     
     stt_latencies = []
     ttft_latencies = []

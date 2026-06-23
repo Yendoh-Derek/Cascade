@@ -56,6 +56,10 @@ class STTHandler:
 
         self._last_audio_sent_time: Optional[float] = None
         self._utterance_start_time: Optional[float] = None
+        # Timestamp of the last is_final result with actual content.
+        # Used to measure endpointing latency (last recognized speech → speech_final)
+        # rather than speaking duration. Typically ≈ 300ms (the endpointing window).
+        self._last_speech_time: Optional[float] = None
         self.last_stt_processing_ms: int = 0
 
     def _build_ws_url(self) -> str:
@@ -192,6 +196,7 @@ class STTHandler:
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     if self.ws:
                         logger.error(f"[STT] WebSocket error: {self.ws.exception()}")
+                        self.is_open = False  # Prevents duplicate reconnect schedule
                         if not self._closing_intentionally:
                             await self._schedule_reconnect()
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
@@ -244,6 +249,9 @@ class STTHandler:
                     if transcript and is_final:
                         if not self.transcript_buffer.strip():
                             self._utterance_start_time = time.time()
+                        # Track time of most recent recognized speech for
+                        # endpointing latency measurement in _flush_buffer()
+                        self._last_speech_time = time.time()
                         self.transcript_buffer = (
                             self.transcript_buffer + " " + transcript
                             if self.transcript_buffer
@@ -337,17 +345,22 @@ class STTHandler:
         if not confirmed:
             return
 
-        if self._utterance_start_time is not None:
+        # Measure endpointing latency: time from last recognized speech to speech_final.
+        # This is the 300ms endpointing wait + any remaining Deepgram processing.
+        # It is NOT the speaking duration (that would be time - _utterance_start_time).
+        if self._last_speech_time is not None:
             self.last_stt_processing_ms = int(
-                (time.time() - self._utterance_start_time) * 1000
+                (time.time() - self._last_speech_time) * 1000
             )
         elif self._last_audio_sent_time is not None:
+            # Fallback: no is_final with content received yet (very short utterance)
             self.last_stt_processing_ms = int(
                 (time.time() - self._last_audio_sent_time) * 1000
             )
         else:
             self.last_stt_processing_ms = 0
         self._utterance_start_time = None
+        self._last_speech_time = None
         self._last_audio_sent_time = None
 
         self.transcript_buffer = ""

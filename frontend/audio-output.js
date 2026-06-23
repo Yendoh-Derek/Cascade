@@ -8,6 +8,7 @@ export class AudioOutputController {
     this.analyser = null;
     
     this.isPlaying = false;
+    this.isAudioSourceEnded = false;  // N2: explicit initialization
     this.nextPlaybackTime = null;
     this.speakingStartTime = null;
     this.activeSourceNodes = [];
@@ -163,8 +164,9 @@ export class AudioOutputController {
   }
 
   _schedulePlayback(audioBuffer, epoch, turnId, decodeGen) {
-    this.speakingStartTime = Date.now();
-    // GUARD 4: Final sanity check before scheduling source
+    // GUARD 4: Final sanity check before scheduling source.
+    // speakingStartTime is stamped AFTER this guard so that dropped stale
+    // chunks don't reset the timer used by barge-in detection (fix 1.7).
     if (
       epoch !== this.client.audioEpoch ||
       decodeGen !== this.client.decodeGeneration ||
@@ -178,6 +180,8 @@ export class AudioOutputController {
       return;
     }
 
+    // Only stamp if we actually proceed to schedule playback (fix 1.7)
+    this.speakingStartTime = Date.now();
     this.client.setState(STATE.SPEAKING);
     this.isPlaying = true;
     this.playbackTurnId = turnId;

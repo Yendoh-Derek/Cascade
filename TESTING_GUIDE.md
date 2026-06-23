@@ -123,7 +123,7 @@
 
 1. With "Listening" status, speak clearly: "What is photosynthesis?"
 2. Expected behavior:
-   - Status changes to "⚙️ Processing" after ~600ms of silence (Deepgram endpointing)
+   - Status changes to "⚙️ Processing" after ~300ms of silence (Deepgram endpointing)
    - Server log shows: `[STT] Utterance confirmed (speech_final): what is photosynthesis?`
 
 **Server Log Validation:**
@@ -143,7 +143,7 @@ Check for:
 
 **Validation Points:**
 
-- ✓ Deepgram endpointing triggers turn end (~600ms silence after speech)
+- ✓ Deepgram endpointing triggers turn end (~300ms silence after speech)
 - ✓ Text appears in transcript panel as "Student" message
 - ✓ Server receives correct transcription
 - ✓ No duplicate messages in logs
@@ -224,7 +224,7 @@ Displayed total = total_ms from server (LLM + TTS breakdown stacks to this total
 Target: <600ms (design goal)
 Typical: 100-400ms (for cached contexts)
 
-Note: Utterance end is detected server-side by Deepgram speech_final (~600ms endpointing), not by a client silence timer.
+Note: Utterance end is detected server-side by Deepgram speech_final (~300ms endpointing), not by a client silence timer.
 ```
 
 **Validation Points:**
