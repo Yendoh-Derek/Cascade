@@ -394,10 +394,11 @@ class TestEndToEndFlow:
         """Test concurrent TTS tracking."""
         session = make_pipeline_session()
         
-        # Verify current concurrency primitives exist
-        assert isinstance(session._tts_semaphore, asyncio.Semaphore)
-        assert session._tts_semaphore._value == 2
-        assert session._tts_tasks == set()
+        # Verify current session state for streaming TTS turns
+        assert session._compute_ideal_concurrency() == 2
+        assert session._metrics.tts_first_sentence_latency_ms == 0
+        assert session._metrics.tts_metrics_sent is False
+        assert session._rate_limiter.allow(1) is True
 
 
 if __name__ == "__main__":
