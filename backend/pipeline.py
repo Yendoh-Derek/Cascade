@@ -16,14 +16,18 @@ import asyncio
 import logging
 import re
 import time
-from typing import Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, TypeAlias, cast
 
+from groq.types.chat import ChatCompletionMessageParam
 from backend.stt import STTHandler
 from backend.llm import LLMGenerator
 from backend.tts import TTSEngine
 from backend.tutor import TutorSession
 
 logger = logging.getLogger(__name__)
+
+SentenceQueueItem: TypeAlias = bytes | Exception | None
+ResponseQueueItem: TypeAlias = tuple[str, asyncio.Queue[SentenceQueueItem]] | Exception | None
 
 
 def strip_markdown(text: str) -> str:
@@ -45,7 +49,7 @@ class PipelineSession:
         self,
         api_keys: Dict[str, str],
         model_config: Dict[str, str],
-        outbound_queue: asyncio.Queue,
+        outbound_queue: asyncio.Queue[dict[str, Any] | None],
         subject: Optional[str] = None,
         tts_engine: str = "edge",
     ):
@@ -244,11 +248,14 @@ class PipelineSession:
 
             self.tutor.add_user_message(transcript)
             self.tutor.trim_history(max_turns=10)
-            messages = self.tutor.get_messages()
+            messages = cast(list[ChatCompletionMessageParam], self.tutor.get_messages())
 
-            queue = asyncio.Queue()
+            queue: asyncio.Queue[ResponseQueueItem] = asyncio.Queue()
 
-            async def synthesize_sentence_to_queue(text: str, sentence_queue: asyncio.Queue):
+            async def synthesize_sentence_to_queue(
+                text: str,
+                sentence_queue: asyncio.Queue[SentenceQueueItem],
+            ) -> None:
                 try:
                     async with self._tts_semaphore:
                         if self._cancel_event.is_set() or turn_id != self._active_turn_id:
@@ -284,7 +291,7 @@ class PipelineSession:
                                             "first_sentence_latency_ms": latency_ms,
                                             "engine": chunk.get("engine", "unknown"),
                                         })
-                            elif chunk:
+                            elif isinstance(chunk, (bytes, bytearray, memoryview)):
                                 # Stream audio chunk directly to queue instead of buffering
                                 if not self._cancel_event.is_set() and turn_id == self._active_turn_id:
                                     await sentence_queue.put(bytes(chunk))
@@ -298,7 +305,7 @@ class PipelineSession:
                     logger.error(f"[Pipeline] TTS synthesis failed for '{text[:20]}': {e}")
                     await sentence_queue.put(e)
 
-            async def produce_sentences():
+            async def produce_sentences() -> None:
                 nonlocal first_token_received
                 gen = llm_generator.generate(
                     messages=messages,
@@ -365,7 +372,7 @@ class PipelineSession:
 
                         # Sanitise markdown from sentence before TTS
                         clean_sentence = strip_markdown(sentence)
-                        sentence_queue = asyncio.Queue()
+                        sentence_queue: asyncio.Queue[SentenceQueueItem] = asyncio.Queue()
                         tts_task = asyncio.create_task(
                             synthesize_sentence_to_queue(clean_sentence, sentence_queue)
                         )
@@ -380,7 +387,7 @@ class PipelineSession:
                 finally:
                     await gen.aclose()
 
-            async def consume_audio():
+            async def consume_audio() -> None:
                 nonlocal full_response
                 first_audio_sent = False
                 while True:

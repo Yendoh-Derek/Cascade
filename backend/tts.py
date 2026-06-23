@@ -310,14 +310,15 @@ class TTSEngine:
         deepgram_api_key: Optional[str] = None,
         deepgram_model: str = "aura-asteria-en"
     ):
+        self._engine: BaseTTSEngine
         if engine == "deepgram":
-            self._engine: BaseTTSEngine = DeepgramTTSEngine(
+            self._engine = DeepgramTTSEngine(
                 api_key=deepgram_api_key, model=deepgram_model
             )
             self.format = "linear16"
             self.sample_rate = 24000
         else:
-            self._engine: BaseTTSEngine = EdgeTTSEngine(voice=edge_voice)
+            self._engine = EdgeTTSEngine(voice=edge_voice)
             self.format = "mp3"
             self.sample_rate = 24000
 

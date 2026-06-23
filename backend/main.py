@@ -187,7 +187,7 @@ async def websocket_endpoint(
                 return
 
             # Create outbound message queue first
-            outbound_queue = asyncio.Queue()
+            outbound_queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
             
             # Initialize session first
             session = PipelineSession(
@@ -206,7 +206,7 @@ async def websocket_endpoint(
             # Now create and start sender task
             sender_running = True
 
-            async def sender_coroutine():
+            async def sender_coroutine() -> None:
                 """Single coroutine responsible for all outbound WebSocket messages."""
                 nonlocal sender_running
                 while sender_running:
