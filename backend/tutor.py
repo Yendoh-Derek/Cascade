@@ -161,9 +161,12 @@ class TutorSession:
         max_tokens = 16000  # Increased limit for Groq Llama 3.3 70B
 
         if total_tokens > max_tokens:
-            # Remove oldest messages one at a time until under limit
-            while len(self.history) > 0 and total_tokens > max_tokens:
-                self.history.pop(0)
+            # Remove oldest message pair (user + assistant) together to maintain
+            # role ordering. Popping single messages can leave an orphaned
+            # assistant message at history[0], which confuses some LLMs (fix N6).
+            while len(self.history) >= 2 and total_tokens > max_tokens:
+                self.history.pop(0)  # user message
+                self.history.pop(0)  # assistant message
                 total_tokens = self._estimate_tokens()
 
             logger.info(

@@ -61,11 +61,18 @@ export class ChartRenderer {
 
     const peakTotal = Math.max(
       ...data.map((d) => {
+        // stt is outside total_ms (measured before utterance_end_time).
+        // Bar height = stt + total since these are additive phases.
         const sttVal = d.stt || 0;
         const llmVal = d.llm || 0;
         const ttsVal = d.tts || 0;
-        const systemVal = d.system != null ? d.system : (d.total > 0 ? Math.max(0, d.total - (sttVal + llmVal + ttsVal)) : 0);
-        return Math.max(d.total || 0, sttVal + llmVal + ttsVal + systemVal);
+        const systemVal = d.system != null
+          ? d.system
+          : Math.max(0, (d.total || 0) - (llmVal + ttsVal));
+        return Math.max(
+          (d.stt || 0) + (d.total || 0),  // true e2e = stt phase + pipeline phase
+          sttVal + llmVal + ttsVal + systemVal
+        );
       }),
       100,
     );
@@ -115,7 +122,7 @@ export class ChartRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = "rgba(255,255,255,0.45)";
-    ctx.fillText("600ms target", legendX + 20, legendY + 8);
+    ctx.fillText("600ms pipeline target", legendX + 20, legendY + 8);
 
     // Y gridlines
     for (let v = 0; v <= maxMs; v += tickStep) {
@@ -191,8 +198,10 @@ export class ChartRenderer {
         ctx.globalAlpha = 1;
       }
 
-      // 4. System bar (top of the stack)
-      const systemVal = d.system != null ? d.system : (d.total > 0 ? Math.max(0, d.total - (sttVal + llmVal + ttsVal)) : 0);
+      // 4. System bar (top of the stack — pipeline overhead inside total_ms)
+      const systemVal = d.system != null
+        ? d.system
+        : Math.max(0, (d.total || 0) - (llmVal + ttsVal));  // stt NOT in total
       if (systemVal > 0) {
         const barH = (systemVal / maxMs) * chartH;
         yBase -= barH;
@@ -203,8 +212,10 @@ export class ChartRenderer {
         ctx.globalAlpha = 1;
       }
 
-      // Total label above bar
-      const displayTotal = d.total || (sttVal + llmVal + ttsVal + systemVal);
+      // Label shows full end-to-end latency (stt phase + pipeline phase).
+      // stt ≈ endpointing wait (≈300ms); total = LLM+TTS+system after speech_final.
+      const e2eTotal = (d.stt || 0) + (d.total || 0);
+      const displayTotal = e2eTotal || (sttVal + llmVal + ttsVal + systemVal);
       ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.font = "9px JetBrains Mono, monospace";
       ctx.textAlign = "center";

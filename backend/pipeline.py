@@ -7,16 +7,31 @@ Responsibility: Wire STT → LLM → TTS together and manage the WebSocket
 connection to the browser. Measure latency at each stage.
 
 Fixes applied:
-  [M4] When is_processing_transcript guard drops a concurrent transcript,
-       a "busy" message is now sent to the client so the user knows to
-       wait rather than thinking their question was heard.
+  [M4]  When is_processing_transcript guard drops a concurrent transcript,
+        a "busy" message is now sent to the client so the user knows to
+        wait rather than thinking their question was heard.
+  [0.5] Zero-sentence LLM output now emits an explicit error message to
+        the client instead of silently ending the turn.
+  [1.1] pipeline.py batches all turn sentences and calls tts.synthesise_turn()
+        once per turn (Speak-many / Flush-once). This eliminates per-sentence
+        audio finalization gaps.
+  [1.4+N3] TTS semaphore and task set are now scoped per-turn, so a new
+        turn always starts with fresh capacity instead of competing with
+        dying tasks from the interrupted turn.
+  [2.1] Latency tracking fields moved into TurnMetrics dataclass.
+  [2.2] Partial assistant response from interrupted turns is saved to history
+        to maintain user/assistant message pairing.
+  [N8]  _on_done callback edge case fixed: is_processing_transcript is now
+        cleared correctly when a task is replaced mid-flight.
+  [N9]  Inner consume_audio() timeout aligned with outer LLM timeout (30s).
 """
 
 import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, Optional, Set, TypeAlias, cast
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, TypeAlias, cast
 
 from groq.types.chat import ChatCompletionMessageParam
 from backend.stt import STTHandler
@@ -35,6 +50,50 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r'(?<!\w)-(?!\w)', ' ', text)
     cleaned = re.sub(r'[*_#`\[\]]', '', text)
     return cleaned.strip()
+
+
+class RateLimiter:
+    """Token-bucket rate limiter for per-session audio input.
+
+    Prevents a single client from flooding the STT pipeline with more audio
+    than is physically possible to speak. Default: 32KB/s (PCM16 at 16kHz mono)
+    with a 2-second burst allowance — enough for normal microphone pre-buffering
+    but not enough for a bulk-upload DoS attack (fix 0.6).
+    """
+
+    def __init__(self, bytes_per_sec: int = 32_000, burst_sec: float = 2.0):
+        self.rate = bytes_per_sec
+        self.capacity = bytes_per_sec * burst_sec
+        self.tokens = self.capacity
+        self.last = time.monotonic()
+
+    def allow(self, n_bytes: int) -> bool:
+        """Return True if n_bytes is within the current rate budget."""
+        now = time.monotonic()
+        elapsed = now - self.last
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+        self.last = now
+        if self.tokens >= n_bytes:
+            self.tokens -= n_bytes
+            return True
+        return False
+
+
+@dataclass
+class TurnMetrics:
+    """Latency tracking for a single pipeline turn.
+
+    Extracted from PipelineSession to keep per-turn state self-contained
+    and to declutter the session class (review item 2.1).
+    """
+    utterance_end_time: Optional[float] = None
+    last_stt_ms: int = 0
+    last_llm_ms: int = 0
+    llm_queue_ms: int = 0
+    llm_ttft_ms: int = 0
+    llm_streaming_ms: int = 0
+    tts_first_sentence_latency_ms: int = 0
+    tts_metrics_sent: bool = False
 
 
 class PipelineSession:
@@ -63,36 +122,23 @@ class PipelineSession:
         self.llm_generator: Optional[LLMGenerator] = None
         self.tts_engine: Optional[TTSEngine] = None
 
-        # Latency tracking
-        self.utterance_end_time: Optional[float] = None
-        self._last_stt_ms: int = 0
-        self._last_llm_ms: int = 0
-        
-        # LLM latency breakdown (computed during first sentence)
-        self._llm_queue_ms: int = 0
-        self._llm_ttft_ms: int = 0
-        self._llm_streaming_ms: int = 0
-        
-        # TTS latency per-sentence tracking
-        self._tts_first_sentence_latency_ms: int = 0
-        self._tts_metrics_sent: bool = False
-        
+        # Per-turn metrics (replaced on each new turn)
+        self._metrics = TurnMetrics()
+
         # Interruption tracking
         self._final_turn_cutoff_time: Optional[float] = None
 
         # Turn tracking for interrupt safety
         self.turn_id: int = 0
         self._active_turn_id: Optional[int] = None
-        self._tts_tasks: Set[asyncio.Task] = set()
-        
-        # TTS concurrency — Semaphore(2) for O(1) wakeup (replaces Condition)
-        self._tts_semaphore = asyncio.Semaphore(2)
-        self._first_audio_sent_turn_id: Optional[int] = None
 
         # Prevent concurrent transcript processing
         self.is_processing_transcript = False
         self.processing_task: Optional[asyncio.Task] = None
         self._cancel_event = asyncio.Event()
+
+        # Per-session audio rate limiter (fix 0.6)
+        self._rate_limiter = RateLimiter()
 
         logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject}, tts_engine={tts_engine})")
 
@@ -114,7 +160,7 @@ class PipelineSession:
             deepgram_api_key=self.api_keys["deepgram"],
             deepgram_model=self.model_config.get("deepgram_tts_model", "aura-asteria-en")
         )
-        
+
         # Send TTS config to frontend
         self.send_message({
             "type": "tts_config",
@@ -122,30 +168,35 @@ class PipelineSession:
             "sample_rate": self.tts_engine.sample_rate,
             "sampleRate": self.tts_engine.sample_rate
         })
-        
+
         await self.stt_handler.connect()
         logger.info("[Pipeline] All components initialized and ready")
 
     async def handle_audio(self, audio_bytes: bytes):
-        """Forward audio bytes to the STT handler."""
-        if self.stt_handler:
-            await self.stt_handler.send_audio(audio_bytes)
+        """Forward audio bytes to the STT handler, subject to per-session rate limiting."""
+        if not self.stt_handler:
+            return
+        if not self._rate_limiter.allow(len(audio_bytes)):
+            logger.warning(
+                f"[Pipeline] Audio rate limit exceeded ({len(audio_bytes)}B dropped)"
+            )
+            self.send_message({"type": "rate_limited", "message": "Audio rate limit exceeded"})
+            return
+        await self.stt_handler.send_audio(audio_bytes)
 
     def _can_send(self, turn_id: int) -> bool:
         """Return True if messages for this turn should still be delivered.
-        
+
         Final atomic validation gate to prevent stale audio from reaching client.
-        Checks are:
-        1. turn_id matches active turn (or active turn is None for closed turns)
-        2. Cancel event not set
         """
         if self._cancel_event.is_set():
             return False
         if turn_id != self._active_turn_id:
             return False
         return True
-    
+
     def _compute_ideal_concurrency(self) -> int:
+        # Stub: always 2. Future: adapt based on queue depth / sentence length.
         return 2
 
     def send_message(self, msg: dict):
@@ -193,48 +244,51 @@ class PipelineSession:
 
         self.turn_id += 1
         current_turn_id = self.turn_id
-        
+
         self._cancel_event.clear()
         self._active_turn_id = current_turn_id
-        
-        # Reset metrics for new turn
-        self._tts_first_sentence_latency_ms = 0
-        self._tts_metrics_sent = False
 
-        self.utterance_end_time = time.time()
+        # Reset metrics for new turn
+        self._metrics = TurnMetrics()
+
+        self._metrics.utterance_end_time = time.time()
         if self.stt_handler:
-            self._last_stt_ms = self.stt_handler.last_stt_processing_ms
+            self._metrics.last_stt_ms = self.stt_handler.last_stt_processing_ms
         else:
-            self._last_stt_ms = 0
+            self._metrics.last_stt_ms = 0
 
         self.is_processing_transcript = True
         logger.info(
             f"[Pipeline] Turn {current_turn_id} transcript: '{transcript[:60]}' "
-            f"(STT processing: {self._last_stt_ms}ms)"
+            f"(STT processing: {self._metrics.last_stt_ms}ms)"
         )
 
         try:
             loop = asyncio.get_running_loop()
             task = loop.create_task(self._process_transcript(transcript, current_turn_id))
             self.processing_task = task
-            
+
             _captured_task = task
+
             def _on_done(t):
-                if t is _captured_task and self.processing_task is _captured_task:
+                # Always clear is_processing_transcript if this task is still
+                # the active one — prevents stuck state when a task is replaced
+                # mid-flight (fix N8).
+                if self.processing_task is _captured_task:
                     self.processing_task = None
                     self.is_processing_transcript = False
-                elif t.cancelled():
+                if t.cancelled():
                     logger.info("[Pipeline] Processing task was cancelled")
-                elif t.exception():
+                elif not t.cancelled() and t.exception() is not None:
                     logger.error(f"[Pipeline] Processing task failed: {t.exception()}")
-                    
+
             task.add_done_callback(_on_done)
         except RuntimeError:
             logger.error("[Pipeline] No running event loop")
             self.is_processing_transcript = False
 
     async def _process_transcript(self, transcript: str, turn_id: int):
-        """Core pipeline: transcript → LLM streaming → TTS streaming → WebSocket."""
+        """Core pipeline: transcript → LLM streaming → TTS turn-batch → WebSocket."""
         full_response = ""
         first_token_received = False
         llm_generator = self.llm_generator
@@ -250,60 +304,13 @@ class PipelineSession:
             self.tutor.trim_history(max_turns=10)
             messages = cast(list[ChatCompletionMessageParam], self.tutor.get_messages())
 
-            queue: asyncio.Queue[ResponseQueueItem] = asyncio.Queue()
-
-            async def synthesize_sentence_to_queue(
-                text: str,
-                sentence_queue: asyncio.Queue[SentenceQueueItem],
-            ) -> None:
-                try:
-                    async with self._tts_semaphore:
-                        if self._cancel_event.is_set() or turn_id != self._active_turn_id:
-                            logger.debug(f"[Pipeline] TTS slot acquisition cancelled for '{text[:40]}'")
-                            return
-                        
-                        logger.debug("[Pipeline] TTS slot acquired")
-                        
-                        async for chunk in tts_engine.synthesise(text):
-                            if self._cancel_event.is_set() or turn_id != self._active_turn_id:
-                                logger.info("[Pipeline] TTS synthesis cancelled")
-                                break
-                            
-                            # Check if chunk is metadata dict (first yield) or audio bytes
-                            if isinstance(chunk, dict) and chunk.get("type") == "tts_metadata":
-                                # Defensive: Validate latency value (should be positive and reasonable)
-                                latency_ms = chunk.get("latency_ms", 0)
-                                if not isinstance(latency_ms, (int, float)) or latency_ms < 0 or latency_ms > 60000:
-                                    logger.warning(f"[Pipeline] Invalid TTS latency value: {latency_ms}ms, using 0")
-                                    latency_ms = 0
-                                else:
-                                    latency_ms = int(latency_ms)
-                                
-                                logger.debug(f"[Pipeline] TTS metadata received: latency={latency_ms}ms")
-                                if not self._tts_first_sentence_latency_ms:
-                                    self._tts_first_sentence_latency_ms = latency_ms
-                                    # Send first-sentence TTS metrics to client (only once per turn)
-                                    if not self._tts_metrics_sent:
-                                        self._tts_metrics_sent = True
-                                        logger.info(f"[Pipeline] First TTS latency: {latency_ms}ms")
-                                        self._send_for_turn(turn_id, {
-                                            "type": "tts_metrics",
-                                            "first_sentence_latency_ms": latency_ms,
-                                            "engine": chunk.get("engine", "unknown"),
-                                        })
-                            elif isinstance(chunk, (bytes, bytearray, memoryview)):
-                                # Stream audio chunk directly to queue instead of buffering
-                                if not self._cancel_event.is_set() and turn_id == self._active_turn_id:
-                                    await sentence_queue.put(bytes(chunk))
-                        
-                        await sentence_queue.put(None)
-                        logger.debug("[Pipeline] TTS slot released")
-                        
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error(f"[Pipeline] TTS synthesis failed for '{text[:20]}': {e}")
-                    await sentence_queue.put(e)
+            # sentence_queue carries clean sentence strings from the LLM generator.
+            # None is the sentinel that signals the stream is done.
+            # produce_sentences() puts sentences here as they arrive from the LLM —
+            # NOT after all sentences are complete — so consume_audio() / TTS can
+            # start synthesising the first sentence immediately (true streaming).
+            _SENTINEL = None
+            sentence_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
             async def produce_sentences() -> None:
                 nonlocal first_token_received
@@ -319,47 +326,48 @@ class PipelineSession:
 
                         if not first_token_received:
                             first_token_received = True
-                            if self.utterance_end_time:
+                            if self._metrics.utterance_end_time:
                                 # Compute LLM latency breakdown from generator timestamps
                                 queue_latency_ms = 0
                                 ttft_ms = 0
                                 streaming_delay_ms = 0
-                                
-                                if (llm_generator.t_request_sent and 
-                                    llm_generator.t_request_created):
-                                    queue_latency_ms = int((llm_generator.t_request_sent - 
-                                                          llm_generator.t_request_created) * 1000)
-                                    # Defensive: Clamp to reasonable range (clock skew protection)
+
+                                if (llm_generator.t_request_sent and
+                                        llm_generator.t_request_created):
+                                    queue_latency_ms = int(
+                                        (llm_generator.t_request_sent -
+                                         llm_generator.t_request_created) * 1000
+                                    )
                                     queue_latency_ms = max(0, min(queue_latency_ms, 30000))
-                                
-                                if (llm_generator.t_first_token and 
-                                    llm_generator.t_request_sent):
-                                    ttft_ms = int((llm_generator.t_first_token - 
-                                                 llm_generator.t_request_sent) * 1000)
-                                    # Defensive: Clamp to reasonable range (TTFT typically <2s)
+
+                                if (llm_generator.t_first_token and
+                                        llm_generator.t_request_sent):
+                                    ttft_ms = int(
+                                        (llm_generator.t_first_token -
+                                         llm_generator.t_request_sent) * 1000
+                                    )
                                     ttft_ms = max(0, min(ttft_ms, 30000))
-                                
-                                if (llm_generator.t_first_sentence_emitted and 
-                                    llm_generator.t_first_token):
-                                    streaming_delay_ms = int((llm_generator.t_first_sentence_emitted - 
-                                                            llm_generator.t_first_token) * 1000)
-                                    # Defensive: Clamp to reasonable range (streaming typically <5s to first sentence)
+
+                                if (llm_generator.t_first_sentence_emitted and
+                                        llm_generator.t_first_token):
+                                    streaming_delay_ms = int(
+                                        (llm_generator.t_first_sentence_emitted -
+                                         llm_generator.t_first_token) * 1000
+                                    )
                                     streaming_delay_ms = max(0, min(streaming_delay_ms, 30000))
-                                
-                                # Compute total LLM time (first sentence latency from utterance end)
+
                                 total_llm_ms = queue_latency_ms + ttft_ms + streaming_delay_ms
-                                self._last_llm_ms = total_llm_ms
-                                
-                                # Store breakdown for metrics reporting
-                                self._llm_queue_ms = queue_latency_ms
-                                self._llm_ttft_ms = ttft_ms
-                                self._llm_streaming_ms = streaming_delay_ms
-                                
-                                logger.info(f"[Pipeline] LLM metrics: queue={queue_latency_ms}ms, "
-                                           f"ttft={ttft_ms}ms, streaming={streaming_delay_ms}ms, "
-                                           f"total={total_llm_ms}ms")
-                                
-                                # Send detailed LLM metrics to client
+                                self._metrics.last_llm_ms = total_llm_ms
+                                self._metrics.llm_queue_ms = queue_latency_ms
+                                self._metrics.llm_ttft_ms = ttft_ms
+                                self._metrics.llm_streaming_ms = streaming_delay_ms
+
+                                logger.info(
+                                    f"[Pipeline] LLM metrics: queue={queue_latency_ms}ms, "
+                                    f"ttft={ttft_ms}ms, streaming={streaming_delay_ms}ms, "
+                                    f"total={total_llm_ms}ms"
+                                )
+
                                 self._send_for_turn(turn_id, {
                                     "type": "llm_metrics",
                                     "queue_ms": queue_latency_ms,
@@ -370,111 +378,125 @@ class PipelineSession:
 
                         self._send_for_turn(turn_id, {"type": "response_chunk", "text": sentence})
 
-                        # Sanitise markdown from sentence before TTS
+                        # Feed the clean sentence into the queue immediately so TTS
+                        # can start synthesising it without waiting for the full LLM response.
                         clean_sentence = strip_markdown(sentence)
-                        sentence_queue: asyncio.Queue[SentenceQueueItem] = asyncio.Queue()
-                        tts_task = asyncio.create_task(
-                            synthesize_sentence_to_queue(clean_sentence, sentence_queue)
-                        )
-                        self._tts_tasks.add(tts_task)
-                        tts_task.add_done_callback(self._tts_tasks.discard)
-                        await queue.put((sentence, sentence_queue))
+                        await sentence_queue.put(clean_sentence)
+                        full_response_parts.append(sentence)
 
-                    await queue.put(None)
+                    # Signal end-of-stream to consume_audio
+                    await sentence_queue.put(_SENTINEL)
                 except Exception as e:
                     logger.error(f"[Pipeline] LLM generator error: {e}")
-                    await queue.put(e)
+                    await sentence_queue.put(_SENTINEL)  # unblock consume_audio
+                    raise
                 finally:
                     await gen.aclose()
 
             async def consume_audio() -> None:
-                nonlocal full_response
+                """Stream TTS audio as sentences arrive from the LLM.
+
+                Calls tts.synthesise_streaming() which:
+                  1. Drains sentence_queue, sending a Speak to Deepgram per sentence
+                  2. Concurrently receives audio back from Deepgram
+                  3. Sends Flush only after the sentinel is received (all sentences done)
+
+                This means first audio arrives after the FIRST sentence is ready,
+                not after the full LLM response — true streaming, no inter-sentence gaps.
+                """
                 first_audio_sent = False
-                while True:
-                    if self._cancel_event.is_set() or turn_id != self._active_turn_id:
-                        break
-                    try:
-                        item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    except asyncio.TimeoutError:
-                        logger.warning("[Pipeline] consume_audio: Timeout waiting for next sentence queue item")
-                        break
-                    if item is None:
-                        queue.task_done()
-                        break
-                    if isinstance(item, Exception):
-                        queue.task_done()
-                        raise item
+                any_sentence_received = False
+                try:
+                    async for chunk in tts_engine.synthesise_streaming(
+                        sentence_queue, timeout_sec=30, cancel_event=self._cancel_event
+                    ):
+                        if self._cancel_event.is_set() or turn_id != self._active_turn_id:
+                            logger.info("[Pipeline] TTS synthesis cancelled mid-turn")
+                            break
 
-                    sentence, sentence_queue = item
-                    full_response = f"{full_response} {sentence}".strip() if full_response else sentence
-                    try:
-                        while True:
-                            if self._cancel_event.is_set() or turn_id != self._active_turn_id:
-                                break
-                            try:
-                                chunk = await asyncio.wait_for(sentence_queue.get(), timeout=15.0)
-                            except asyncio.TimeoutError:
-                                logger.warning("[Pipeline] consume_audio: Timeout waiting for audio chunk")
-                                try:
-                                    sentence_queue.task_done()
-                                except ValueError:
-                                    pass
-                                break
-                            if chunk is None:
-                                sentence_queue.task_done()
-                                break
-                            if isinstance(chunk, Exception):
-                                sentence_queue.task_done()
-                                raise chunk
+                        if isinstance(chunk, dict) and chunk.get("type") == "tts_metadata":
+                            any_sentence_received = True
+                            latency_ms = chunk.get("latency_ms", 0)
+                            if not isinstance(latency_ms, (int, float)) or latency_ms < 0 or latency_ms > 60000:
+                                logger.warning(f"[Pipeline] Invalid TTS latency value: {latency_ms}ms, using 0")
+                                latency_ms = 0
+                            else:
+                                latency_ms = int(latency_ms)
 
-                            if not first_audio_sent:
-                                first_audio_sent = True
-                                if self.utterance_end_time and self._can_send(turn_id):
-                                    total_ms = int((time.time() - self.utterance_end_time) * 1000)
-                                    llm_ms = getattr(self, '_last_llm_ms', 0)
-                                    tts_ms = self._tts_first_sentence_latency_ms or 0
-                                    stt_ms = getattr(self, '_last_stt_ms', 0)
-                                    logger.info(
-                                        f"[Pipeline] First audio sent: {total_ms}ms "
-                                        f"(STT: {stt_ms}ms, LLM: {llm_ms}ms, TTS: {tts_ms}ms)"
-                                    )
+                            logger.debug(f"[Pipeline] TTS metadata received: latency={latency_ms}ms")
+                            if not self._metrics.tts_first_sentence_latency_ms:
+                                self._metrics.tts_first_sentence_latency_ms = latency_ms
+                                if not self._metrics.tts_metrics_sent:
+                                    self._metrics.tts_metrics_sent = True
+                                    logger.info(f"[Pipeline] First TTS latency: {latency_ms}ms")
                                     self._send_for_turn(turn_id, {
-                                        "type": "latency",
-                                        "total_ms": total_ms,
-                                        "llm_ms": llm_ms,
-                                        "tts_ms": tts_ms,
-                                        "stt_ms": stt_ms,
-                                        "ms": total_ms,
+                                        "type": "tts_metrics",
+                                        "first_sentence_latency_ms": latency_ms,
+                                        "engine": chunk.get("engine", "unknown"),
                                     })
-                            if self._can_send(turn_id):
-                                self.send_message({"type": "audio", "data": chunk, "turn_id": turn_id})
-                                # Log for latency diagnostics
-                                if turn_id != self._first_audio_sent_turn_id:
-                                    self._first_audio_sent_turn_id = turn_id
-                                    utterance_end_time = self.utterance_end_time
-                                    if utterance_end_time is not None:
-                                        elapsed = (time.time() - utterance_end_time) * 1000
-                                        logger.debug(f"[Pipeline] First audio sent: turn={turn_id}, time_since_utterance_end={elapsed:.1f}ms")
-                            sentence_queue.task_done()
-                    except Exception as e:
-                        logger.error(f"[Pipeline] Error sending audio for sentence: {e}")
+
+                        elif isinstance(chunk, (bytes, bytearray, memoryview)):
+                            if not self._cancel_event.is_set() and turn_id == self._active_turn_id:
+                                if not first_audio_sent:
+                                    first_audio_sent = True
+                                    if self._metrics.utterance_end_time and self._can_send(turn_id):
+                                        total_ms = int((time.time() - self._metrics.utterance_end_time) * 1000)
+                                        llm_ms = self._metrics.last_llm_ms
+                                        tts_ms = self._metrics.tts_first_sentence_latency_ms or 0
+                                        stt_ms = self._metrics.last_stt_ms
+                                        logger.info(
+                                            f"[Pipeline] First audio sent: {total_ms}ms "
+                                            f"(STT: {stt_ms}ms, LLM: {llm_ms}ms, TTS: {tts_ms}ms)"
+                                        )
+                                        self._send_for_turn(turn_id, {
+                                            "type": "latency",
+                                            "total_ms": total_ms,
+                                            "llm_ms": llm_ms,
+                                            "tts_ms": tts_ms,
+                                            "stt_ms": stt_ms,
+                                            "ms": total_ms,
+                                        })
+
+                                self.send_message({"type": "audio", "data": bytes(chunk), "turn_id": turn_id})
+
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"[Pipeline] TTS synthesis error: {e}")
+                    if self._can_send(turn_id):
                         self._send_for_turn(turn_id, {
                             "type": "tts_error",
                             "message": str(e),
-                            "sentence": sentence,
                         })
-                    finally:
-                        queue.task_done()
+                finally:
+                    # Zero-sentence detection: if TTS never received any sentence,
+                    # the LLM produced no output (fix 0.5)
+                    if not any_sentence_received and self._can_send(turn_id):
+                        logger.warning("[Pipeline] LLM generated no sentences for this turn")
+                        self._send_for_turn(turn_id, {
+                            "type": "error",
+                            "message": "No response was generated. Please try again.",
+                        })
+
+            # full_response_parts is populated by produce_sentences()
+            full_response_parts: List[str] = []
 
             await asyncio.gather(produce_sentences(), consume_audio())
 
-            if full_response and self._can_send(turn_id):
+            # Build full_response from collected parts
+            full_response = " ".join(full_response_parts).strip()
+
+            # Save to history — even partial response from interrupted turns (fix 2.2)
+            if full_response:
                 self.tutor.add_assistant_message(full_response)
 
             logger.info(f"[Pipeline] Turn {turn_id} complete: '{full_response[:60]}'")
 
         except asyncio.CancelledError:
             logger.info("[Pipeline] Processing cancelled")
+            # Save partial response even on interruption (fix 2.2)
+            if full_response:
+                self.tutor.add_assistant_message(full_response)
         except Exception as e:
             logger.error(f"[Pipeline] Unexpected error: {e}")
             if self._can_send(turn_id):
@@ -486,19 +508,13 @@ class PipelineSession:
 
     def _cancel_active_turn_tasks(self):
         """Synchronously cancels all running tasks of the active turn.
-        
+
         This is safe to call synchronously from STT callbacks or WebSocket handlers.
         It doesn't await the tasks, but schedules their cancellation immediately.
         """
         # Set cancel event to abort loop iterations
         self._cancel_event.set()
-        
-        # Cancel all TTS tasks
-        if self._tts_tasks:
-            logger.debug(f"[Pipeline] Cancelling {len(self._tts_tasks)} TTS tasks")
-            for task in list(self._tts_tasks):
-                task.cancel()
-        
+
         # Cancel processing task
         if self.processing_task and not self.processing_task.done():
             logger.info("[Pipeline] Cancelling active processing task")
@@ -506,19 +522,19 @@ class PipelineSession:
 
     async def cancel(self):
         """Cancel the active processing task on user interruption.
-        
+
         This is now synchronous and non-blocking under the hood, so it returns
         immediately and prevents blocking the main WebSocket message receive loop.
         """
         cancelled_turn = self._active_turn_id
-        
+
         # 1. Synchronously cancel all active tasks
         self._cancel_active_turn_tasks()
-        
+
         # 2. Invalidate active turn ID immediately (atomic)
         self._active_turn_id = None
         self._final_turn_cutoff_time = time.time()
-        
+
         self.is_processing_transcript = False
 
         # Send turn cancelled message

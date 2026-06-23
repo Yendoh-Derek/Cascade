@@ -13,6 +13,13 @@ Fixes applied:
        and graceful disconnect equally.
   [M4] Sends user-visible "busy" message when a concurrent transcript is dropped
        so the user knows to wait.
+  [0.1] Origin validation uses hostname equality (not substring containment)
+        to prevent bypass via origins like https://evila.com.
+  [0.3] Pre-auth audio buffer is capped: same 10MB-per-chunk limit as main
+        loop, plus a 256KB cumulative cap.
+  [N4]  sender_coroutine distinguishes expected disconnects (debug) from
+        unexpected errors (error level).
+  [N7]  CORS origins configurable via CASCADE_CORS_ORIGINS env var.
 """
 import os
 import json
@@ -23,6 +30,7 @@ import time
 import secrets
 from typing import Any, Callable, Dict, Optional
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,9 +52,15 @@ app = FastAPI(
 MAX_CONCURRENT_SESSIONS = int(os.getenv("CASCADE_MAX_CONCURRENT_SESSIONS", "5"))
 session_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SESSIONS)
 
+# Allow operators to tighten CORS in production via CASCADE_CORS_ORIGINS env var.
+# Default is "*" for local development only — restrict this before public deployment.
+# Example: CASCADE_CORS_ORIGINS=https://myapp.com,https://staging.myapp.com
+_cors_origins_raw = os.getenv("CASCADE_CORS_ORIGINS", "*")
+CORS_ORIGINS = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,7 +112,6 @@ async def websocket_endpoint(
                         "latency"|"error"|"busy"}
     """
 
-
     # 2. Concurrency Capacity Cap Check / Acquire
     try:
         await asyncio.wait_for(session_semaphore.acquire(), timeout=0.1)
@@ -113,8 +126,8 @@ async def websocket_endpoint(
         return
 
     try:
-        if subject is not None:
-            subject = subject.strip()[:200] or None
+        # Subject sanitization is delegated entirely to TutorSession.__init__
+        # (regex + 100-char trim). No pre-trim here — single source of truth.
 
         session: Optional[PipelineSession] = None
         sender_task: Optional[asyncio.Task] = None
@@ -124,13 +137,20 @@ async def websocket_endpoint(
         try:
             await websocket.accept()
             logger.info(f"[WS] Client connected (subject={subject})")
-            
+
             # Explicit Origin validation (SEC-02)
+            # Use hostname equality, not substring containment, to prevent
+            # bypass via origins like "https://evila.com" when host="a.com".
             origin = websocket.headers.get("origin")
             if origin:
                 host = websocket.headers.get("host", "")
-                if host not in origin and "localhost" not in origin and "127.0.0.1" not in origin:
-                    logger.warning(f"[WS] Rejecting connection from origin {origin} (host={host})")
+                origin_host = urlsplit(origin).hostname or ""
+                allowed_hosts = {host.split(":")[0], "localhost", "127.0.0.1"}
+                if origin_host not in allowed_hosts:
+                    logger.warning(
+                        f"[WS] Rejecting connection from origin {origin} "
+                        f"(origin_host={origin_host!r}, allowed={allowed_hosts})"
+                    )
                     await websocket.close(code=4003)
                     return
 
@@ -141,16 +161,19 @@ async def websocket_endpoint(
                 authorized = False
                 nonce = secrets.token_hex(16)
                 await websocket.send_json({"type": "challenge", "nonce": nonce})
-                
+
                 try:
                     start_time = time.time()
                     while time.time() - start_time < 5.0 and not authorized:
-                        message = await asyncio.wait_for(websocket.receive(), timeout=5.0 - (time.time() - start_time))
-                        
+                        message = await asyncio.wait_for(
+                            websocket.receive(),
+                            timeout=5.0 - (time.time() - start_time)
+                        )
+
                         msg_type = message.get("type", "")
                         if msg_type == "websocket.disconnect":
                             break
-                        
+
                         # If it's a text message, parse and check if it's the auth message
                         raw_text = message.get("text", "")
                         if raw_text:
@@ -158,23 +181,43 @@ async def websocket_endpoint(
                                 auth_msg = json.loads(raw_text.strip())
                                 if auth_msg.get("type") == "auth":
                                     candidate_hmac = auth_msg.get("response")
-                                    expected_hmac = hmac.new(auth_secret.encode(), nonce.encode(), "sha256").hexdigest()
-                                    if isinstance(candidate_hmac, str) and hmac.compare_digest(candidate_hmac, expected_hmac):
+                                    expected_hmac = hmac.new(
+                                        auth_secret.encode(), nonce.encode(), "sha256"
+                                    ).hexdigest()
+                                    if isinstance(candidate_hmac, str) and hmac.compare_digest(
+                                        candidate_hmac, expected_hmac
+                                    ):
                                         await websocket.send_json({"type": "auth_ok"})
                                         authorized = True
                                         break
                             except json.JSONDecodeError:
                                 pass
-                        
-                        # If it's a binary message (early audio), buffer it
+
+                        # If it's a binary message (early audio), buffer it.
+                        # Cap: same 10MB-per-chunk limit as the main loop, plus
+                        # a 256KB cumulative cap — enough for audio sent slightly
+                        # early, not enough for an unauthenticated flood.
                         raw_bytes = message.get("bytes")
                         if raw_bytes:
-                            pre_auth_audio.append(raw_bytes)
+                            pre_auth_total = sum(len(c) for c in pre_auth_audio)
+                            if (
+                                len(raw_bytes) <= 10_000_000
+                                and pre_auth_total + len(raw_bytes) <= 256 * 1024
+                            ):
+                                pre_auth_audio.append(raw_bytes)
+                            else:
+                                logger.warning(
+                                    f"[WS] Pre-auth audio buffer cap exceeded "
+                                    f"(chunk={len(raw_bytes)}B, total={pre_auth_total}B) — dropping"
+                                )
                 except (asyncio.TimeoutError, WebSocketDisconnect):
                     pass
 
                 if not authorized:
-                    await websocket.send_json({"type": "error", "message": "Unauthorized: Invalid or missing auth secret"})
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Unauthorized: Invalid or missing auth secret"
+                    })
                     await websocket.close(code=4001)
                     return
 
@@ -188,7 +231,7 @@ async def websocket_endpoint(
 
             # Create outbound message queue first
             outbound_queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
-            
+
             # Initialize session first
             session = PipelineSession(
                 api_keys={"deepgram": keys.deepgram, "groq": keys.groq},
@@ -202,7 +245,7 @@ async def websocket_endpoint(
                 subject=subject,
                 tts_engine=tts_engine,
             )
-            
+
             # Now create and start sender task
             sender_running = True
 
@@ -217,8 +260,13 @@ async def websocket_endpoint(
                         await _send_ws_message(websocket, msg, session.can_send_message)
                     except asyncio.CancelledError:
                         break
+                    except (WebSocketDisconnect, ConnectionResetError, RuntimeError) as e:
+                        # Expected: client disconnected mid-send
+                        logger.debug(f"[WS] Sender: client disconnected ({type(e).__name__})")
+                        break
                     except Exception as e:
-                        logger.debug(f"[WS] Sender error: {e}")
+                        # Unexpected: serialization error, bug, etc. — log at error level
+                        logger.error(f"[WS] Sender unexpected error: {type(e).__name__}: {e}")
                     finally:
                         try:
                             outbound_queue.task_done()
@@ -257,7 +305,10 @@ async def websocket_endpoint(
 
             # Feed any buffered pre-authorization audio chunks into the session
             if pre_auth_audio:
-                logger.info(f"[WS] Feeding {len(pre_auth_audio)} buffered pre-authorization audio chunks into session")
+                logger.info(
+                    f"[WS] Feeding {len(pre_auth_audio)} buffered pre-authorization "
+                    f"audio chunks into session"
+                )
                 for chunk in pre_auth_audio:
                     if len(chunk) >= 2:
                         await session.handle_audio(chunk)
@@ -309,7 +360,7 @@ async def websocket_endpoint(
                     if stripped_text == "stop":
                         logger.info("[WS] Stop signal received — ending session")
                         break
-                    
+
                     try:
                         control_msg = json.loads(stripped_text)
                         if isinstance(control_msg, dict):
@@ -378,7 +429,7 @@ async def _send_ws_message(
     can_send: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ):
     """Route a message to the WebSocket — binary for audio, JSON for everything else.
-    
+
     Implements atomic turn_id validation at final consumer point to prevent stale
     audio from interrupted turns from reaching the client (Phase 3 interruption hardening).
     """
@@ -389,7 +440,7 @@ async def _send_ws_message(
             turn_id = message.get("turn_id", "none")
             logger.debug(f"[WS] Dropping {msg_type} for turn {turn_id} (turn no longer active)")
             return
-        
+
         if message.get("type") == "audio":
             audio_data = message.get("data", b"")
             if isinstance(audio_data, str):

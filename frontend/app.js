@@ -263,8 +263,12 @@ class CascadeClient {
         }
         this.currentResponse = "";
         this.currentStreamingBubble = null;
+        // Mark the audio source as ended so _checkPlaybackFinished() can
+        // transition to LISTENING once all scheduled audio chunks finish playing.
+        // Do NOT call _checkPlaybackFinished() here — active source nodes may
+        // still have buffered audio scheduled ahead; let their onended callbacks
+        // fire naturally to avoid a premature LISTENING state (fix N10).
         this.audioOutput.isAudioSourceEnded = true;
-        this.audioOutput._checkPlaybackFinished();
         break;
       case "turn_cancelled":
         if (msg.turn_id != null && this.activeTurnId === msg.turn_id) {
@@ -309,7 +313,9 @@ class CascadeClient {
           entry.stt = msg.stt_ms || 0;
           entry.llm = msg.llm_ms || 0;
           entry.tts = msg.tts_ms || 0;
-          entry.system = Math.max(0, entry.total - (entry.stt + entry.llm + entry.tts));
+          // stt_ms is measured BEFORE utterance_end_time (it's the endpointing wait),
+          // so it is NOT part of total_ms. system = pipeline overhead after stt, llm, tts.
+          entry.system = Math.max(0, entry.total - (entry.llm + entry.tts));
 
           entry.llm_queue = entry.llm_queue || 0;
           entry.llm_ttft = entry.llm_ttft || 0;

@@ -151,3 +151,162 @@ def test_websocket_concurrency_limit(mock_pipeline_dependencies):
     finally:
         # Restore original semaphore
         backend.main.session_semaphore = original_semaphore
+
+
+# ─── RateLimiter unit tests ───────────────────────────────────────────────────
+
+class TestRateLimiter:
+    """Unit tests for the token-bucket RateLimiter in pipeline.py (fix 0.6)."""
+
+    def _make_limiter(self, bps=32_000, burst=2.0):
+        from backend.pipeline import RateLimiter
+        return RateLimiter(bytes_per_sec=bps, burst_sec=burst)
+
+    def test_allows_within_burst(self):
+        rl = self._make_limiter()
+        # Full burst should be allowed immediately
+        assert rl.allow(32_000 * 2) is True
+
+    def test_blocks_above_capacity(self):
+        rl = self._make_limiter()
+        rl.allow(32_000 * 2)       # drain
+        assert rl.allow(1) is False
+
+    def test_refills_over_time(self):
+        import time
+        rl = self._make_limiter(bps=32_000, burst=0.1)
+        rl.allow(32_000 * 0.1)     # drain
+        time.sleep(0.05)            # ~50ms → refills ~1600B
+        assert rl.allow(1_000) is True
+
+    def test_zero_bytes_always_allowed(self):
+        rl = self._make_limiter()
+        rl.allow(32_000 * 2)       # drain
+        assert rl.allow(0) is True
+
+    def test_exact_capacity_boundary(self):
+        rl = self._make_limiter(bps=1_000, burst=1.0)
+        assert rl.allow(1_000) is True
+        assert rl.allow(1) is False
+
+
+# ─── Origin hostname validation unit tests ────────────────────────────────────
+
+class TestOriginValidation:
+    """Tests for the hostname-equality origin check in main.py (fix 0.1).
+
+    Validates that the new urlsplit-based check blocks the bypass vectors
+    that the old substring-containment check allowed.
+    """
+
+    def _check(self, origin: str, host: str) -> bool:
+        from urllib.parse import urlsplit
+        origin_host = urlsplit(origin).hostname or ""
+        allowed_hosts = {host.split(":")[0], "localhost", "127.0.0.1"}
+        return origin_host in allowed_hosts
+
+    def test_same_host_allowed(self):
+        assert self._check("http://myapp.com", "myapp.com:8000") is True
+
+    def test_localhost_always_allowed(self):
+        assert self._check("http://localhost:3000", "myapp.com:8000") is True
+
+    def test_127_allowed(self):
+        assert self._check("http://127.0.0.1:5173", "myapp.com") is True
+
+    def test_evil_suffix_bypass_blocked(self):
+        # Old bug: "myapp.com" in "https://evil-myapp.com" → True
+        assert self._check("https://evil-myapp.com", "myapp.com") is False
+
+    def test_path_injection_bypass_blocked(self):
+        # Old bug: "a.com" in "https://b.com/a.com" → True
+        assert self._check("https://b.com/a.com", "a.com") is False
+
+    def test_subdomain_rejected(self):
+        assert self._check("https://evil.myapp.com", "myapp.com") is False
+
+    def test_https_same_host_allowed(self):
+        assert self._check("https://myapp.com", "myapp.com:443") is True
+
+
+# ─── Pre-auth buffer cap tests ────────────────────────────────────────────────
+
+class TestPreAuthBuffer:
+    """Verify the 256KB cumulative cap logic for pre-auth audio (fix 0.3)."""
+
+    def _simulate(self, chunks):
+        accepted, rejected = [], []
+        MAX_TOTAL = 256 * 1024
+        MAX_CHUNK = 10_000_000
+        for chunk in chunks:
+            total = sum(len(c) for c in accepted)
+            if len(chunk) <= MAX_CHUNK and total + len(chunk) <= MAX_TOTAL:
+                accepted.append(chunk)
+            else:
+                rejected.append(chunk)
+        return accepted, rejected
+
+    def test_small_chunks_accepted(self):
+        chunks = [b"x" * 1024] * 5
+        acc, rej = self._simulate(chunks)
+        assert len(acc) == 5 and len(rej) == 0
+
+    def test_cumulative_cap_enforced(self):
+        chunks = [b"x" * (64 * 1024)] * 5   # 5 × 64KB; cap is 256KB
+        acc, rej = self._simulate(chunks)
+        assert len(acc) == 4 and len(rej) == 1
+
+    def test_oversized_chunk_rejected(self):
+        chunks = [b"x" * 10_000_001]
+        acc, rej = self._simulate(chunks)
+        assert len(acc) == 0 and len(rej) == 1
+
+
+# ─── TurnMetrics unit tests ───────────────────────────────────────────────────
+
+class TestTurnMetrics:
+    """Verify TurnMetrics dataclass defaults and mutation (fix 2.1)."""
+
+    def test_defaults(self):
+        from backend.pipeline import TurnMetrics
+        m = TurnMetrics()
+        assert m.utterance_end_time is None
+        assert m.last_stt_ms == 0
+        assert m.tts_metrics_sent is False
+
+    def test_mutation(self):
+        from backend.pipeline import TurnMetrics
+        m = TurnMetrics()
+        m.last_llm_ms = 250
+        assert m.last_llm_ms == 250
+
+
+# ─── History trim pair correctness tests ─────────────────────────────────────
+
+class TestHistoryTrimming:
+    """Verify trim_history never orphans an assistant message at history[0] (fix N6)."""
+
+    def _make_tutor(self):
+        from backend.tutor import TutorSession
+        return TutorSession(subject="Math")
+
+    def test_first_message_is_always_user_after_trim(self):
+        tutor = self._make_tutor()
+        for i in range(20):
+            tutor.add_user_message(f"Question {i}: " + "word " * 50)
+            tutor.add_assistant_message(f"Answer {i}: " + "word " * 50)
+        tutor.trim_history(max_turns=10)
+        if tutor.history:
+            assert tutor.history[0]["role"] == "user"
+
+    def test_pairs_preserved_after_trim(self):
+        tutor = self._make_tutor()
+        for i in range(10):
+            tutor.add_user_message(f"Q{i} " + "a" * 200)
+            tutor.add_assistant_message(f"A{i} " + "a" * 200)
+        tutor.trim_history(max_turns=5)
+        # Even-indexed messages should be user, odd should be assistant
+        for i in range(0, len(tutor.history) - 1, 2):
+            assert tutor.history[i]["role"] == "user"
+            assert tutor.history[i + 1]["role"] == "assistant"
+

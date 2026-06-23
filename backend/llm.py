@@ -26,7 +26,10 @@ from groq.types.chat import ChatCompletionMessageParam
 
 logger = logging.getLogger(__name__)
 
-# Common abbreviations that end with period (excluding sentences ending with these)
+# Tuning constant: number of tokens to buffer before force-flushing the first
+# sentence chunk. Reduces first-audio latency on long opening sentences.
+EARLY_FLUSH_TOKENS: int = 12
+
 ABBREVIATIONS = {
     "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "etc",
     "vs", "co", "inc", "ltd", "corp", "gov", "gen", "col", "maj", "capt",
@@ -120,9 +123,9 @@ class LLMGenerator:
                         )
                         break
                     except Exception as e:
-                        if "503" in str(e) and attempt < retries - 1:
-                            logger.warning(f"[LLM] Groq 503 error, retrying in 1s... ({attempt + 1}/{retries})")
-                            await asyncio.sleep(1.0)
+                        if getattr(e, "status_code", None) == 503 and attempt < retries - 1:
+                            logger.warning(f"[LLM] Groq 503 error, retrying in 300ms... ({attempt + 1}/{retries})")
+                            await asyncio.sleep(0.3)
                         else:
                             raise
                 
@@ -132,7 +135,7 @@ class LLMGenerator:
                 sentence_buffer = ""
                 token_count = 0
                 token_count_in_buffer = 0
-                EARLY_FLUSH_TOKENS = 12
+                # EARLY_FLUSH_TOKENS defined at module level for visibility
 
                 async for chunk in stream:
                     delta = chunk.choices[0].delta
