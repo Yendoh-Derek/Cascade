@@ -248,7 +248,7 @@ export class AudioInputController {
       return;
     }
 
-    if (!this.client.isMuted && this.client.transport && this.client.transport.isOpen()) {
+    if (this.client.transport && this.client.transport.isOpen()) {
       this.client.transport.send(bytes);
     }
 

@@ -64,3 +64,4 @@ yarn.lock
 *.pyo
 
 /review.md
+ci-cd-skill.md

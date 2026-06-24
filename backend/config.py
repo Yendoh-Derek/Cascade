@@ -12,9 +12,14 @@ TTS provider: Deepgram Aura (Default) / Edge-TTS (Fallback)
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Prefer the repo's `.env` over stale process-level exports during local runs
+# and reloads, which otherwise can cause valid project credentials to be
+# shadowed by an outdated shell variable.
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
 
 
 @dataclass(frozen=True)
@@ -30,9 +35,15 @@ class ModelConfig:
     deepgram_language: str = "en-US"
     sample_rate: int = 16000
     channels: int = 1
+    # Endpointing window in ms — how long Deepgram waits after last speech
+    # before emitting speech_final. Tune via CASCADE_STT_ENDPOINTING env var.
+    stt_endpointing_ms: int = int(os.getenv("CASCADE_STT_ENDPOINTING", "300"))
 
     # LLM
     groq_model: str = "llama-3.3-70b-versatile"
+
+    # Conversation history: max turn-pairs to retain. Tune via CASCADE_MAX_HISTORY_TURNS.
+    max_history_turns: int = int(os.getenv("CASCADE_MAX_HISTORY_TURNS", "10"))
 
     # TTS — edge-tts requires no API key
     edge_tts_voice: str = "en-US-AriaNeural"

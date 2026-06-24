@@ -55,6 +55,8 @@ def mock_pipeline_dependencies():
                 groq_model="llama",
                 edge_tts_voice="en-US-AriaNeural",
                 deepgram_tts_model="aura-asteria-en",
+                stt_endpointing_ms=300,
+                max_history_turns=10,
             ),
         ),
         patch("backend.main.PipelineSession.initialize", new=AsyncMock()),
