@@ -107,7 +107,7 @@ class PipelineSession:
     def __init__(
         self,
         api_keys: Dict[str, str],
-        model_config: Dict[str, str],
+        model_config: Dict[str, Any],
         outbound_queue: asyncio.Queue[dict[str, Any] | None],
         subject: Optional[str] = None,
         tts_engine: str = "edge",
@@ -149,6 +149,7 @@ class PipelineSession:
             on_transcript=self._on_transcript_received,
             on_error=self._on_stt_error,
             on_status=self._on_stt_status,
+            endpointing_ms=self.model_config.get("stt_endpointing_ms", 300),
         )
         self.llm_generator = LLMGenerator(
             api_key=self.api_keys["groq"],
@@ -195,9 +196,6 @@ class PipelineSession:
             return False
         return True
 
-    def _compute_ideal_concurrency(self) -> int:
-        # Stub: always 2. Future: adapt based on queue depth / sentence length.
-        return 2
 
     def send_message(self, msg: dict):
         self.outbound_queue.put_nowait(msg)
@@ -235,7 +233,7 @@ class PipelineSession:
         if self.is_processing_transcript or self._active_turn_id is not None:
             old_turn = self._active_turn_id
             logger.warning(f"[Pipeline] Turn {old_turn} interrupted by new transcript")
-            self._final_turn_cutoff_time = time.time()
+            self._final_turn_cutoff_time = time.perf_counter()
             self._cancel_active_turn_tasks()
             if old_turn is not None:
                 self.send_message({"type": "turn_cancelled", "turn_id": old_turn})
@@ -251,7 +249,7 @@ class PipelineSession:
         # Reset metrics for new turn
         self._metrics = TurnMetrics()
 
-        self._metrics.utterance_end_time = time.time()
+        self._metrics.utterance_end_time = time.perf_counter()
         if self.stt_handler:
             self._metrics.last_stt_ms = self.stt_handler.last_stt_processing_ms
         else:
@@ -301,7 +299,7 @@ class PipelineSession:
             self._send_for_turn(turn_id, {"type": "transcript", "text": transcript})
 
             self.tutor.add_user_message(transcript)
-            self.tutor.trim_history(max_turns=10)
+            self.tutor.trim_history(max_turns=self.model_config.get("max_history_turns", 10))
             messages = cast(list[ChatCompletionMessageParam], self.tutor.get_messages())
 
             # sentence_queue carries clean sentence strings from the LLM generator.
@@ -311,6 +309,10 @@ class PipelineSession:
             # start synthesising the first sentence immediately (true streaming).
             _SENTINEL = None
             sentence_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+            # Hoisted above produce_sentences so the closure reference is valid
+            # at definition time, not just at call time (fix BUG-01).
+            full_response_parts: List[str] = []
 
             async def produce_sentences() -> None:
                 nonlocal first_token_received
@@ -440,7 +442,7 @@ class PipelineSession:
                                 if not first_audio_sent:
                                     first_audio_sent = True
                                     if self._metrics.utterance_end_time and self._can_send(turn_id):
-                                        total_ms = int((time.time() - self._metrics.utterance_end_time) * 1000)
+                                        total_ms = int((time.perf_counter() - self._metrics.utterance_end_time) * 1000)
                                         llm_ms = self._metrics.last_llm_ms
                                         tts_ms = self._metrics.tts_first_sentence_latency_ms or 0
                                         stt_ms = self._metrics.last_stt_ms
@@ -457,7 +459,10 @@ class PipelineSession:
                                             "ms": total_ms,
                                         })
 
-                                self.send_message({"type": "audio", "data": bytes(chunk), "turn_id": turn_id})
+                                # Route through _send_for_turn so _can_send() is
+                                # evaluated before the message enters the outbound
+                                # queue, closing the cancellation race window (fix P1-B).
+                                self._send_for_turn(turn_id, {"type": "audio", "data": bytes(chunk)})
 
                 except asyncio.CancelledError:
                     pass
@@ -477,9 +482,6 @@ class PipelineSession:
                             "type": "error",
                             "message": "No response was generated. Please try again.",
                         })
-
-            # full_response_parts is populated by produce_sentences()
-            full_response_parts: List[str] = []
 
             await asyncio.gather(produce_sentences(), consume_audio())
 
@@ -533,7 +535,7 @@ class PipelineSession:
 
         # 2. Invalidate active turn ID immediately (atomic)
         self._active_turn_id = None
-        self._final_turn_cutoff_time = time.time()
+        self._final_turn_cutoff_time = time.perf_counter()
 
         self.is_processing_transcript = False
 

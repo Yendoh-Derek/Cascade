@@ -37,6 +37,7 @@ class STTHandler:
         on_status: Optional[Callable[[str, dict], None]] = None,
         model: str = "nova-2",
         language: str = "en-US",
+        endpointing_ms: int = 300,
     ):
         self.api_key = api_key
         self.on_transcript = on_transcript
@@ -44,6 +45,7 @@ class STTHandler:
         self.on_status = on_status
         self.model = model
         self.language = language
+        self.endpointing_ms = endpointing_ms
 
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -72,19 +74,26 @@ class STTHandler:
             "channels": "1",
             "sample_rate": "16000",
             "interim_results": "true",
-            "endpointing": "300",
+            "endpointing": str(self.endpointing_ms),  # configurable via CASCADE_STT_ENDPOINTING (P4-B)
             "vad_events": "true",
         }
         return base_url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
+    async def _get_or_create_session(self) -> aiohttp.ClientSession:
+        """Return the existing aiohttp session, creating one if needed.
+
+        Reuses the session across reconnects to avoid recreating the TCP
+        connection pool on every STT WebSocket reconnect (fix P4-A).
+        """
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession(trust_env=True)
+        return self.session
+
     async def _establish_connection(self):
         """Open WebSocket and start listener/keepalive tasks."""
-        if self.session and not self.session.closed:
-            await self.session.close()
-        self.session = aiohttp.ClientSession(trust_env=True)
-
+        session = await self._get_or_create_session()
         headers = {"Authorization": f"Token {self.api_key}"}
-        self.ws = await self.session.ws_connect(
+        self.ws = await session.ws_connect(
             self._build_ws_url(),
             headers=headers,
             heartbeat=10.0,
@@ -248,10 +257,10 @@ class STTHandler:
 
                     if transcript and is_final:
                         if not self.transcript_buffer.strip():
-                            self._utterance_start_time = time.time()
+                            self._utterance_start_time = time.perf_counter()
                         # Track time of most recent recognized speech for
                         # endpointing latency measurement in _flush_buffer()
-                        self._last_speech_time = time.time()
+                        self._last_speech_time = time.perf_counter()
                         self.transcript_buffer = (
                             self.transcript_buffer + " " + transcript
                             if self.transcript_buffer
@@ -267,7 +276,7 @@ class STTHandler:
 
             elif msg_type == "SpeechStarted":
                 if self._utterance_start_time is None:
-                    self._utterance_start_time = time.time()
+                    self._utterance_start_time = time.perf_counter()
 
             elif msg_type == "Error":
                 err_msg = data.get("description", "Unknown error")
@@ -282,7 +291,7 @@ class STTHandler:
         if not audio_bytes or not self.ws or not self.is_open or self.ws.closed:
             return
         try:
-            self._last_audio_sent_time = time.time()
+            self._last_audio_sent_time = time.perf_counter()
             await self.ws.send_bytes(audio_bytes)
         except RuntimeError as e:
             self.is_open = False
@@ -350,12 +359,12 @@ class STTHandler:
         # It is NOT the speaking duration (that would be time - _utterance_start_time).
         if self._last_speech_time is not None:
             self.last_stt_processing_ms = int(
-                (time.time() - self._last_speech_time) * 1000
+                (time.perf_counter() - self._last_speech_time) * 1000
             )
         elif self._last_audio_sent_time is not None:
             # Fallback: no is_final with content received yet (very short utterance)
             self.last_stt_processing_ms = int(
-                (time.time() - self._last_audio_sent_time) * 1000
+                (time.perf_counter() - self._last_audio_sent_time) * 1000
             )
         else:
             self.last_stt_processing_ms = 0

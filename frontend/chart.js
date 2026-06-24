@@ -40,13 +40,12 @@ export class ChartRenderer {
     const PAD = { top: 36, right: 20, bottom: 40, left: 56 };
     const chartW = W - PAD.left - PAD.right;
     const chartH = H - PAD.top - PAD.bottom;
-    const TARGET_MS = 600;
 
     const colors = {
-      stt: "#818cf8",     // Indigo
-      llm: "#c084fc",     // Purple
-      tts: "#34d399",     // Emerald
-      system: "#fb923c"   // Warm Orange
+      stt: "#818cf8", // Indigo
+      llm: "#c084fc", // Purple
+      tts: "#34d399", // Emerald
+      system: "#fb923c", // Warm Orange
     };
 
     ctx.clearRect(0, 0, W, H);
@@ -66,12 +65,13 @@ export class ChartRenderer {
         const sttVal = d.stt || 0;
         const llmVal = d.llm || 0;
         const ttsVal = d.tts || 0;
-        const systemVal = d.system != null
-          ? d.system
-          : Math.max(0, (d.total || 0) - (llmVal + ttsVal));
+        const systemVal =
+          d.system != null
+            ? d.system
+            : Math.max(0, (d.total || 0) - (llmVal + ttsVal));
         return Math.max(
-          (d.stt || 0) + (d.total || 0),  // true e2e = stt phase + pipeline phase
-          sttVal + llmVal + ttsVal + systemVal
+          (d.stt || 0) + (d.total || 0), // true e2e = stt phase + pipeline phase
+          sttVal + llmVal + ttsVal + systemVal,
         );
       }),
       100,
@@ -101,7 +101,7 @@ export class ChartRenderer {
       { key: "stt", label: "STT" },
       { key: "llm", label: "LLM" },
       { key: "tts", label: "TTS" },
-      { key: "system", label: "System" }
+      { key: "system", label: "System" },
     ];
 
     legendItems.forEach(({ key, label }) => {
@@ -113,16 +113,6 @@ export class ChartRenderer {
       ctx.fillText(label, legendX + 12, legendY + 8);
       legendX += ctx.measureText(label).width + 28;
     });
-
-    ctx.strokeStyle = "rgba(255,255,255,0.3)";
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(legendX, legendY + 4);
-    ctx.lineTo(legendX + 16, legendY + 4);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(255,255,255,0.45)";
-    ctx.fillText("600ms pipeline target", legendX + 20, legendY + 8);
 
     // Y gridlines
     for (let v = 0; v <= maxMs; v += tickStep) {
@@ -139,19 +129,6 @@ export class ChartRenderer {
       const label =
         v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`;
       ctx.fillText(label, PAD.left - 8, y + 4);
-    }
-
-    // Target line at 600ms
-    if (TARGET_MS <= maxMs) {
-      const targetY = scaleY(TARGET_MS);
-      ctx.beginPath();
-      ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = "rgba(255,255,255,0.3)";
-      ctx.lineWidth = 1;
-      ctx.moveTo(PAD.left, targetY);
-      ctx.lineTo(PAD.left + chartW, targetY);
-      ctx.stroke();
-      ctx.setLineDash([]);
     }
 
     // Stacked bars: Draw STT -> LLM -> TTS -> System
@@ -199,9 +176,10 @@ export class ChartRenderer {
       }
 
       // 4. System bar (top of the stack — pipeline overhead inside total_ms)
-      const systemVal = d.system != null
-        ? d.system
-        : Math.max(0, (d.total || 0) - (llmVal + ttsVal));  // stt NOT in total
+      const systemVal =
+        d.system != null
+          ? d.system
+          : Math.max(0, (d.total || 0) - (llmVal + ttsVal)); // stt NOT in total
       if (systemVal > 0) {
         const barH = (systemVal / maxMs) * chartH;
         yBase -= barH;
@@ -215,7 +193,7 @@ export class ChartRenderer {
       // Label shows full end-to-end latency (stt phase + pipeline phase).
       // stt ≈ endpointing wait (≈300ms); total = LLM+TTS+system after speech_final.
       const e2eTotal = (d.stt || 0) + (d.total || 0);
-      const displayTotal = e2eTotal || (sttVal + llmVal + ttsVal + systemVal);
+      const displayTotal = e2eTotal || sttVal + llmVal + ttsVal + systemVal;
       ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.font = "9px JetBrains Mono, monospace";
       ctx.textAlign = "center";
