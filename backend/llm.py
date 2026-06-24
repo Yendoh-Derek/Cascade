@@ -30,6 +30,15 @@ logger = logging.getLogger(__name__)
 # sentence chunk. Reduces first-audio latency on long opening sentences.
 EARLY_FLUSH_TOKENS: int = 12
 
+# For all sentences after the first: flush after this many tokens even without a
+# sentence boundary. Prevents long clauses from stalling TTS (fix P2-B).
+SUBSEQUENT_FLUSH_TOKENS: int = 10
+
+# Wall-clock fallback: flush the buffer if no sentence has been emitted within
+# this many seconds of the first token arriving in the current buffer (fix P2-B).
+# 200ms chosen as best fit given Groq TTFT of 80–120ms.
+TIME_BASED_FLUSH_SEC: float = 0.200
+
 ABBREVIATIONS = {
     "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "etc",
     "vs", "co", "inc", "ltd", "corp", "gov", "gen", "col", "maj", "capt",
@@ -95,7 +104,7 @@ class LLMGenerator:
         first_token_received = False
         
         # Record request creation time (start of generate() call)
-        self.t_request_created = time.time()
+        self.t_request_created = time.perf_counter()
         self.t_request_sent = None
         self.t_first_token = None
         self.t_first_sentence_emitted = None
@@ -113,7 +122,7 @@ class LLMGenerator:
                 retries = 3
                 for attempt in range(retries):
                     try:
-                        self.t_request_sent = time.time()
+                        self.t_request_sent = time.perf_counter()
                         stream = await self.client.chat.completions.create(
                             model=self.model,
                             messages=request_messages,
@@ -135,7 +144,7 @@ class LLMGenerator:
                 sentence_buffer = ""
                 token_count = 0
                 token_count_in_buffer = 0
-                # EARLY_FLUSH_TOKENS defined at module level for visibility
+                t_buffer_start: Optional[float] = None  # per-buffer wall-clock timer (P2-B)
 
                 async for chunk in stream:
                     delta = chunk.choices[0].delta
@@ -143,36 +152,61 @@ class LLMGenerator:
                         # Record the time of first token received (marks TTFT start point)
                         if not first_token_received:
                             first_token_received = True
-                            self.t_first_token = time.time()
-                        
+                            self.t_first_token = time.perf_counter()
+
                         token = delta.content
                         token_count += 1
+
+                        # Start the per-buffer timer on the first token of each new chunk.
+                        if t_buffer_start is None:
+                            t_buffer_start = time.perf_counter()
 
                         sentence_buffer += token
                         token_count_in_buffer += 1
 
                         if sentence_buffer:
                             last_chars = sentence_buffer[-3:].rstrip()
-                            
-                            is_boundary = any(c in last_chars for c in '.?!') and self._has_sentence_boundary(sentence_buffer)
+
+                            is_boundary = (
+                                any(c in last_chars for c in '.?!') and self._has_sentence_boundary(sentence_buffer)
+                            ) or self._has_clause_boundary(sentence_buffer)
                             is_first_sentence = (self.t_first_sentence_emitted is None)
-                            
-                            if is_boundary or (is_first_sentence and token_count_in_buffer >= EARLY_FLUSH_TOKENS):
+
+                            # Token cap: first sentence uses EARLY_FLUSH_TOKENS;
+                            # subsequent sentences use the tighter SUBSEQUENT_FLUSH_TOKENS.
+                            token_cap = EARLY_FLUSH_TOKENS if is_first_sentence else SUBSEQUENT_FLUSH_TOKENS
+
+                            # Time-based fallback: flush if 200ms has elapsed since the
+                            # first token in this buffer, regardless of punctuation.
+                            time_based_flush = (
+                                t_buffer_start is not None and
+                                (time.perf_counter() - t_buffer_start) >= TIME_BASED_FLUSH_SEC
+                            )
+
+                            # UX/Audio Fix: Only allow token cap or time-based flush if the
+                            # buffer ends in a space or punctuation. Otherwise we might split
+                            # a word in half, causing the TTS to pronounce fragments weirdly.
+                            ends_with_space_or_punct = bool(sentence_buffer) and sentence_buffer[-1] in " \n\t\r.,!?;:—-"
+                            can_flush_safely = is_boundary or ends_with_space_or_punct
+
+                            if is_boundary or (can_flush_safely and ((token_count_in_buffer >= token_cap) or time_based_flush)):
                                 sentence = sentence_buffer.strip()
-                                logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens): {sentence[:60]}...")
+                                flush_reason = "boundary" if is_boundary else ("time" if time_based_flush else "token_cap")
+                                logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens, reason={flush_reason}): {sentence[:60]}...")
                                 # Record first sentence emission time (for streaming delay calculation)
                                 if self.t_first_sentence_emitted is None:
-                                    self.t_first_sentence_emitted = time.time()
+                                    self.t_first_sentence_emitted = time.perf_counter()
                                 yield sentence
                                 sentence_buffer = ""
                                 token_count_in_buffer = 0
+                                t_buffer_start = None  # reset timer for next chunk
 
                 # Yield any remaining buffer
                 if sentence_buffer.strip():
                     sentence = sentence_buffer.strip()
                     # Ensure t_first_sentence_emitted is set for final buffer (edge case: no sentence boundaries)
                     if self.t_first_sentence_emitted is None:
-                        self.t_first_sentence_emitted = time.time()
+                        self.t_first_sentence_emitted = time.perf_counter()
                     logger.info(f"[LLM] Final buffer yielded: {sentence[:60]}...")
                     yield sentence
 
@@ -183,7 +217,7 @@ class LLMGenerator:
             if sentence_buffer.strip():
                 # Record timestamp for any buffered content on timeout (edge case)
                 if self.t_first_sentence_emitted is None:
-                    self.t_first_sentence_emitted = time.time()
+                    self.t_first_sentence_emitted = time.perf_counter()
                 yield sentence_buffer.strip()
             raise
         except Exception as e:
@@ -193,7 +227,7 @@ class LLMGenerator:
                 logger.warning("[LLM] Yielding partial buffer on error")
                 # Record timestamp for any buffered content on error (edge case)
                 if self.t_first_sentence_emitted is None:
-                    self.t_first_sentence_emitted = time.time()
+                    self.t_first_sentence_emitted = time.perf_counter()
                 yield sentence_buffer.strip()
             raise
 
@@ -261,6 +295,51 @@ class LLMGenerator:
 
         # Likely a real sentence boundary
         return True
+
+    def _has_clause_boundary(self, text: str) -> bool:
+        """
+        Check if text ends at a natural clause boundary suitable for TTS flushing.
+
+        Soft-break heuristics (P5-C): fires when the buffer contains a complete
+        phrase that TTS can render naturally, even without a full sentence.
+        This reduces first-audio latency on complex sentences with late punctuation.
+
+        Minimum 6 words required to avoid flushing on short fragments.
+
+        Recognised patterns:
+          - ", but", ", so", ", and", ", or"  — coordinating clause
+          - ", which", ", that", ", where"   — relative clause
+          - "; "                               — semicolon separation
+          - " — "                             — em-dash pause
+        """
+        if not text or len(text.split()) < 6:
+            return False
+
+        # Check last 100 chars for clause markers
+        tail = text[-100:] if len(text) > 100 else text
+        stripped = tail.rstrip()
+
+        # Coordinating conjunctions after comma
+        coord_patterns = [", but", ", so", ", and", ", or", ", yet", ", nor"]
+        for pattern in coord_patterns:
+            if stripped.endswith(pattern):
+                return True
+
+        # Relative / subordinate clauses after comma
+        relative_patterns = [", which", ", that", ", where", ", when", ", who"]
+        for pattern in relative_patterns:
+            if stripped.endswith(pattern):
+                return True
+
+        # Semicolon
+        if stripped.endswith(";"):
+            return True
+
+        # Em-dash (spoken pause)
+        if stripped.endswith(" —") or stripped.endswith(" --"):
+            return True
+
+        return False
 
     async def close(self):
         """Close the AsyncGroq client and its underlying HTTP client connection pool."""

@@ -119,7 +119,7 @@ class EdgeTTSEngine(BaseTTSEngine):
             logger.debug(f"[TTS] Synthesizing (Edge): {text[:60]}...")
 
             # Record request start time
-            t_tts_request_sent = time.time()
+            t_tts_request_sent = time.perf_counter()
             t_first_audio_chunk = None
 
             communicate = edge_tts.Communicate(text, self.voice)
@@ -132,7 +132,7 @@ class EdgeTTSEngine(BaseTTSEngine):
                             if audio_data:
                                 # Record first audio chunk time (on first audio byte)
                                 if t_first_audio_chunk is None:
-                                    t_first_audio_chunk = time.time()
+                                    t_first_audio_chunk = time.perf_counter()
                                     # Yield metadata on first audio chunk
                                     yield {
                                         "type": "tts_metadata",
@@ -251,7 +251,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
         This is the correct Speak-many/Flush-once pattern with true streaming.
         """
-        t_tts_request_sent = time.time()
+        t_tts_request_sent = time.perf_counter()
         t_first_audio_chunk: Optional[float] = None
         first_sentence_text = ""
 
@@ -272,6 +272,9 @@ class DeepgramTTSEngine(BaseTTSEngine):
                         if cancel_event and cancel_event.is_set():
                             await ws.send_json({"type": "Flush"})
                             break
+                        sentence = sentence.strip()
+                        if not sentence:
+                            continue
                         if len(sentence) > 2000:
                             sentence = sentence[:2000]
                         if not first_sentence_text:
@@ -288,7 +291,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
                         if msg.type == aiohttp.WSMsgType.BINARY:
                             if t_first_audio_chunk is None:
-                                t_first_audio_chunk = time.time()
+                                t_first_audio_chunk = time.perf_counter()
                                 yield {
                                     "type": "tts_metadata",
                                     "engine": "deepgram",
@@ -389,7 +392,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
         logger.debug(f"[TTS] Synthesizing turn ({len(valid_sentences)} sentences, Deepgram WS persistent)")
 
-        t_tts_request_sent = time.time()
+        t_tts_request_sent = time.perf_counter()
         t_first_audio_chunk: Optional[float] = None
 
         # Serialize: only one turn in flight at a time on this connection.
@@ -412,7 +415,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
                         if msg.type == aiohttp.WSMsgType.BINARY:
                             # First audio byte received — emit latency metadata
                             if t_first_audio_chunk is None:
-                                t_first_audio_chunk = time.time()
+                                t_first_audio_chunk = time.perf_counter()
                                 yield {
                                     "type": "tts_metadata",
                                     "engine": "deepgram",
@@ -441,7 +444,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
                             elif msg_type == "Metadata":
                                 # Deepgram sometimes sends Metadata before binary audio
                                 if t_first_audio_chunk is None:
-                                    t_first_audio_chunk = time.time()
+                                    t_first_audio_chunk = time.perf_counter()
                                     yield {
                                         "type": "tts_metadata",
                                         "engine": "deepgram",
