@@ -66,6 +66,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if CORS_ORIGINS == ["*"]:
+    logger.warning(
+        "[Security] CORS is open to all origins (*). "
+        "Set CASCADE_CORS_ORIGINS env var before deploying to production."
+    )
+
 
 @app.get("/health", tags=["Health"])
 def health():
@@ -240,6 +246,8 @@ async def websocket_endpoint(
                     "groq_model": config.groq_model,
                     "edge_tts_voice": config.edge_tts_voice,
                     "deepgram_tts_model": config.deepgram_tts_model,
+                    "stt_endpointing_ms": config.stt_endpointing_ms,
+                    "max_history_turns": config.max_history_turns,
                 },
                 outbound_queue=outbound_queue,
                 subject=subject,
@@ -376,6 +384,24 @@ async def websocket_endpoint(
                                 logger.info("[WS] Finalize signal received")
                                 if session and session.stt_handler:
                                     await session.stt_handler.finalize()
+                                continue
+                            elif ctrl_type == "client_latency":
+                                # Browser reports perceived latency: transcript-received
+                                # → first audio buffer scheduled on speaker (P2-C).
+                                perceived_ms = control_msg.get("first_audio_played_ms")
+                                turn_id = control_msg.get("turn_id")
+                                if isinstance(perceived_ms, (int, float)) and 0 < perceived_ms < 60000:
+                                    logger.info(
+                                        f"[WS] Perceived latency reported: {int(perceived_ms)}ms "
+                                        f"(turn={turn_id})"
+                                    )
+                                    # Echo back to dashboard
+                                    if session:
+                                        session.send_message({
+                                            "type": "perceived_latency",
+                                            "perceived_ms": int(perceived_ms),
+                                            "turn_id": turn_id,
+                                        })
                                 continue
                     except json.JSONDecodeError:
                         pass

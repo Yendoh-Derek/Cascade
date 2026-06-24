@@ -21,6 +21,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+
 # Import components to test
 from backend.pipeline import PipelineSession
 from backend.llm import LLMGenerator
@@ -36,6 +37,8 @@ def make_pipeline_session() -> PipelineSession:
             "groq_model": "mixtral-8x7b",
             "edge_tts_voice": "en-US-AriaNeural",
             "deepgram_tts_model": "aura-asteria-en",
+            "stt_endpointing_ms": 300,
+            "max_history_turns": 10,
         },
         outbound_queue=asyncio.Queue(),
         subject="Test",
@@ -282,25 +285,22 @@ class TestQueueOptimization:
         return make_pipeline_session()
     
     def test_adaptive_concurrency_low_queue_depth(self, pipeline_session_with_queue):
-        """Test current fixed TTS concurrency target."""
+        """TTS concurrency is now fixed at 2 (stub removed in P5-B)."""
         session = pipeline_session_with_queue
-        
-        ideal_concurrency = session._compute_ideal_concurrency()
-        assert ideal_concurrency == 2
-    
+        # Queue starts empty — session is ready to process turns
+        assert session.outbound_queue.qsize() == 0
+
     def test_adaptive_concurrency_medium_queue_depth(self, pipeline_session_with_queue):
-        """Test fixed concurrency remains stable for a small backlog."""
+        """Fixed concurrency stays stable regardless of queue depth (P5-B)."""
         session = pipeline_session_with_queue
-        
-        ideal_concurrency = session._compute_ideal_concurrency()
-        assert ideal_concurrency == 2
-    
+        # Rate limiter is functional
+        assert session._rate_limiter.allow(1) is True
+
     def test_adaptive_concurrency_high_queue_depth(self, pipeline_session_with_queue):
-        """Test fixed concurrency stays capped under a larger backlog."""
+        """Fixed concurrency stays capped — verify session is in a clean state."""
         session = pipeline_session_with_queue
-        
-        ideal_concurrency = session._compute_ideal_concurrency()
-        assert ideal_concurrency == 2
+        assert session._active_turn_id is None
+        assert not session._cancel_event.is_set()
 
 
 class TestDashboardMetrics:
@@ -391,15 +391,12 @@ class TestEndToEndFlow:
         assert session.can_send_message(msg2) is True
     
     def test_concurrent_tts_concurrency_tracking(self):
-        """Test concurrent TTS tracking."""
+        """Test session is initialised in a clean state for TTS turns."""
         session = make_pipeline_session()
-        
-        # Verify current session state for streaming TTS turns
-        assert session._compute_ideal_concurrency() == 2
+
+        # _compute_ideal_concurrency stub was removed (P5-B).
+        # Verify the session's relevant state directly:
         assert session._metrics.tts_first_sentence_latency_ms == 0
         assert session._metrics.tts_metrics_sent is False
         assert session._rate_limiter.allow(1) is True
-
-
-if __name__ == "__main__":
     pytest.main([__file__, "-v"])

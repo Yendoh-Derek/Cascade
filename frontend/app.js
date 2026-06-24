@@ -27,6 +27,10 @@ class CascadeClient {
     this._interrupting = false;
     this._pendingCancelTurnId = null;
     this._interruptTimeout = null;
+
+    // Perceived-latency tracking (P2-C)
+    this._turnStartMs = null;
+    this._firstAudioPlayed = false;
     
     this.currentResponse = "";
     this.currentStreamingBubble = null;
@@ -41,10 +45,6 @@ class CascadeClient {
     this.chart = new ChartRenderer(this);
 
     this.audioOutput.initContext();
-  }
-
-  get isMuted() {
-    return false;
   }
 
   get isAudioSourceEnded() {
@@ -208,6 +208,11 @@ class CascadeClient {
             this.activeTurnId = msg.turn_id;
             this.playbackTurnId = msg.turn_id;
           }
+          // Stamp client-side turn start for perceived-latency measurement (P2-C).
+          // Measured from transcript receipt (not speech_final on server) since
+          // we can't timestamp the server event from the client side.
+          this._turnStartMs = performance.now();
+          this._firstAudioPlayed = false;
           this._interrupting = false;
           this._resetTurnState();
           this.ui.addTranscriptItem("student", msg.text);
@@ -265,10 +270,17 @@ class CascadeClient {
         this.currentStreamingBubble = null;
         // Mark the audio source as ended so _checkPlaybackFinished() can
         // transition to LISTENING once all scheduled audio chunks finish playing.
-        // Do NOT call _checkPlaybackFinished() here — active source nodes may
+        // Do NOT call _checkPlaybackFinished() here unconditionally — active source nodes may
         // still have buffered audio scheduled ahead; let their onended callbacks
         // fire naturally to avoid a premature LISTENING state (fix N10).
         this.audioOutput.isAudioSourceEnded = true;
+        
+        // UX Bug Fix: If no audio was ever scheduled (e.g. TTS error or empty text),
+        // we must manually trigger the transition back to LISTENING, otherwise
+        // the UI will be permanently stuck in PROCESSING state.
+        if (this.audioOutput.activeSourceNodes.length === 0 && !this.audioOutput.isPlaying) {
+          this.audioOutput._checkPlaybackFinished();
+        }
         break;
       case "turn_cancelled":
         if (msg.turn_id != null && this.activeTurnId === msg.turn_id) {
@@ -407,6 +419,21 @@ class CascadeClient {
           this.chart.render();
         }
         break;
+      case "perceived_latency":
+        // Reported by the server after receiving a client_latency message.
+        // Displays true end-to-end latency (transcript received → first audio played on speaker).
+        if (typeof msg.perceived_ms === "number") {
+          const turnNum = msg.turn_id != null ? msg.turn_id : this.totalTurns;
+          let entry = this.latencyHistory.find((d) => d.turn === turnNum);
+          if (entry) {
+            entry.perceived = msg.perceived_ms;
+          }
+          const panel = document.getElementById("stats-panel");
+          if (panel && panel.classList.contains("open")) {
+            this.chart.render();
+          }
+        }
+        break;
       case "busy":
         this.ui.showToast(
           msg.message || "⏳ Still responding — please wait a moment.",
@@ -439,7 +466,8 @@ class CascadeClient {
         if (typeof msg.message === "string" && msg.message.includes("Unauthorized")) {
           const secret = prompt("Please enter the Cascade access secret:");
           if (secret) {
-            localStorage.setItem("cascade_secret", secret.trim());
+            // sessionStorage clears on tab close — safer than localStorage (P3-B)
+            sessionStorage.setItem("cascade_secret", secret.trim());
           }
           this.stopSession();
           break;

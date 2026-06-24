@@ -186,6 +186,18 @@ export class AudioOutputController {
     this.isPlaying = true;
     this.playbackTurnId = turnId;
 
+    // Perceived-latency telemetry (P2-C): send once per turn, on first scheduled audio.
+    // Measures transcript-received → first audio buffer scheduled on speaker.
+    if (!this.client._firstAudioPlayed && this.client._turnStartMs != null) {
+      this.client._firstAudioPlayed = true;
+      const perceivedMs = Math.round(performance.now() - this.client._turnStartMs);
+      if (this.client.transport && this.client.transport.isOpen()) {
+        this.client.transport.send(
+          JSON.stringify({ type: "client_latency", first_audio_played_ms: perceivedMs, turn_id: turnId })
+        );
+      }
+    }
+
     const currentTime = this.audioContext.currentTime;
     if (this.nextPlaybackTime === null || this.nextPlaybackTime < currentTime) {
       this.nextPlaybackTime = currentTime + 0.01;
