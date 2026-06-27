@@ -2,33 +2,34 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: 'pip'
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
-    - name: Lint check with Ruff
-      run: ruff check .
+      - name: Lint check with Ruff
+        run: ruff check .
 
-    - name: Type check with Mypy
-      run: mypy backend/ --ignore-missing-imports
+      - name: Type check with Mypy
+        run: mypy backend/ --ignore-missing-imports
 
-    - name: Run isolated/mockable tests
-      run: pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py -v
+      - name: Run isolated/mockable tests
+        # Runs all pytest unit/integration tests that do not require live API keys
+        run: pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py -v

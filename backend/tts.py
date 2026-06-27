@@ -13,12 +13,11 @@ Latency Measurement:
     - t_first_audio_chunk: time when first audio byte is yielded
 
 Architecture — Deepgram Speak-many / Flush-once (fix 1.1):
-  pipeline.py batches all sentences for a turn and calls synthesise_turn()
-  once, which sends one Speak per sentence and a single Flush at the end.
-  This replaces the previous Speak+Flush-per-sentence pattern which caused
-  audible discontinuities between sentences (Deepgram docs warn against
-  frequent flushing). The per-sentence synthesise() method is kept for
-  EdgeTTSEngine (which has no Flush concept) and for compatibility.
+  pipeline.py uses synthesise_streaming() which reads sentences from a queue
+  and sends Speak messages as they arrive, followed by a single Flush when
+  the queue ends (None sentinel). This eliminates per-sentence audio
+  finalization gaps while still enabling true streaming (no need to wait
+  for all sentences before starting TTS).
 
 Fix 0.4 — WS not closed before discarding on error paths:
   All exception handlers that previously set self._ws = None now first
@@ -32,7 +31,7 @@ import os
 import time
 import json
 import asyncio
-from typing import AsyncGenerator, List, Optional, Union, Dict, Any
+from typing import AsyncGenerator, Optional, Union, Dict, Any
 from abc import ABC, abstractmethod
 
 import edge_tts
@@ -69,25 +68,10 @@ class BaseTTSEngine(ABC):
         """
         while True:
             sentence = await sentence_queue.get()
-            if sentence is None:              # sentinel — stream is done
+            if sentence is None:   # sentinel — stream is done
                 break
             if cancel_event and cancel_event.is_set():
                 break
-            async for chunk in self.synthesise(sentence, timeout_sec):
-                yield chunk
-
-    async def synthesise_turn(
-        self,
-        sentences: List[str],
-        timeout_sec: int = 30,
-    ) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
-        """Synthesise a full turn's worth of sentences, streaming audio.
-
-        Default implementation calls synthesise() per sentence (correct for
-        EdgeTTSEngine). DeepgramTTSEngine overrides this to use Speak-many /
-        Flush-once for better audio continuity.
-        """
-        for sentence in sentences:
             async for chunk in self.synthesise(sentence, timeout_sec):
                 yield chunk
 
@@ -254,10 +238,12 @@ class DeepgramTTSEngine(BaseTTSEngine):
         t_tts_request_sent = time.perf_counter()
         t_first_audio_chunk: Optional[float] = None
         first_sentence_text = ""
+        ws = None
+        ws_completed_cleanly = False
+        feeder_task: Optional[asyncio.Task] = None
+        needs_reconnect = False
 
         async with self._ws_lock:
-            ws_completed_cleanly = False
-            feeder_task: Optional[asyncio.Task] = None
             try:
                 ws = await self._get_ws()
 
@@ -319,7 +305,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
                                     f"[TTS] Deepgram warning: {data.get('description')}"
                                 )
                             elif msg_type == "Error":
-                                await self._clear_and_close_ws()
+                                needs_reconnect = True
                                 raise Exception(
                                     f"Deepgram TTS error: {data.get('description', 'unknown')}"
                                 )
@@ -329,28 +315,28 @@ class DeepgramTTSEngine(BaseTTSEngine):
                             aiohttp.WSMsgType.ERROR,
                         ):
                             logger.warning("[TTS] Deepgram WS closed unexpectedly")
-                            await self._clear_and_close_ws()
+                            needs_reconnect = True
                             break
 
                 if not ws_completed_cleanly:
                     logger.warning("[TTS] Streaming synthesis ended without Flushed — reconnecting")
-                    await self._clear_and_close_ws()
+                    needs_reconnect = True
 
             except asyncio.CancelledError:
                 logger.info("[TTS] Deepgram streaming synthesis cancelled — sending Clear")
-                await self._clear_and_close_ws()
+                needs_reconnect = True
                 raise
             except asyncio.TimeoutError:
                 logger.error(f"[TTS] Deepgram streaming synthesis timed out after {timeout_sec}s")
-                await self._clear_and_close_ws()
+                needs_reconnect = True
                 raise
             except (aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError) as e:
                 logger.warning(f"[TTS] Deepgram WS connection error: {e} — reconnecting")
-                await self._clear_and_close_ws()
+                needs_reconnect = True
                 raise
             except Exception as e:
                 logger.error(f"[TTS] Deepgram streaming synthesis error: {e}")
-                await self._clear_and_close_ws()
+                needs_reconnect = True
                 raise
             finally:
                 if feeder_task and not feeder_task.done():
@@ -360,6 +346,10 @@ class DeepgramTTSEngine(BaseTTSEngine):
                     except (asyncio.CancelledError, Exception):
                         pass
 
+        # Do slow WS cleanup outside the lock so new turns can proceed immediately
+        if needs_reconnect or not ws_completed_cleanly:
+            await self._clear_and_close_ws()
+
     async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
         """Synthesise a single sentence via the streaming queue interface."""
         q: asyncio.Queue = asyncio.Queue()
@@ -367,145 +357,6 @@ class DeepgramTTSEngine(BaseTTSEngine):
         await q.put(None)   # sentinel
         async for chunk in self.synthesise_streaming(q, timeout_sec):
             yield chunk
-
-    async def synthesise_turn(
-        self,
-        sentences: List[str],
-        timeout_sec: int = 30,
-    ) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
-        """
-        Synthesise a full turn as one continuous audio stream (Speak-many / Flush-once).
-
-        Sends one Speak per non-empty sentence, then a single Flush.
-        Deepgram streams back all audio as one continuous take, terminated
-        by a single Flushed event. This is the recommended pattern per
-        Deepgram docs and avoids the micro-utterance stitching artifacts
-        that per-sentence Flush produces.
-
-        Metadata is emitted on the first audio byte received.
-        """
-        # Filter out empty sentences
-        valid_sentences = [s for s in sentences if s and s.strip()]
-        if not valid_sentences:
-            logger.warning("[TTS] synthesise_turn called with no valid sentences, skipping")
-            return
-
-        logger.debug(f"[TTS] Synthesizing turn ({len(valid_sentences)} sentences, Deepgram WS persistent)")
-
-        t_tts_request_sent = time.perf_counter()
-        t_first_audio_chunk: Optional[float] = None
-
-        # Serialize: only one turn in flight at a time on this connection.
-        async with self._ws_lock:
-            ws_completed_cleanly = False
-            try:
-                ws = await self._get_ws()
-
-                # Send all sentences as individual Speak messages, then one Flush.
-                # Deepgram synthesizes them as a continuous stream.
-                for sentence in valid_sentences:
-                    if len(sentence) > 2000:
-                        logger.warning(f"[TTS] Sentence too long ({len(sentence)} chars), truncating to 2000")
-                        sentence = sentence[:2000]
-                    await ws.send_json({"type": "Speak", "text": sentence})
-                await ws.send_json({"type": "Flush"})
-
-                async with asyncio.timeout(timeout_sec):
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.BINARY:
-                            # First audio byte received — emit latency metadata
-                            if t_first_audio_chunk is None:
-                                t_first_audio_chunk = time.perf_counter()
-                                yield {
-                                    "type": "tts_metadata",
-                                    "engine": "deepgram",
-                                    "text": valid_sentences[0][:60],
-                                    "t_tts_request_sent": t_tts_request_sent,
-                                    "t_first_audio_chunk": t_first_audio_chunk,
-                                    "latency_ms": int(
-                                        (t_first_audio_chunk - t_tts_request_sent) * 1000
-                                    ),
-                                }
-                            yield bytes(msg.data)
-
-                        elif msg.type == aiohttp.WSMsgType.TEXT:
-                            try:
-                                data = json.loads(msg.data)
-                            except json.JSONDecodeError:
-                                continue
-                            msg_type = data.get("type")
-
-                            if msg_type == "Flushed":
-                                # All audio for this turn has been sent — done.
-                                # The WS stays open for the next turn.
-                                ws_completed_cleanly = True
-                                break
-
-                            elif msg_type == "Metadata":
-                                # Deepgram sometimes sends Metadata before binary audio
-                                if t_first_audio_chunk is None:
-                                    t_first_audio_chunk = time.perf_counter()
-                                    yield {
-                                        "type": "tts_metadata",
-                                        "engine": "deepgram",
-                                        "text": valid_sentences[0][:60],
-                                        "t_tts_request_sent": t_tts_request_sent,
-                                        "t_first_audio_chunk": t_first_audio_chunk,
-                                        "latency_ms": int(
-                                            (t_first_audio_chunk - t_tts_request_sent) * 1000
-                                        ),
-                                    }
-
-                            elif msg_type == "Warning":
-                                logger.warning(
-                                    f"[TTS] Deepgram warning: {data.get('description')}"
-                                )
-
-                            elif msg_type == "Error":
-                                await self._clear_and_close_ws()
-                                raise Exception(
-                                    f"Deepgram TTS error: {data.get('description', 'unknown')}"
-                                )
-
-                        elif msg.type in (
-                            aiohttp.WSMsgType.CLOSED,
-                            aiohttp.WSMsgType.ERROR,
-                        ):
-                            logger.warning("[TTS] Deepgram WS closed unexpectedly")
-                            await self._clear_and_close_ws()
-                            break
-
-                if not ws_completed_cleanly:
-                    # Connection ended before Flushed — mark dirty so next call reconnects
-                    logger.warning("[TTS] Synthesis ended without Flushed — will reconnect")
-                    await self._clear_and_close_ws()
-
-                logger.info(f"[TTS] DeepgramTTS turn complete ({len(valid_sentences)} sentences)")
-
-            except asyncio.CancelledError:
-                # Task cancelled mid-synthesis (e.g., user interrupted). Send Clear
-                # to stop Deepgram synthesizing audio we've already discarded.
-                logger.info("[TTS] Deepgram WS synthesis cancelled — sending Clear")
-                await self._clear_and_close_ws()
-                raise
-
-            except asyncio.TimeoutError:
-                logger.error(f"[TTS] Deepgram WS synthesis timed out after {timeout_sec}s")
-                await self._clear_and_close_ws()
-                raise
-
-            except (
-                aiohttp.ClientConnectionError,
-                aiohttp.ServerDisconnectedError,
-            ) as e:
-                logger.warning(f"[TTS] Deepgram WS connection error: {e} — reconnecting")
-                await self._clear_and_close_ws()
-                raise
-
-            except Exception as e:
-                logger.error(f"[TTS] DeepgramTTS synthesis error: {e}")
-                await self._clear_and_close_ws()
-                raise
 
     async def close(self):
         """Send a graceful Close to Deepgram and shut down the session."""
@@ -536,6 +387,9 @@ class TTSEngine:
         deepgram_model: str = "aura-asteria-en"
     ):
         self._engine: BaseTTSEngine
+        valid_engines = {"deepgram", "edge"}
+        if engine not in valid_engines:
+            raise ValueError(f"Invalid TTS engine: {engine}. Must be one of {valid_engines}")
         if engine == "deepgram":
             self._engine = DeepgramTTSEngine(
                 api_key=deepgram_api_key, model=deepgram_model
@@ -565,13 +419,6 @@ class TTSEngine:
         async for chunk in self._engine.synthesise_streaming(
             sentence_queue, timeout_sec, cancel_event
         ):
-            yield chunk
-
-    async def synthesise_turn(
-        self, sentences: List[str], timeout_sec: int = 30
-    ) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
-        """Synthesise a pre-collected list of sentences as one continuous audio stream."""
-        async for chunk in self._engine.synthesise_turn(sentences, timeout_sec):
             yield chunk
 
     async def close(self):

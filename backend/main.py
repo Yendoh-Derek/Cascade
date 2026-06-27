@@ -31,6 +31,7 @@ import secrets
 from typing import Any, Callable, Dict, Optional
 from pathlib import Path
 from urllib.parse import urlsplit
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,19 +39,40 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_api_keys, get_model_config
 from backend.pipeline import PipelineSession
+from groq import AsyncGroq
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global shared_groq_client
+    # Initialize shared Groq client on startup
+    keys = get_api_keys()
+    shared_groq_client = AsyncGroq(api_key=keys.groq)
+    logger.info("[App] Shared Groq client initialized")
+    yield
+    # Clean up on shutdown
+    if shared_groq_client:
+        try:
+            await shared_groq_client.close()
+            logger.info("[App] Shared Groq client closed successfully")
+        except Exception as e:
+            logger.error(f"[App] Error closing shared Groq client: {e}")
 
 app = FastAPI(
     title="Cascade — AI Voice Tutor",
     description="Low-latency streaming voice pipeline for AI tutoring sessions.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Process-wide concurrent WebSocket sessions cap
 MAX_CONCURRENT_SESSIONS = int(os.getenv("CASCADE_MAX_CONCURRENT_SESSIONS", "5"))
 session_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SESSIONS)
+
+# Shared AsyncGroq client (initialized on app startup)
+shared_groq_client: Optional[AsyncGroq] = None
 
 # Allow operators to tighten CORS in production via CASCADE_CORS_ORIGINS env var.
 # Default is "*" for local development only — restrict this before public deployment.
@@ -252,6 +274,7 @@ async def websocket_endpoint(
                 outbound_queue=outbound_queue,
                 subject=subject,
                 tts_engine=tts_engine,
+                llm_client=shared_groq_client,
             )
 
             # Now create and start sender task
@@ -321,7 +344,7 @@ async def websocket_endpoint(
                     if len(chunk) >= 2:
                         await session.handle_audio(chunk)
 
-            idle_timeout = 300  # 5 minutes
+            idle_timeout = int(os.getenv("CASCADE_IDLE_TIMEOUT_SEC", "300"))  # 5 minutes by default
 
             while True:
                 try:

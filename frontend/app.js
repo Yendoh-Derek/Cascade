@@ -464,12 +464,46 @@ class CascadeClient {
       case "error":
         this.ui.showError(msg.message || "Unknown server error");
         if (typeof msg.message === "string" && msg.message.includes("Unauthorized")) {
-          const secret = prompt("Please enter the Cascade access secret:");
-          if (secret) {
-            // sessionStorage clears on tab close — safer than localStorage (P3-B)
-            sessionStorage.setItem("cascade_secret", secret.trim());
+          this.ui.openSecretModal();
+          // Set up modal event listeners if not already done
+          if (!this._secretModalInitialized) {
+            this._secretModalInitialized = true;
+            const submitBtn = document.getElementById("btn-submit-secret");
+            const cancelBtn = document.getElementById("btn-cancel-secret");
+            const input = document.getElementById("secret-input");
+            
+            if (submitBtn) {
+              submitBtn.addEventListener("click", () => {
+                if (input && input.value.trim()) {
+                  sessionStorage.setItem("cascade_secret", input.value.trim());
+                }
+                this.ui.closeSecretModal();
+                this.stopSession();
+              });
+            }
+            
+            if (cancelBtn) {
+              cancelBtn.addEventListener("click", () => {
+                this.ui.closeSecretModal();
+                this.stopSession();
+              });
+            }
+            
+            if (input) {
+              input.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                  if (input.value.trim()) {
+                    sessionStorage.setItem("cascade_secret", input.value.trim());
+                  }
+                  this.ui.closeSecretModal();
+                  this.stopSession();
+                } else if (e.key === "Escape") {
+                  this.ui.closeSecretModal();
+                  this.stopSession();
+                }
+              });
+            }
           }
-          this.stopSession();
           break;
         }
         if (this.state !== STATE.IDLE) {

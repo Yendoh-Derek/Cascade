@@ -323,4 +323,23 @@ export class UIController {
     console.error("[Error]", message);
     this.showToast(`❌ ${message}`, 4000, "error");
   }
+
+  openSecretModal() {
+    const backdrop = document.getElementById("secret-modal-backdrop");
+    const input = document.getElementById("secret-input");
+    if (backdrop) {
+      backdrop.setAttribute("aria-hidden", "false");
+      if (input) {
+        input.value = "";
+        input.focus();
+      }
+    }
+  }
+
+  closeSecretModal() {
+    const backdrop = document.getElementById("secret-modal-backdrop");
+    if (backdrop) {
+      backdrop.setAttribute("aria-hidden", "true");
+    }
+  }
 }
