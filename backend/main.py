@@ -170,9 +170,9 @@ async def websocket_endpoint(
             # bypass via origins like "https://evila.com" when host="a.com".
             origin = websocket.headers.get("origin")
             if origin:
-                host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", "")
+                host_header = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host") or ""
                 origin_host = urlsplit(origin).hostname or ""
-                allowed_hosts = {host.split(":")[0], "localhost", "127.0.0.1"}
+                allowed_hosts = {host_header.split(":")[0], "localhost", "127.0.0.1"}
                 if origin_host not in allowed_hosts:
                     logger.warning(
                         f"[WS] Rejecting connection from origin {origin} "
