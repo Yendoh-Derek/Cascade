@@ -110,6 +110,23 @@
       aria-live="assertive"
     ></div>
 
-    <script type="module" src="app.js?v=1.0.8"></script>
+    <!-- Secret Modal -->
+    <div class="modal-backdrop" id="secret-modal-backdrop" aria-hidden="true">
+      <div class="modal glass" id="secret-modal" role="dialog" aria-labelledby="secret-modal-title">
+        <div class="modal-header">
+          <span class="modal-title" id="secret-modal-title">Access Required</span>
+        </div>
+        <div class="modal-body">
+          <p>Please enter the Cascade access secret to continue:</p>
+          <input type="password" id="secret-input" class="modal-input" placeholder="Enter secret..." />
+        </div>
+        <div class="modal-footer">
+          <button class="menu-btn" id="btn-cancel-secret">Cancel</button>
+          <button class="menu-btn menu-btn-primary" id="btn-submit-secret">Submit</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="app.js?v=1.0.9"></script>
   </body>
 </html>
