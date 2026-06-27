@@ -12,9 +12,9 @@ Fixes applied:
         wait rather than thinking their question was heard.
   [0.5] Zero-sentence LLM output now emits an explicit error message to
         the client instead of silently ending the turn.
-  [1.1] pipeline.py batches all turn sentences and calls tts.synthesise_turn()
-        once per turn (Speak-many / Flush-once). This eliminates per-sentence
-        audio finalization gaps.
+  [1.1] pipeline.py uses tts.synthesise_streaming() with Speak-many / Flush-once
+        pattern via sentence queue. This eliminates per-sentence audio
+        finalization gaps while still enabling true streaming.
   [1.4+N3] TTS semaphore and task set are now scoped per-turn, so a new
         turn always starts with fresh capacity instead of competing with
         dying tasks from the interrupted turn.
@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypeAlias, cast
 
+from groq import AsyncGroq
 from groq.types.chat import ChatCompletionMessageParam
 from backend.stt import STTHandler
 from backend.llm import LLMGenerator
@@ -47,9 +48,25 @@ ResponseQueueItem: TypeAlias = tuple[str, asyncio.Queue[SentenceQueueItem]] | Ex
 
 def strip_markdown(text: str) -> str:
     """Strip common markdown formatting characters so TTS doesn't read them literally."""
+    # Remove code blocks (fenced with ```)
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    # Remove inline code (`code`)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    # Remove links [text](url) → text
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    # Remove emphasis/strikethrough *text*, **text**, ~~text~~
+    text = re.sub(r'(\*\*|__|\*|_|~~)', '', text)
+    # Remove headers #, ##, etc.
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Replace horizontal rules (---, ***, ___) with space
+    text = re.sub(r'^\s*[-*_]{3,}\s*$', ' ', text, flags=re.MULTILINE)
+    # Remove blockquotes >
+    text = re.sub(r'^\s*>\s+', '', text, flags=re.MULTILINE)
+    # Remove standalone dashes used as separators
     text = re.sub(r'(?<!\w)-(?!\w)', ' ', text)
-    cleaned = re.sub(r'[*_#`\[\]]', '', text)
-    return cleaned.strip()
+    # Clean up whitespace
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 
 class RateLimiter:
@@ -111,11 +128,13 @@ class PipelineSession:
         outbound_queue: asyncio.Queue[dict[str, Any] | None],
         subject: Optional[str] = None,
         tts_engine: str = "edge",
+        llm_client: Optional[AsyncGroq] = None,
     ):
         self.api_keys = api_keys
         self.model_config = model_config
         self.tts_engine_choice = tts_engine
         self.outbound_queue = outbound_queue
+        self._llm_client = llm_client
 
         self.tutor = TutorSession(subject=subject)
         self.stt_handler: Optional[STTHandler] = None
@@ -154,6 +173,7 @@ class PipelineSession:
         self.llm_generator = LLMGenerator(
             api_key=self.api_keys["groq"],
             model=self.model_config["groq_model"],
+            client=self._llm_client,
         )
         self.tts_engine = TTSEngine(
             engine=self.tts_engine_choice,
@@ -556,6 +576,16 @@ class PipelineSession:
     async def close(self):
         """Shut down all pipeline components cleanly."""
         self._cancel_active_turn_tasks()
+        # Wait a bit for the processing task to cancel before closing components
+        if self.processing_task and not self.processing_task.done():
+            try:
+                await asyncio.wait_for(self.processing_task, timeout=0.5)
+            except asyncio.TimeoutError:
+                logger.warning("[Pipeline] Processing task didn't cancel within timeout during close")
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"[Pipeline] Error waiting for processing task to cancel: {e}")
         if self.stt_handler:
             try:
                 await self.stt_handler.close()
