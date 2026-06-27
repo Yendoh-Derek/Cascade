@@ -59,17 +59,23 @@ class LLMGenerator:
     5. Yield any remaining buffer after stream ends
     """
 
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", client: Optional[AsyncGroq] = None):
         """
         Initialise the LLM generator.
 
         Args:
             api_key: Groq API key
             model: Model to use (default: llama-3.3-70b-versatile)
+            client: Optional existing AsyncGroq client to use (for sharing across sessions)
         """
         self.api_key = api_key
         self.model = model
-        self.client = AsyncGroq(api_key=api_key)
+        if client:
+            self.client = client
+            self._owns_client = False
+        else:
+            self.client = AsyncGroq(api_key=api_key)
+            self._owns_client = True
         
         # Latency tracking (populated during generate())
         self.t_request_created: Optional[float] = None
@@ -145,61 +151,97 @@ class LLMGenerator:
                 token_count = 0
                 token_count_in_buffer = 0
                 t_buffer_start: Optional[float] = None  # per-buffer wall-clock timer (P2-B)
+                stream_iterator = stream.__aiter__()
+                stream_exhausted = False
 
-                async for chunk in stream:
-                    delta = chunk.choices[0].delta
-                    if delta.content:
-                        # Record the time of first token received (marks TTFT start point)
-                        if not first_token_received:
-                            first_token_received = True
-                            self.t_first_token = time.perf_counter()
+                while not stream_exhausted:
+                    # Function to get next chunk or raise StopAsyncIteration
+                    async def get_next_chunk():
+                        try:
+                            return await stream_iterator.__anext__()
+                        except StopAsyncIteration:
+                            return None
 
-                        token = delta.content
-                        token_count += 1
+                    # If we have content in buffer, race between next token and time-based flush
+                    chunk = None
+                    if sentence_buffer and t_buffer_start:
+                        remaining_time = max(0, TIME_BASED_FLUSH_SEC - (time.perf_counter() - t_buffer_start))
+                        # Wait for either next chunk or flush timeout
+                        get_next_task = asyncio.create_task(get_next_chunk())
+                        get_next_task.set_name("get_next_chunk")
+                        sleep_task = asyncio.create_task(asyncio.sleep(remaining_time))
+                        sleep_task.set_name("sleep")
+                        done, pending = await asyncio.wait(
+                            [get_next_task, sleep_task],
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        for task in done:
+                            if task.get_name() == "get_next_chunk":
+                                chunk = task.result()
+                        # Cancel pending tasks
+                        for task in pending:
+                            task.cancel()
+                    else:
+                        # No buffer, just wait for next chunk
+                        chunk = await get_next_chunk()
 
-                        # Start the per-buffer timer on the first token of each new chunk.
-                        if t_buffer_start is None:
-                            t_buffer_start = time.perf_counter()
+                    if chunk is None:
+                        stream_exhausted = True
+                    else:
+                        delta = chunk.choices[0].delta
+                        if delta.content:
+                            # Record the time of first token received (marks TTFT start point)
+                            if not first_token_received:
+                                first_token_received = True
+                                self.t_first_token = time.perf_counter()
 
-                        sentence_buffer += token
-                        token_count_in_buffer += 1
+                            token = delta.content
+                            token_count += 1
 
-                        if sentence_buffer:
-                            last_chars = sentence_buffer[-3:].rstrip()
+                            # Start the per-buffer timer on the first token of each new chunk.
+                            if t_buffer_start is None:
+                                t_buffer_start = time.perf_counter()
 
-                            is_boundary = (
-                                any(c in last_chars for c in '.?!') and self._has_sentence_boundary(sentence_buffer)
-                            ) or self._has_clause_boundary(sentence_buffer)
-                            is_first_sentence = (self.t_first_sentence_emitted is None)
+                            sentence_buffer += token
+                            token_count_in_buffer += 1
 
-                            # Token cap: first sentence uses EARLY_FLUSH_TOKENS;
-                            # subsequent sentences use the tighter SUBSEQUENT_FLUSH_TOKENS.
-                            token_cap = EARLY_FLUSH_TOKENS if is_first_sentence else SUBSEQUENT_FLUSH_TOKENS
+                    # Check flush conditions (either we got a token or timed out)
+                    if sentence_buffer:
+                        last_chars = sentence_buffer[-3:].rstrip()
 
-                            # Time-based fallback: flush if 200ms has elapsed since the
-                            # first token in this buffer, regardless of punctuation.
-                            time_based_flush = (
-                                t_buffer_start is not None and
-                                (time.perf_counter() - t_buffer_start) >= TIME_BASED_FLUSH_SEC
-                            )
+                        is_boundary = (
+                            any(c in last_chars for c in '.?!') and self._has_sentence_boundary(sentence_buffer)
+                        ) or self._has_clause_boundary(sentence_buffer)
+                        is_first_sentence = (self.t_first_sentence_emitted is None)
 
-                            # UX/Audio Fix: Only allow token cap or time-based flush if the
-                            # buffer ends in a space or punctuation. Otherwise we might split
-                            # a word in half, causing the TTS to pronounce fragments weirdly.
-                            ends_with_space_or_punct = bool(sentence_buffer) and sentence_buffer[-1] in " \n\t\r.,!?;:—-"
-                            can_flush_safely = is_boundary or ends_with_space_or_punct
+                        # Token cap: first sentence uses EARLY_FLUSH_TOKENS;
+                        # subsequent sentences use the tighter SUBSEQUENT_FLUSH_TOKENS.
+                        token_cap = EARLY_FLUSH_TOKENS if is_first_sentence else SUBSEQUENT_FLUSH_TOKENS
 
-                            if is_boundary or (can_flush_safely and ((token_count_in_buffer >= token_cap) or time_based_flush)):
-                                sentence = sentence_buffer.strip()
-                                flush_reason = "boundary" if is_boundary else ("time" if time_based_flush else "token_cap")
-                                logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens, reason={flush_reason}): {sentence[:60]}...")
-                                # Record first sentence emission time (for streaming delay calculation)
-                                if self.t_first_sentence_emitted is None:
-                                    self.t_first_sentence_emitted = time.perf_counter()
-                                yield sentence
-                                sentence_buffer = ""
-                                token_count_in_buffer = 0
-                                t_buffer_start = None  # reset timer for next chunk
+                        # Time-based fallback: flush if 200ms has elapsed since the
+                        # first token in this buffer, regardless of punctuation.
+                        time_based_flush = (
+                            t_buffer_start is not None and
+                            (time.perf_counter() - t_buffer_start) >= TIME_BASED_FLUSH_SEC
+                        )
+
+                        # UX/Audio Fix: Only allow token cap or time-based flush if the
+                        # buffer ends in a space or punctuation. Otherwise we might split
+                        # a word in half, causing the TTS to pronounce fragments weirdly.
+                        ends_with_space_or_punct = bool(sentence_buffer) and sentence_buffer[-1] in " \n\t\r.,!?;:—-"
+                        can_flush_safely = is_boundary or ends_with_space_or_punct
+
+                        if is_boundary or (can_flush_safely and ((token_count_in_buffer >= token_cap) or time_based_flush)):
+                            sentence = sentence_buffer.strip()
+                            flush_reason = "boundary" if is_boundary else ("time" if time_based_flush else "token_cap")
+                            logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens, reason={flush_reason}): {sentence[:60]}...")
+                            # Record first sentence emission time (for streaming delay calculation)
+                            if self.t_first_sentence_emitted is None:
+                                self.t_first_sentence_emitted = time.perf_counter()
+                            yield sentence
+                            sentence_buffer = ""
+                            token_count_in_buffer = 0
+                            t_buffer_start = None  # reset timer for next chunk
 
                 # Yield any remaining buffer
                 if sentence_buffer.strip():
@@ -342,8 +384,8 @@ class LLMGenerator:
         return False
 
     async def close(self):
-        """Close the AsyncGroq client and its underlying HTTP client connection pool."""
-        if hasattr(self, "client") and self.client:
+        """Close the AsyncGroq client and its underlying HTTP client connection pool (only if we own it)."""
+        if hasattr(self, "client") and self.client and self._owns_client:
             try:
                 await self.client.close()
                 logger.info("[LLM] AsyncGroq client closed successfully")

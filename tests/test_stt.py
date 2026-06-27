@@ -1,22 +1,109 @@
-"""
-cascade/tests/test_stt.py
-
-Verifies the Deepgram Speech-to-Text API key and connection using our new STTHandler.
-
-Tests:
-  1. API key is present in environment
-  2. STTHandler connects successfully
-"""
-
-import sys
-import os
 import asyncio
-
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+import sys
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.config import get_api_keys
-from backend.stt import STTHandler
+from backend.stt import STTHandler, MAX_RECONNECT_ATTEMPTS
 
+
+@pytest.mark.asyncio
+async def test_stt_reconnect_backoff():
+    """Test that STT reconnects with exponential backoff on connection drop."""
+    on_transcript = MagicMock()
+    on_error = MagicMock()
+    on_status = MagicMock()
+
+    handler = STTHandler(
+        api_key="test_key",
+        on_transcript=on_transcript,
+        on_error=on_error,
+        on_status=on_status
+    )
+
+    with patch("aiohttp.ClientSession") as mock_session_class, \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session_class.return_value = mock_session
+
+        # First connection fails, second fails, third succeeds
+        call_count = 0
+        async def mock_ws_connect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise Exception("Connection failed")
+            return AsyncMock()
+
+        mock_session.ws_connect = mock_ws_connect
+
+        # Establish connection manually trigger the reconnect loop
+        # We simulate the _listen loop failing
+        handler._closing_intentionally = False
+        await handler._reconnect_loop()
+
+        # Should have attempted MAX_RECONNECT_ATTEMPTS or until success
+        # We configured 2 failures then 1 success.
+        assert call_count == 3
+        
+        # Verify sleep was called with backoff
+        # attempt 1: delay 1
+        # attempt 2: delay 2
+        # attempt 3: delay 4 (but attempt 3 succeeded so we only sleep before attempt 1 and 2, wait, the loop sleeps BEFORE attempt!)
+        # The code does:
+        # for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):
+        #   delay = 2 ** (attempt - 1)
+        #   await asyncio.sleep(delay)
+        
+        assert mock_sleep.call_count == 3
+        mock_sleep.assert_any_call(1)
+        mock_sleep.assert_any_call(2)
+        mock_sleep.assert_any_call(4)
+
+        # Status should have been called
+        on_status.assert_any_call("stt_reconnecting", {"attempt": 1, "max": MAX_RECONNECT_ATTEMPTS})
+        on_status.assert_any_call("stt_reconnecting", {"attempt": 2, "max": MAX_RECONNECT_ATTEMPTS})
+        on_status.assert_any_call("stt_reconnecting", {"attempt": 3, "max": MAX_RECONNECT_ATTEMPTS})
+        on_status.assert_any_call("stt_reconnected", {})
+
+
+@pytest.mark.asyncio
+async def test_stt_reconnect_exhausted():
+    """Test that STT emits error when all reconnect attempts fail."""
+    on_transcript = MagicMock()
+    on_error = MagicMock()
+    on_status = MagicMock()
+
+    handler = STTHandler(
+        api_key="test_key",
+        on_transcript=on_transcript,
+        on_error=on_error,
+        on_status=on_status
+    )
+
+    with patch("aiohttp.ClientSession") as mock_session_class, \
+         patch("asyncio.sleep", new_callable=AsyncMock) as _:
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session_class.return_value = mock_session
+
+        # All connections fail
+        async def mock_ws_connect(*args, **kwargs):
+            raise Exception("Connection failed")
+
+        mock_session.ws_connect = mock_ws_connect
+
+        handler._closing_intentionally = False
+        await handler._reconnect_loop()
+
+        assert on_error.call_count == 1
+        on_error.assert_called_with("STT connection lost — please start a new session")
+
+
+# --- Live Verification for verify_all.py ---
 
 async def _test_deepgram_connection(api_key: str) -> dict:
     """
@@ -73,7 +160,6 @@ def run() -> bool:
     print("        v Live connection established successfully")
     print("  v Deepgram STT -- ALL CHECKS PASSED\n")
     return True
-
 
 if __name__ == "__main__":
     success = run()

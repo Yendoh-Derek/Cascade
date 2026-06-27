@@ -95,11 +95,13 @@ cascade/
 │   ├── state.js        # Shared state constants module
 │   └── style.css       # Styling
 ├── tests/
-│   ├── verify_all.py   # Master verification runner
-│   ├── test_stt.py     # Deepgram verification
-│   ├── test_llm.py     # Groq verification
-│   ├── test_tts.py     # edge-tts verification
-│   └── test_tutor.py   # Tutor integration check
+│   ├── verify_all.py           # Master verification runner
+│   ├── test_stt.py             # Deepgram STT unit tests & live verification
+│   ├── test_llm.py             # Groq live verification
+│   ├── test_tts.py             # edge-tts live verification
+│   ├── test_tutor.py           # Tutor integration check
+│   ├── test_latency_metrics.py # Latency and interruption pipeline tests
+│   └── test_ws_security.py     # WebSocket security and limits tests
 ├── .env.example
 ├── requirements.txt
 └── README.md
