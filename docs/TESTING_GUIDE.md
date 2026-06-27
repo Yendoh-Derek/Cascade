@@ -71,7 +71,6 @@
 - ✓ No console errors
 - ✓ UI renders: header, subject dropdown, start button, transcript area
 
-
 **Failure Scenarios:**
 
 - If CSS not loaded: Check file serves correctly (`/style.css` returns 200)
@@ -158,7 +157,7 @@ Check for:
 
 ### Phase 5: LLM Response (10 min)
 
-**Objective:** Test LLM streaming and sentence chunking
+**Objective:** Test LLM streaming and word-boundary chunking
 
 **Steps:**
 
@@ -171,10 +170,9 @@ Check for:
 
 ```
 [LLM] Streaming response for: what is photosynthesis?
-[LLM] Sentence boundary detected: "Photosynthesis is..."
-[LLM] Sentence boundary detected: "It converts..."
-[TTS] Synthesizing: "Photosynthesis is..."
-[TTS] Synthesizing: "It converts..."
+[LLM] Yielding sentence (6 tokens, reason=boundary): Photosynthesis is...
+[LLM] Yielding sentence (3 tokens, reason=boundary): It converts...
+[TTS] First TTS latency: 150ms
 ```
 
 **Browser Validation:**
@@ -183,12 +181,11 @@ Check for:
 - [ ] Response updates in real-time as it streams
 - [ ] Audio plays (speaker icon should be active if volume on)
 
-**Validation Points (Sentence Chunking):**
+**Validation Points (Word-Boundary Chunking):**
 
-- ✓ Response split into multiple sentences
-- ✓ Each sentence synthesized separately
-- ✓ No sentence starts mid-word
-- ✓ Sentences don't cut off at decimals (e.g., "3.14") or abbreviations
+- ✓ Response chunks yield on punctuation or whitespace
+- ✓ Streaming bubble updates smoothly without spacing corruption
+- ✓ No sentences cut off at decimals (e.g., "3.14") or abbreviations
 
 **Expected Response Quality:**
 
@@ -425,7 +422,7 @@ Use this for rapid validation of all fixes:
 □ Microphone permission works
 □ Audio captured and transcribed correctly
 □ LLM response appears within 5 seconds
-□ Sentences chunked properly (multi-sentence responses)
+□ Sentences/words chunked properly (smooth streaming responses)
 □ Latency displays (number in ms)
 □ Multi-turn conversation maintains context
 □ History trimming works (no slowdown after 10 turns)
@@ -464,14 +461,14 @@ python -c "from backend.config import *; print('Config loaded')"
 
 ## Performance Targets
 
-| Metric         | Target | Acceptable | Warning  |
-| -------------- | ------ | ---------- | -------- |
-| STT latency    | 100ms  | <500ms     | >800ms   |
-| LLM latency    | 300ms  | <1000ms    | >1500ms  |
-| TTS latency    | 200ms  | <500ms     | >800ms   |
-| End-to-end     | <600ms | <1200ms    | >2000ms  |
-| Memory/turn    | +5MB   | <10MB      | >15MB    |
-| Sentence chunk | 2-4    | 1-5        | >5 or <1 |
+| Metric      | Target | Acceptable | Warning  |
+| ----------- | ------ | ---------- | -------- |
+| STT latency | 100ms  | <500ms     | >800ms   |
+| LLM latency | 300ms  | <1000ms    | >1500ms  |
+| TTS latency | 200ms  | <500ms     | >800ms   |
+| End-to-end  | <600ms | <1200ms    | >2000ms  |
+| Memory/turn | +5MB   | <10MB      | >15MB    |
+| Word chunk  | 2-4    | 1-5        | >5 or <1 |
 
 ---
 

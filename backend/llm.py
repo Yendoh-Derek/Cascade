@@ -26,25 +26,10 @@ from groq.types.chat import ChatCompletionMessageParam
 
 logger = logging.getLogger(__name__)
 
-# Tuning constant: number of tokens to buffer before force-flushing the first
-# sentence chunk. Reduces first-audio latency on long opening sentences.
-EARLY_FLUSH_TOKENS: int = 6
-
-# For all sentences after the first: flush after this many tokens even without a
-# sentence boundary. Prevents long clauses from stalling TTS.
-SUBSEQUENT_FLUSH_TOKENS: int = 10
-
 # Wall-clock fallback: flush the buffer if no sentence has been emitted within
 # this many seconds of the first token arriving in the current buffer.
 # 150ms chosen to keep latency tight given Groq's high speed.
 TIME_BASED_FLUSH_SEC: float = 0.200
-
-ABBREVIATIONS = {
-    "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "etc",
-    "vs", "co", "inc", "ltd", "corp", "gov", "gen", "col", "maj", "capt",
-    "fig", "vol", "no", "p", "pp", "art", "viz", "ed", "eds", "al", "eg",
-    "ie", "approx", "dept", "econ", "e.g", "i.e", "cf", "ibid", "idem",
-}
 
 
 class LLMGenerator:
@@ -54,8 +39,8 @@ class LLMGenerator:
     Flow:
     1. Accept transcript and conversation history
     2. Stream tokens from Groq
-    3. Buffer tokens into sentences (split on . ? !)
-    4. Yield complete sentences as they form
+    3. Buffer tokens until word boundaries (spaces/punctuation)
+    4. Yield small text chunks directly
     5. Yield any remaining buffer after stream ends
     """
 
@@ -100,7 +85,7 @@ class LLMGenerator:
             timeout_sec: Timeout for entire generation in seconds
 
         Yields:
-            Complete sentence strings (including punctuation)
+            Small string chunks containing words and whitespace
         """
         # Validate inputs
         if not messages or not isinstance(messages, list):
@@ -202,17 +187,6 @@ class LLMGenerator:
 
                     # Check flush conditions (either we got a token or timed out)
                     if sentence_buffer:
-                        last_chars = sentence_buffer[-3:].rstrip()
-
-                        is_boundary = (
-                            any(c in last_chars for c in '.?!') and self._has_sentence_boundary(sentence_buffer)
-                        ) or self._has_clause_boundary(sentence_buffer)
-                        is_first_sentence = (self.t_first_sentence_emitted is None)
-
-                        # Token cap: first sentence uses EARLY_FLUSH_TOKENS;
-                        # subsequent sentences use the tighter SUBSEQUENT_FLUSH_TOKENS.
-                        token_cap = EARLY_FLUSH_TOKENS if is_first_sentence else SUBSEQUENT_FLUSH_TOKENS
-
                         # Time-based fallback: flush if 200ms has elapsed since the
                         # first token in this buffer, regardless of punctuation.
                         time_based_flush = (
@@ -220,163 +194,52 @@ class LLMGenerator:
                             (time.perf_counter() - t_buffer_start) >= TIME_BASED_FLUSH_SEC
                         )
 
-                        # UX/Audio Fix: Only allow token cap or time-based flush if the
-                        # buffer ends in a space or punctuation. Otherwise we might split
-                        # a word in half, causing the TTS to pronounce fragments weirdly.
-                        ends_with_space_or_punct = bool(sentence_buffer) and sentence_buffer[-1] in " \n\t\r.,!?;:—-"
-                        can_flush_safely = is_boundary or ends_with_space_or_punct
-
-                        if is_boundary or (can_flush_safely and ((token_count_in_buffer >= token_cap) or time_based_flush)):
-                            sentence = sentence_buffer.strip()
-                            flush_reason = "boundary" if is_boundary else ("time" if time_based_flush else "token_cap")
-                            logger.debug(f"[LLM] Yielding sentence ({token_count_in_buffer} tokens, reason={flush_reason}): {sentence[:60]}...")
-                            # Record first sentence emission time (for streaming delay calculation)
+                        # Flush if we have at least one word boundary or if we timed out
+                        ends_with_space_or_punct = sentence_buffer[-1] in " \n\t\r.,!?;:—-"
+                        
+                        if ends_with_space_or_punct or time_based_flush:
+                            # Do NOT strip the whitespace, so the frontend renders it correctly
+                            chunk = sentence_buffer
+                            flush_reason = "time" if time_based_flush else "word_boundary"
+                            # Record first chunk emission time (for streaming delay calculation)
                             if self.t_first_sentence_emitted is None:
                                 self.t_first_sentence_emitted = time.perf_counter()
-                            yield sentence
+                            yield chunk
                             sentence_buffer = ""
                             token_count_in_buffer = 0
                             t_buffer_start = None  # reset timer for next chunk
 
                 # Yield any remaining buffer
-                if sentence_buffer.strip():
-                    sentence = sentence_buffer.strip()
-                    # Ensure t_first_sentence_emitted is set for final buffer (edge case: no sentence boundaries)
+                if sentence_buffer:
+                    chunk = sentence_buffer
+                    # Ensure t_first_sentence_emitted is set for final buffer (edge case: no boundaries)
                     if self.t_first_sentence_emitted is None:
                         self.t_first_sentence_emitted = time.perf_counter()
-                    logger.info(f"[LLM] Final buffer yielded: {sentence[:60]}...")
-                    yield sentence
+                    logger.info(f"[LLM] Final buffer yielded: {chunk[:60]}...")
+                    yield chunk
 
                 logger.info(f"[LLM] Stream complete: {token_count} tokens total")
 
         except asyncio.TimeoutError:
             logger.error(f"[LLM] Generation timed out after {timeout_sec}s")
-            if sentence_buffer.strip():
+            if sentence_buffer:
                 # Record timestamp for any buffered content on timeout (edge case)
                 if self.t_first_sentence_emitted is None:
                     self.t_first_sentence_emitted = time.perf_counter()
-                yield sentence_buffer.strip()
+                yield sentence_buffer
             raise
         except Exception as e:
             logger.error(f"[LLM] Error during generation: {e}")
-            if sentence_buffer.strip():
+            if sentence_buffer:
                 # Yield partial buffer on error before raising
                 logger.warning("[LLM] Yielding partial buffer on error")
                 # Record timestamp for any buffered content on error (edge case)
                 if self.t_first_sentence_emitted is None:
                     self.t_first_sentence_emitted = time.perf_counter()
-                yield sentence_buffer.strip()
+                yield sentence_buffer
             raise
 
-    def _has_sentence_boundary(self, text: str) -> bool:
-        """
-        Check if text ends with a sentence boundary.
 
-        More sophisticated than simple punctuation check:
-        - Must end with . ? ! or ...
-        - If . then must not be a decimal number or abbreviation
-        - Typically followed by space and capital or end-of-string
-
-        Args:
-            text: Text to check
-
-        Returns:
-            True if text ends with a likely sentence boundary
-        """
-        if not text:
-            return False
-
-        # Only check the last 80 characters to improve performance
-        tail = text[-80:] if len(text) > 80 else text
-
-        # Strip trailing whitespace
-        stripped = tail.rstrip()
-        if not stripped:
-            return False
-
-        # Check for ellipsis (...)
-        if stripped.endswith("..."):
-            return True
-
-        # Check for question mark or exclamation
-        if stripped[-1] in "?!":
-            return True
-
-        # Check for period - more sophisticated logic needed
-        if not stripped.endswith("."):
-            return False
-
-        # Period at end - check context to distinguish from decimals/abbreviations
-        before_period = stripped[:-1].strip()
-        if not before_period:
-            return False
-
-        # Check for decimal numbers (e.g., "3.14")
-        if before_period[-1].isdigit():
-            return False
-
-        # Check for URLs (e.g., "example.com")
-        if re.search(r'\w+\.\w{2,}$', before_period):
-            return False
-
-        # Check for email-like patterns
-        if re.search(r'\w+\.\w+@', before_period):
-            return False
-
-        # Check for common abbreviations
-        words = before_period.split()
-        if words:
-            last_word = words[-1].lower()
-            if last_word in ABBREVIATIONS or len(last_word) <= 2:
-                return False
-
-        # Likely a real sentence boundary
-        return True
-
-    def _has_clause_boundary(self, text: str) -> bool:
-        """
-        Check if text ends at a natural clause boundary suitable for TTS flushing.
-
-        Soft-break heuristics: fires when the buffer contains a complete
-        phrase that TTS can render naturally, even without a full sentence.
-        This reduces first-audio latency on complex sentences with late punctuation.
-
-        Minimum 6 words required to avoid flushing on short fragments.
-
-        Recognised patterns:
-          - ", but", ", so", ", and", ", or"  — coordinating clause
-          - ", which", ", that", ", where"   — relative clause
-          - "; "                               — semicolon separation
-          - " — "                             — em-dash pause
-        """
-        if not text or len(text.split()) < 6:
-            return False
-
-        # Check last 100 chars for clause markers
-        tail = text[-100:] if len(text) > 100 else text
-        stripped = tail.rstrip()
-
-        # Coordinating conjunctions after comma
-        coord_patterns = [", but", ", so", ", and", ", or", ", yet", ", nor"]
-        for pattern in coord_patterns:
-            if stripped.endswith(pattern):
-                return True
-
-        # Relative / subordinate clauses after comma
-        relative_patterns = [", which", ", that", ", where", ", when", ", who"]
-        for pattern in relative_patterns:
-            if stripped.endswith(pattern):
-                return True
-
-        # Semicolon
-        if stripped.endswith(";"):
-            return True
-
-        # Em-dash (spoken pause)
-        if stripped.endswith(" —") or stripped.endswith(" --"):
-            return True
-
-        return False
 
     async def close(self):
         """Close the AsyncGroq client and its underlying HTTP client connection pool (only if we own it)."""

@@ -32,11 +32,49 @@ import json
 import asyncio
 from typing import AsyncGenerator, Optional, Union, Dict, Any
 from abc import ABC, abstractmethod
+import re
 
 import edge_tts
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+ABBREVIATIONS = {
+    "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "etc",
+    "vs", "co", "inc", "ltd", "corp", "gov", "gen", "col", "maj", "capt",
+    "fig", "vol", "no", "p", "pp", "art", "viz", "ed", "eds", "al", "eg",
+    "ie", "approx", "dept", "econ", "e.g", "i.e", "cf", "ibid", "idem",
+}
+
+def _has_sentence_boundary(text: str) -> bool:
+    if not text:
+        return False
+    tail = text[-80:] if len(text) > 80 else text
+    stripped = tail.rstrip()
+    if not stripped:
+        return False
+    if stripped.endswith("..."):
+        return True
+    if stripped[-1] in "?!":
+        return True
+    if not stripped.endswith("."):
+        return False
+    before_period = stripped[:-1].strip()
+    if not before_period:
+        return False
+    if before_period[-1].isdigit():
+        return False
+    if re.search(r'\w+\.\w{2,}$', before_period):
+        return False
+    if re.search(r'\w+\.\w+@', before_period):
+        return False
+    words = before_period.split()
+    if words:
+        last_word = words[-1].lower()
+        if last_word in ABBREVIATIONS or len(last_word) <= 2:
+            return False
+    return True
+
 
 
 class BaseTTSEngine(ABC):
@@ -53,26 +91,24 @@ class BaseTTSEngine(ABC):
 
     async def synthesise_streaming(
         self,
-        sentence_queue: asyncio.Queue,
+        chunk_queue: asyncio.Queue,
         timeout_sec: int = 30,
         cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
-        """Synthesise sentences from a queue as they arrive (true streaming).
+        """Synthesise chunks from a queue as they arrive (true streaming).
 
-        Default implementation (used by EdgeTTSEngine): drains the queue and
-        calls synthesise() per sentence sequentially. Subclasses override this
-        to implement Speak-many/Flush-once patterns.
-
-        The queue should contain str sentences with a None sentinel at the end.
+        Default implementation: drains the queue and calls synthesise() per chunk.
+        
+        The queue should contain str chunks with a None sentinel at the end.
         """
         while True:
-            sentence = await sentence_queue.get()
-            if sentence is None:   # sentinel — stream is done
+            chunk = await chunk_queue.get()
+            if chunk is None:   # sentinel — stream is done
                 break
             if cancel_event and cancel_event.is_set():
                 break
-            async for chunk in self.synthesise(sentence, timeout_sec):
-                yield chunk
+            async for audio_chunk in self.synthesise(chunk, timeout_sec):
+                yield audio_chunk
 
     async def close(self):
         """Clean up resources."""
@@ -88,6 +124,36 @@ class EdgeTTSEngine(BaseTTSEngine):
     def __init__(self, voice: str = "en-US-AriaNeural"):
         self.voice = voice
         logger.info(f"[TTS] EdgeTTS Engine initialized with voice: {voice}")
+
+    async def synthesise_streaming(
+        self,
+        chunk_queue: asyncio.Queue,
+        timeout_sec: int = 30,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
+        """
+        EdgeTTS does not support partial streaming. We must buffer the incoming
+        word chunks into complete sentences before passing them to EdgeTTS to 
+        preserve pronunciation and context.
+        """
+        sentence_buffer = ""
+        while True:
+            chunk = await chunk_queue.get()
+            if chunk is None:
+                if sentence_buffer.strip():
+                    async for audio_chunk in self.synthesise(sentence_buffer.strip(), timeout_sec):
+                        yield audio_chunk
+                break
+            if cancel_event and cancel_event.is_set():
+                break
+            
+            sentence_buffer += chunk
+            
+            # Check if we've accumulated a full sentence
+            if _has_sentence_boundary(sentence_buffer):
+                async for audio_chunk in self.synthesise(sentence_buffer.strip(), timeout_sec):
+                    yield audio_chunk
+                sentence_buffer = ""
 
     async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
         if not text or not text.strip():
@@ -213,7 +279,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
     async def synthesise_streaming(
         self,
-        sentence_queue: asyncio.Queue,
+        chunk_queue: asyncio.Queue,
         timeout_sec: int = 30,
         cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
@@ -222,8 +288,8 @@ class DeepgramTTSEngine(BaseTTSEngine):
         from the LLM, and receive audio back concurrently.
 
         Architecture:
-          - A feeder task reads from sentence_queue, sending one Speak per
-            sentence to the Deepgram WS as soon as each sentence is available.
+          - A feeder task reads from chunk_queue, sending one Speak per
+            chunk to the Deepgram WS as soon as each chunk is available.
             When the sentinel (None) is received, it sends Flush.
           - The main coroutine (this generator) reads binary audio from the
             Deepgram WS concurrently with the feeder.
@@ -248,26 +314,25 @@ class DeepgramTTSEngine(BaseTTSEngine):
                 ws = await self._get_ws()
 
                 async def feeder():
-                    """Drain sentence_queue, sending Speak per sentence, Flush at end."""
+                    """Drain chunk_queue, sending Speak per chunk, Flush at end."""
                     nonlocal first_sentence_text, t_tts_request_sent
                     while True:
-                        sentence = await sentence_queue.get()
-                        if sentence is None:   # sentinel
+                        chunk = await chunk_queue.get()
+                        if chunk is None:   # sentinel
                             await ws.send_json({"type": "Flush"})
                             break
                         if cancel_event and cancel_event.is_set():
                             await ws.send_json({"type": "Flush"})
                             break
-                        sentence = sentence.strip()
-                        if not sentence:
+                        if not chunk:
                             continue
-                        if len(sentence) > 2000:
-                            sentence = sentence[:2000]
+                        if len(chunk) > 2000:
+                            chunk = chunk[:2000]
                         if not first_sentence_text:
-                            first_sentence_text = sentence[:60]
+                            first_sentence_text = chunk[:60]
                         if t_tts_request_sent is None:
                             t_tts_request_sent = time.perf_counter()
-                        await ws.send_json({"type": "Speak", "text": sentence})
+                        await ws.send_json({"type": "Speak", "text": chunk})
 
                 feeder_task = asyncio.create_task(feeder())
 
@@ -416,13 +481,13 @@ class TTSEngine:
 
     async def synthesise_streaming(
         self,
-        sentence_queue: asyncio.Queue,
+        chunk_queue: asyncio.Queue,
         timeout_sec: int = 30,
         cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
-        """True streaming synthesis — sentences fed as they arrive, audio received concurrently."""
+        """True streaming synthesis — chunks fed as they arrive, audio received concurrently."""
         async for chunk in self._engine.synthesise_streaming(
-            sentence_queue, timeout_sec, cancel_event
+            chunk_queue, timeout_sec, cancel_event
         ):
             yield chunk
 

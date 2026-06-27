@@ -18,8 +18,8 @@ graph TD
     Server -- Raw Audio Streams --> STT
     STT -- Transcript (speech_final) --> Server
     Server -- History + Prompt --> LLM
-    LLM -- Streamed Tokens (Sentence Boundaries) --> Server
-    Server -- Clean Text Sentences (batched) --> TTS
+    LLM -- Streamed Tokens (Word Boundaries) --> Server
+    Server -- Clean Text Chunks (batched) --> TTS
     TTS -- Streaming Audio Chunks (MP3/PCM) --> Server
     Server -- Audio Frame + Turn ID --> Client
 ```
@@ -47,14 +47,14 @@ sequenceDiagram
     STT->>S: speech_final Transcript
     Note over S: Turn ID incremented (Turn N)
     S->>C: {"type": "transcript", "text": "..."}
-    
-    par Collect LLM sentences, then batch-synthesise
+
+    par Collect LLM chunks, then batch-synthesise
         S->>LLM: Generate response (timeout=30s)
         LLM->>S: Stream token chunk
-        Note over S: Buffer tokens to sentence boundary
-        S->>C: {"type": "response_chunk", "text": "First sentence..."}
-        Note over S: All sentences collected
-        S->>TTS: synthesise_turn(sentences) — Speak×N then Flush×1
+        Note over S: Buffer tokens to word boundary
+        S->>C: {"type": "response_chunk", "text": "First word..."}
+        Note over S: All chunks collected
+        S->>TTS: synthesise_turn(chunks) — Speak×N then Flush×1
         TTS->>S: Continuous audio stream
         S->>C: Binary Audio Frames (Turn N)
     end
@@ -99,11 +99,11 @@ sequenceDiagram
 
 ## Security Model
 
-| Control | Mechanism |
-|---|---|
-| Origin validation | Hostname equality check via `urlsplit()` — not substring containment |
-| Pre-auth audio buffer | 256KB cumulative cap + 10MB per-chunk cap during HMAC handshake window |
-| HMAC authentication | Optional `CASCADE_AUTH_SECRET`; HMAC-SHA256 challenge-response |
-| CORS | Configurable via `CASCADE_CORS_ORIGINS` env var (default `*` for local dev) |
-| Concurrency cap | `CASCADE_MAX_CONCURRENT_SESSIONS` process-level semaphore |
-| Per-session audio rate | Token-bucket: 32KB/s with 2s burst allowance |
+| Control                | Mechanism                                                                   |
+| ---------------------- | --------------------------------------------------------------------------- |
+| Origin validation      | Hostname equality check via `urlsplit()` — not substring containment        |
+| Pre-auth audio buffer  | 256KB cumulative cap + 10MB per-chunk cap during HMAC handshake window      |
+| HMAC authentication    | Optional `CASCADE_AUTH_SECRET`; HMAC-SHA256 challenge-response              |
+| CORS                   | Configurable via `CASCADE_CORS_ORIGINS` env var (default `*` for local dev) |
+| Concurrency cap        | `CASCADE_MAX_CONCURRENT_SESSIONS` process-level semaphore                   |
+| Per-session audio rate | Token-bucket: 32KB/s with 2s burst allowance                                |

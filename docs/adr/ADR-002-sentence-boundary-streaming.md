@@ -1,34 +1,23 @@
-# ADR-002 — Sentence Boundary Streaming with Hybrid Flush
+# ADR-002 — Word Boundary Streaming (Previously Sentence Boundary)
 
-**Status:** Accepted  
-**Date:** 2026-06-23
+**Status:** Superseded (Updated to Word-Boundary Streaming)
+**Date:** 2026-06-27
 
 ## Context
 
-TTS engines produce significantly more natural prosody when given complete phrases
-rather than individual words or arbitrary token chunks. However, waiting for full
-sentence boundaries introduces first-audio latency when sentences are long or
-punctuation appears late in the LLM stream.
+Initially, we used sentence-boundary streaming because some TTS engines (like EdgeTTS) required complete phrases for natural prosody. However, waiting for full sentence boundaries introduced a "First-Sentence Latency Floor" limitation. With our primary TTS engine (Deepgram) supporting word-by-word streaming over WebSockets, we can eliminate this artificial delay.
 
 ## Decision
 
-LLM tokens are buffered in `llm.py` until one of three flush conditions fires:
+We have migrated from sentence-boundary chunking to **word-boundary chunking** in the core pipeline (`llm.py` and `pipeline.py`).
 
-1. **Hard sentence boundary** — period, question mark, or exclamation (with
-   abbreviation/decimal disambiguation via `_has_sentence_boundary()`).
-2. **Soft clause boundary** — coordinating conjunctions after commas (`, but`, `, so`),
-   relative clauses (`, which`, `, that`), semicolons, or em-dashes, when the buffer
-   contains ≥ 6 words (`_has_clause_boundary()`).
-3. **Token cap** — 12 tokens for the first sentence (`EARLY_FLUSH_TOKENS`),
-   10 tokens for subsequent sentences (`SUBSEQUENT_FLUSH_TOKENS`).
-4. **Time-based fallback** — 200ms wall-clock elapsed since the first token in the
-   current buffer (`TIME_BASED_FLUSH_SEC`), regardless of punctuation.
+1. **Word-Boundary Chunking**: The LLM buffers tokens only until it hits a whitespace character or punctuation mark, and then yields the chunk immediately.
+2. **Direct Chunk Appending**: The frontend directly concatenates these chunks, enabling the backend to stream exact substrings (including punctuation and natural spacing) without formatting corruption.
+3. **TTS Isolation**: Because EdgeTTS still requires complete strings, the sentence-boundary logic (`_has_sentence_boundary`) has been ported directly into `EdgeTTSEngine.synthesise_streaming`. This isolates EdgeTTS's limitations inside its own component, preventing it from throttling the core pipeline's performance when using native streaming engines like Deepgram.
 
 ## Consequences
 
-- First-audio latency reduced by 150–400ms on long or complex sentences compared to
-  boundary-only flushing.
-- TTS receives shorter text units on clause boundaries, which sounds natural because
-  commas and conjunctions are natural prosodic break points.
-- The 200ms fallback ensures worst-case latency is bounded even if the LLM produces
-  an unusually long clause without any recognized boundary marker.
+- The "First-Sentence Latency Floor" is completely eliminated.
+- Audio delay is minimized to absolute baseline hardware latency when using Deepgram TTS.
+- The `sentence_queue` has been renamed to `chunk_queue` across the pipeline to reflect its new purpose of carrying word-sized buffers instead of full sentences.
+- EdgeTTS functionality is preserved via isolated sentence-buffering within its specific engine class.
