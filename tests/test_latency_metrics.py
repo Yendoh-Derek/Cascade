@@ -277,7 +277,7 @@ class TestInterruptionHardening:
 
     @pytest.mark.asyncio
     async def test_interruption_replaces_task_mid_flight_clears_flag(self, pipeline_session):
-        """Test that is_processing_transcript is cleared correctly when a task is replaced mid-flight (fix N8)."""
+        """Test that is_processing_transcript is cleared correctly when a task is replaced mid-flight."""
         session = pipeline_session
         
         # Setup initial task
@@ -345,13 +345,13 @@ class TestQueueOptimization:
         return make_pipeline_session()
     
     def test_adaptive_concurrency_low_queue_depth(self, pipeline_session_with_queue):
-        """TTS concurrency is now fixed at 2 (stub removed in P5-B)."""
+        """TTS concurrency is now fixed at 2."""
         session = pipeline_session_with_queue
         # Queue starts empty — session is ready to process turns
         assert session.outbound_queue.qsize() == 0
 
     def test_adaptive_concurrency_medium_queue_depth(self, pipeline_session_with_queue):
-        """Fixed concurrency stays stable regardless of queue depth (P5-B)."""
+        """Fixed concurrency stays stable regardless of queue depth."""
         session = pipeline_session_with_queue
         # Rate limiter is functional
         assert session._rate_limiter.allow(1) is True
@@ -454,7 +454,7 @@ class TestEndToEndFlow:
         """Test session is initialised in a clean state for TTS turns."""
         session = make_pipeline_session()
 
-        # _compute_ideal_concurrency stub was removed (P5-B).
+        # _compute_ideal_concurrency stub was removed.
         # Verify the session's relevant state directly:
         assert session._metrics.tts_first_sentence_latency_ms == 0
         assert session._metrics.tts_metrics_sent is False

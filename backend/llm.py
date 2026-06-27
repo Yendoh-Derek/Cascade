@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 EARLY_FLUSH_TOKENS: int = 6
 
 # For all sentences after the first: flush after this many tokens even without a
-# sentence boundary. Prevents long clauses from stalling TTS (fix P2-B).
+# sentence boundary. Prevents long clauses from stalling TTS.
 SUBSEQUENT_FLUSH_TOKENS: int = 8
 
 # Wall-clock fallback: flush the buffer if no sentence has been emitted within
-# this many seconds of the first token arriving in the current buffer (fix P2-B).
+# this many seconds of the first token arriving in the current buffer.
 # 150ms chosen to keep latency tight given Groq's high speed.
 TIME_BASED_FLUSH_SEC: float = 0.150
 
@@ -150,7 +150,7 @@ class LLMGenerator:
                 sentence_buffer = ""
                 token_count = 0
                 token_count_in_buffer = 0
-                t_buffer_start: Optional[float] = None  # per-buffer wall-clock timer (P2-B)
+                t_buffer_start: Optional[float] = None  # per-buffer wall-clock timer
                 stream_iterator = stream.__aiter__()
                 stream_exhausted = False
 
@@ -342,7 +342,7 @@ class LLMGenerator:
         """
         Check if text ends at a natural clause boundary suitable for TTS flushing.
 
-        Soft-break heuristics (P5-C): fires when the buffer contains a complete
+        Soft-break heuristics: fires when the buffer contains a complete
         phrase that TTS can render naturally, even without a full sentence.
         This reduces first-audio latency on complex sentences with late punctuation.
 

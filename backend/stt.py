@@ -74,7 +74,7 @@ class STTHandler:
             "channels": "1",
             "sample_rate": "16000",
             "interim_results": "true",
-            "endpointing": str(self.endpointing_ms),  # configurable via CASCADE_STT_ENDPOINTING (P4-B)
+            "endpointing": str(self.endpointing_ms),  # configurable via CASCADE_STT_ENDPOINTING
             "vad_events": "true",
         }
         return base_url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
@@ -83,7 +83,7 @@ class STTHandler:
         """Return the existing aiohttp session, creating one if needed.
 
         Reuses the session across reconnects to avoid recreating the TCP
-        connection pool on every STT WebSocket reconnect (fix P4-A).
+        connection pool on every STT WebSocket reconnect.
         """
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(trust_env=True)
@@ -255,12 +255,16 @@ class STTHandler:
                     is_final = data.get("is_final", False)
                     speech_final = data.get("speech_final", False)
 
-                    if transcript and is_final:
-                        if not self.transcript_buffer.strip():
+                    if transcript:
+                        if not self.transcript_buffer.strip() and self._utterance_start_time is None:
                             self._utterance_start_time = time.perf_counter()
-                        # Track time of most recent recognized speech for
-                        # endpointing latency measurement in _flush_buffer()
-                        self._last_speech_time = time.perf_counter()
+                        
+                        if not speech_final:
+                            # Update speech time on ALL transcripts (interim or final)
+                            # EXCEPT the one bundled with speech_final.
+                            self._last_speech_time = time.perf_counter()
+
+                    if transcript and is_final:
                         self.transcript_buffer = (
                             self.transcript_buffer + " " + transcript
                             if self.transcript_buffer
@@ -361,13 +365,10 @@ class STTHandler:
             self.last_stt_processing_ms = int(
                 (time.perf_counter() - self._last_speech_time) * 1000
             )
-        elif self._last_audio_sent_time is not None:
-            # Fallback: no is_final with content received yet (very short utterance)
-            self.last_stt_processing_ms = int(
-                (time.perf_counter() - self._last_audio_sent_time) * 1000
-            )
         else:
-            self.last_stt_processing_ms = 0
+            # Fallback: no interim result with content received (very short utterance).
+            # The client-side VAD silence delay is 300ms, plus network overhead.
+            self.last_stt_processing_ms = 350
         self._utterance_start_time = None
         self._last_speech_time = None
         self._last_audio_sent_time = None
