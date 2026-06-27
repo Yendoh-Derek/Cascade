@@ -240,7 +240,7 @@ class CascadeClient {
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (msg.text) {
           this.currentResponse = this.currentResponse
-            ? `${this.currentResponse} ${msg.text}`
+            ? this.currentResponse + msg.text
             : msg.text;
 
           if (!this.currentStreamingBubble) {

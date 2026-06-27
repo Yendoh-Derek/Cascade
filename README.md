@@ -11,10 +11,10 @@ hardware or model problem.
 
 ## Features
 
-* **Barge-in / Interruption Gating**: High-fidelity interruption model utilizing turn-id and audio epoch tracking to atomically suppress stale text/audio from interrupted turns at the network boundary.
-* **Live Latency Dashboard**: Interactive, real-time stacked chart displaying STT, LLM (queue, TTFT, stream), and TTS latency breakdowns so you can analyze pipeline performance.
-* **Dual TTS Engines**: Live toggle in the UI between high-speed **Deepgram Aura** (default, requires API key) and **Microsoft edge-tts** (free fallback, no key required).
-* **Robust STT Reconnection**: Deepgram client connection automatically recovers on unexpected socket drops with capped exponential backoff and toast notifications.
+- **Barge-in / Interruption Gating**: High-fidelity interruption model utilizing turn-id and audio epoch tracking to atomically suppress stale text/audio from interrupted turns at the network boundary.
+- **Live Latency Dashboard**: Interactive, real-time stacked chart displaying STT, LLM (queue, TTFT, stream), and TTS latency breakdowns so you can analyze pipeline performance.
+- **Dual TTS Engines**: Live toggle in the UI between high-speed **Deepgram Aura** (default, requires API key) and **Microsoft edge-tts** (free fallback, no key required).
+- **Robust STT Reconnection**: Deepgram client connection automatically recovers on unexpected socket drops with capped exponential backoff and toast notifications.
 
 ---
 
@@ -25,27 +25,33 @@ the next. Cascade streams between stages concurrently:
 
 Standard: ![alt text](docs/images/sequential_voice_pipeline.svg)
 Cascade: ![alt text](docs/images/cascade_concurrent_streaming_pipeline.svg)
+
 ---
 
 ## Architectural Decisions & Latency Measurement
 
 ### In-Memory Conversation History
+
 Conversation history is kept purely in-memory for the lifetime of a WebSocket session. There is no external persistence layer (database, Redis, etc.). This is a deliberate scope decision:
 
 - Avoids adding infrastructure dependencies (SQLite, Redis) that would complicate local development and deployment.
 - Aligns with the project's focus on **pipeline latency** rather than long-term session management.
 - Conversation context resets on page refresh or disconnect, which is acceptable for a demo/prototype workload.
 
-*If you need multi-session persistence in a production fork, key `TutorSession.history` by a session UUID in Redis or SQLite.*
+_If you need multi-session persistence in a production fork, key `TutorSession.history` by a session UUID in Redis or SQLite._
 
 ### Why WebSockets?
+
 To achieve sub-second voice interactions, HTTP requests are too heavy. Cascade uses a full-duplex WebSocket connection to stream raw PCM16 audio from the microphone to the server and stream back MP3/PCM audio chunks concurrently.
 
-### Sentence-Level Chunking
-TTS engines generate much more natural speech when they synthesize full sentences rather than word-by-word. Cascade buffers LLM streaming tokens server-side and yields complete sentences to the TTS queue as soon as a punctuation boundary (e.g. `.`, `?`, `!`) is detected. This introduces a slight latency floor for the first sentence, but guarantees premium audio quality.
+### Word-Level Chunking
+
+To minimize audio delay to absolute baseline hardware latency, Cascade no longer waits for sentence boundaries. It buffers LLM streaming tokens server-side and yields chunks as soon as a whitespace or punctuation boundary is detected. Native streaming TTS engines like Deepgram consume this chunk pipeline seamlessly. For fallback engines like EdgeTTS that require complete strings, the sentence-buffering logic is isolated within the specific engine class.
 
 ### Latency Measurement Model
+
 Latency in Cascade is measured server-side and client-side as follows:
+
 1. **STT Processing**: The interval between the last audio frame sent and Deepgram returning the confirmed transcript (`speech_final`).
 2. **LLM Generation**: Segmented into Queue Time, Time to First Token (TTFT), and Streaming Delay (time to emit the first complete sentence).
 3. **TTS Synthesis**: Time to synthesize the first sentence.
@@ -57,14 +63,14 @@ Latency in Cascade is measured server-side and client-side as follows:
 
 ## Tech Stack
 
-| Layer     | Service                                 | Role                        |
-| --------- | --------------------------------------- | --------------------------- |
-| STT       | Deepgram Nova-2                         | Streaming speech-to-text    |
-| LLM       | Groq + Llama 3.3 70B                    | High-speed token generation |
-| TTS       | **Deepgram Aura** (Default) / **edge-tts** (Fallback) | Streaming TTS options |
-| Transport | WebSockets                              | Low-latency full-duplex     |
-| Backend   | FastAPI                                 | Async pipeline server       |
-| Frontend  | HTML + CSS + JS (Vanilla)               | UI + Audio processing       |
+| Layer     | Service                                               | Role                        |
+| --------- | ----------------------------------------------------- | --------------------------- |
+| STT       | Deepgram Nova-2                                       | Streaming speech-to-text    |
+| LLM       | Groq + Llama 3.3 70B                                  | High-speed token generation |
+| TTS       | **Deepgram Aura** (Default) / **edge-tts** (Fallback) | Streaming TTS options       |
+| Transport | WebSockets                                            | Low-latency full-duplex     |
+| Backend   | FastAPI                                               | Async pipeline server       |
+| Frontend  | HTML + CSS + JS (Vanilla)                             | UI + Audio processing       |
 
 ---
 
@@ -130,12 +136,12 @@ cp .env.example .env
 
 Open `.env` and fill in your API keys:
 
-| Key | Required | Purpose |
-| --- | --- | --- |
+| Key                | Required          | Purpose                                    |
+| ------------------ | ----------------- | ------------------------------------------ |
 | `DEEPGRAM_API_KEY` | **Yes** (Default) | Used for STT and default Deepgram Aura TTS |
-| `GROQ_API_KEY` | **Yes** | Used for LLM inference |
+| `GROQ_API_KEY`     | **Yes**           | Used for LLM inference                     |
 
-*Note: If you run with the **edge-tts** fallback engine selected in the UI, Cascade does not invoke Deepgram's TTS services, but `DEEPGRAM_API_KEY` is still required for speech recognition (STT).*
+_Note: If you run with the **edge-tts** fallback engine selected in the UI, Cascade does not invoke Deepgram's TTS services, but `DEEPGRAM_API_KEY` is still required for speech recognition (STT)._
 
 ### 4. Verify all API connections
 
@@ -155,9 +161,9 @@ Open: [http://localhost:8000](http://localhost:8000)
 
 ## Known Limitations
 
-- **Sentence-Boundary Heuristic**: Boundary splitting in `llm.py` handles decimals and typical abbreviations (e.g. `Dr.`, `e.g.`) but may occasionally mis-split on atypical abbreviations (e.g. `approx. 12kg`, `No. 5`).
-- **First-Sentence Latency Floor**: TTS engines need a complete sentence to produce natural-sounding audio. A very long first sentence from the LLM sets a higher latency floor. The `EARLY_FLUSH_TOKENS = 12` threshold partially mitigates this by flushing early on long sentences.
-- **Deepgram TTS Batched Protocol**: All sentences for a turn are sent as individual `Speak` messages followed by a single `Flush`. Deepgram streams back audio as one continuous take. This eliminates the per-sentence finalization gaps of the old Speak+Flush-per-sentence pattern.
+- **True Token-Level Streaming**: The STT → LLM → TTS pipeline operates as a true token-level stream when using Deepgram Aura. Text is fed directly to the TTS websocket as fast as the LLM generates individual words, achieving sub-second latency floors without relying on arbitrary sentence-completion boundaries.
+- **EdgeTTS Sentence Buffering**: Microsoft Edge-tts does not support partial streaming. The pipeline maintains compatibility by automatically buffering LLM chunks into complete sentences directly within the `EdgeTTSEngine`, shielding the core pipeline's streaming speed.
+- **Deepgram TTS Batched Protocol**: All chunks for a turn are sent as individual `Speak` messages followed by a single `Flush`. Deepgram streams back audio as one continuous take. This eliminates the per-sentence finalization gaps of old patterns.
 - **Single-Process Session Cap**: The `CASCADE_MAX_CONCURRENT_SESSIONS` semaphore is process-local. Under multi-worker `uvicorn` deployments the effective cap is `N × MAX`, not `MAX`. Single-process deployment is recommended.
 - **Built-in Authentication**: `CASCADE_AUTH_SECRET` uses an HMAC challenge-response for basic private setups. This does not replace production-grade gateway controls (OAuth, mTLS, etc.).
 - **CORS Wide-Open by Default**: `allow_origins=["*"]` is the default for local development. Before any public or production deployment, restrict this by setting `CASCADE_CORS_ORIGINS=https://yourdomain.com` in your environment.

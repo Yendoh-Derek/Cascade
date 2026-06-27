@@ -42,8 +42,8 @@ from backend.tutor import TutorSession
 
 logger = logging.getLogger(__name__)
 
-SentenceQueueItem: TypeAlias = bytes | Exception | None
-ResponseQueueItem: TypeAlias = tuple[str, asyncio.Queue[SentenceQueueItem]] | Exception | None
+ChunkQueueItem: TypeAlias = bytes | Exception | None
+ResponseQueueItem: TypeAlias = tuple[str, asyncio.Queue[ChunkQueueItem]] | Exception | None
 
 
 def strip_markdown(text: str) -> str:
@@ -322,26 +322,26 @@ class PipelineSession:
             self.tutor.trim_history(max_turns=self.model_config.get("max_history_turns", 10))
             messages = cast(list[ChatCompletionMessageParam], self.tutor.get_messages())
 
-            # sentence_queue carries clean sentence strings from the LLM generator.
+            # chunk_queue carries clean string chunks from the LLM generator.
             # None is the sentinel that signals the stream is done.
-            # produce_sentences() puts sentences here as they arrive from the LLM —
+            # produce_chunks() puts chunks here as they arrive from the LLM —
             # NOT after all sentences are complete — so consume_audio() / TTS can
-            # start synthesising the first sentence immediately (true streaming).
+            # start synthesising the first chunk immediately (true streaming).
             _SENTINEL = None
-            sentence_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+            chunk_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
-            # Hoisted above produce_sentences so the closure reference is valid
+            # Hoisted above produce_chunks so the closure reference is valid
             # at definition time, not just at call time (fix BUG-01).
             full_response_parts: List[str] = []
 
-            async def produce_sentences() -> None:
+            async def produce_chunks() -> None:
                 nonlocal first_token_received
                 gen = llm_generator.generate(
                     messages=messages,
                     timeout_sec=30,
                 )
                 try:
-                    async for sentence in gen:
+                    async for chunk in gen:
                         if self._cancel_event.is_set() or turn_id != self._active_turn_id:
                             logger.info("[Pipeline] Cancelled during LLM generation")
                             break
@@ -398,46 +398,46 @@ class PipelineSession:
                                     "total_ms": total_llm_ms,
                                 })
 
-                        self._send_for_turn(turn_id, {"type": "response_chunk", "text": sentence})
+                        self._send_for_turn(turn_id, {"type": "response_chunk", "text": chunk})
 
-                        # Feed the clean sentence into the queue immediately so TTS
+                        # Feed the clean chunk into the queue immediately so TTS
                         # can start synthesising it without waiting for the full LLM response.
-                        clean_sentence = strip_markdown(sentence)
-                        await sentence_queue.put(clean_sentence)
-                        full_response_parts.append(sentence)
+                        clean_chunk = strip_markdown(chunk)
+                        await chunk_queue.put(clean_chunk)
+                        full_response_parts.append(chunk)
 
                     # Signal end-of-stream to consume_audio
-                    await sentence_queue.put(_SENTINEL)
+                    await chunk_queue.put(_SENTINEL)
                 except Exception as e:
                     logger.error(f"[Pipeline] LLM generator error: {e}")
-                    await sentence_queue.put(_SENTINEL)  # unblock consume_audio
+                    await chunk_queue.put(_SENTINEL)  # unblock consume_audio
                     raise
                 finally:
                     await gen.aclose()
 
             async def consume_audio() -> None:
-                """Stream TTS audio as sentences arrive from the LLM.
+                """Stream TTS audio as chunks arrive from the LLM.
 
                 Calls tts.synthesise_streaming() which:
-                  1. Drains sentence_queue, sending a Speak to Deepgram per sentence
+                  1. Drains chunk_queue, sending a Speak to Deepgram per chunk
                   2. Concurrently receives audio back from Deepgram
-                  3. Sends Flush only after the sentinel is received (all sentences done)
+                  3. Sends Flush only after the sentinel is received (all chunks done)
 
-                This means first audio arrives after the FIRST sentence is ready,
-                not after the full LLM response — true streaming, no inter-sentence gaps.
+                This means first audio arrives after the FIRST chunk is ready,
+                not after the full LLM response — true streaming, no inter-chunk gaps.
                 """
                 first_audio_sent = False
-                any_sentence_received = False
+                any_chunk_received = False
                 try:
                     async for chunk in tts_engine.synthesise_streaming(
-                        sentence_queue, timeout_sec=30, cancel_event=self._cancel_event
+                        chunk_queue, timeout_sec=30, cancel_event=self._cancel_event
                     ):
                         if self._cancel_event.is_set() or turn_id != self._active_turn_id:
                             logger.info("[Pipeline] TTS synthesis cancelled mid-turn")
                             break
 
                         if isinstance(chunk, dict) and chunk.get("type") == "tts_metadata":
-                            any_sentence_received = True
+                            any_chunk_received = True
                             latency_ms = chunk.get("latency_ms", 0)
                             if not isinstance(latency_ms, (int, float)) or latency_ms < 0 or latency_ms > 60000:
                                 logger.warning(f"[Pipeline] Invalid TTS latency value: {latency_ms}ms, using 0")
@@ -494,16 +494,16 @@ class PipelineSession:
                             "message": str(e),
                         })
                 finally:
-                    # Zero-sentence detection: if TTS never received any sentence,
+                    # Zero-chunk detection: if TTS never received any chunk,
                     # the LLM produced no output (fix 0.5)
-                    if not any_sentence_received and self._can_send(turn_id):
-                        logger.warning("[Pipeline] LLM generated no sentences for this turn")
+                    if not any_chunk_received and self._can_send(turn_id):
+                        logger.warning("[Pipeline] LLM generated no text chunks for this turn")
                         self._send_for_turn(turn_id, {
                             "type": "error",
                             "message": "No response was generated. Please try again.",
                         })
 
-            await asyncio.gather(produce_sentences(), consume_audio())
+            await asyncio.gather(produce_chunks(), consume_audio())
 
             # Build full_response from collected parts
             full_response = " ".join(full_response_parts).strip()

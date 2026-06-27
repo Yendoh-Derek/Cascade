@@ -30,18 +30,21 @@ async def test_llm_chunking_and_cancellation():
         chunks = []
         async for chunk in gen.generate([{"role": "user", "content": "test"}]):
             chunks.append(chunk)
-            if len(chunks) == 1:
+            if len(chunks) == 3:
                 break
         return chunks
         
     task = asyncio.create_task(run_gen())
-    await asyncio.sleep(0.05)
-    task.cancel()
     
     try:
-        await task
+        chunks = await task
     except asyncio.CancelledError:
         pass
+        
+    assert len(chunks) == 3
+    assert chunks[0] == "This "
+    assert chunks[1] == "is "
+    assert chunks[2] == "a "
 
 @pytest.mark.asyncio
 async def test_tts_ws_state_machine_cancellation():
