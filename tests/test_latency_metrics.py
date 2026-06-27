@@ -275,6 +275,66 @@ class TestInterruptionHardening:
         assert cancelled_msg == {"type": "turn_cancelled", "turn_id": 1}
         assert session.can_send_message(old_msg) is False
 
+    @pytest.mark.asyncio
+    async def test_interruption_replaces_task_mid_flight_clears_flag(self, pipeline_session):
+        """Test that is_processing_transcript is cleared correctly when a task is replaced mid-flight (fix N8)."""
+        session = pipeline_session
+        
+        # Setup initial task
+        session.is_processing_transcript = True
+        
+        # Create a dummy task that sleeps to simulate processing
+        async def dummy_task():
+            await asyncio.sleep(0.1)
+            
+        task1 = asyncio.create_task(dummy_task())
+        session.processing_task = task1
+        
+        # Attach the callback as done in pipeline.py
+        _captured_task = task1
+        def _on_done(t):
+            if session.processing_task is _captured_task:
+                session.processing_task = None
+                session.is_processing_transcript = False
+        task1.add_done_callback(_on_done)
+        
+        # Simulate interruption: new transcript arrives before task1 finishes
+        session._cancel_active_turn_tasks()
+        
+        # New task replaces old one
+        task2 = asyncio.create_task(dummy_task())
+        session.processing_task = task2
+        session.is_processing_transcript = True
+        
+        # Attach callback for task2
+        _captured_task2 = task2
+        def _on_done2(t):
+            if session.processing_task is _captured_task2:
+                session.processing_task = None
+                session.is_processing_transcript = False
+        task2.add_done_callback(_on_done2)
+        
+        # Let task1 finish (cancel it and wait)
+        try:
+            await task1
+        except asyncio.CancelledError:
+            pass
+            
+        # Ensure that task1's completion did NOT clear the flag, because task2 is now active
+        assert session.is_processing_transcript is True
+        assert session.processing_task is task2
+        
+        # Now let task2 finish
+        task2.cancel()
+        try:
+            await task2
+        except asyncio.CancelledError:
+            pass
+            
+        # Ensure task2's completion cleared the flag
+        assert session.is_processing_transcript is False
+        assert session.processing_task is None
+
 
 class TestQueueOptimization:
     """Phase 4: Queue Optimization Tests"""

@@ -6,16 +6,17 @@ export class AudioOutputController {
     this.audioContext = null;
     this.playbackGain = null;
     this.analyser = null;
-    
+
     this.isPlaying = false;
-    this.isAudioSourceEnded = false;  // N2: explicit initialization
+    this.isAudioSourceEnded = false; // N2: explicit initialization
     this.nextPlaybackTime = null;
     this.speakingStartTime = null;
     this.activeSourceNodes = [];
     this.playbackTurnId = null;
     this.ttsConfig = { format: "linear16", sampleRate: 24000 };
-    
+
     this._audioResumed = false;
+    this._visualizationLoopId = null; // Track the animation frame loop
   }
 
   initContext() {
@@ -68,12 +69,23 @@ export class AudioOutputController {
     this.nextPlaybackTime = null;
     this.isPlaying = false;
 
+    // Cancel the visualization loop
+    if (this._visualizationLoopId) {
+      cancelAnimationFrame(this._visualizationLoopId);
+      this._visualizationLoopId = null;
+      if (this.client.ui.orb) {
+        this.client.ui.orb.style.setProperty("--audio-level", "0");
+      }
+    }
+
     if (this.playbackGain && this.audioContext) {
       this.playbackGain.gain.cancelScheduledValues(now);
       this.playbackGain.gain.setValueAtTime(1, now);
     }
 
-    console.log("[AudioOutput] All playback stopped immediately (interrupt safety)");
+    console.log(
+      "[AudioOutput] All playback stopped immediately (interrupt safety)",
+    );
   }
 
   async onAudioChunk(arrayBuffer) {
@@ -190,10 +202,16 @@ export class AudioOutputController {
     // Measures transcript-received → first audio buffer scheduled on speaker.
     if (!this.client._firstAudioPlayed && this.client._turnStartMs != null) {
       this.client._firstAudioPlayed = true;
-      const perceivedMs = Math.round(performance.now() - this.client._turnStartMs);
+      const perceivedMs = Math.round(
+        performance.now() - this.client._turnStartMs,
+      );
       if (this.client.transport && this.client.transport.isOpen()) {
         this.client.transport.send(
-          JSON.stringify({ type: "client_latency", first_audio_played_ms: perceivedMs, turn_id: turnId })
+          JSON.stringify({
+            type: "client_latency",
+            first_audio_played_ms: perceivedMs,
+            turn_id: turnId,
+          }),
         );
       }
     }
@@ -228,26 +246,26 @@ export class AudioOutputController {
     source.start(this.nextPlaybackTime);
     this.activeSourceNodes.push(source);
 
-    if (this.analyser) {
+    if (this.analyser && !this._visualizationLoopId) {
       const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
       const tick = () => {
-        if (this.client.state !== STATE.SPEAKING) return;
+        if (this.client.state !== STATE.SPEAKING) {
+          this._visualizationLoopId = null;
+          return;
+        }
         this.analyser.getByteFrequencyData(dataArray);
         const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
         if (this.client.ui.orb)
           this.client.ui.orb.style.setProperty("--audio-level", avg.toFixed(1));
-        requestAnimationFrame(tick);
+        this._visualizationLoopId = requestAnimationFrame(tick);
       };
-      tick();
+      this._visualizationLoopId = requestAnimationFrame(tick);
     }
 
     source.onended = () => {
       const index = this.activeSourceNodes.indexOf(source);
       if (index > -1) this.activeSourceNodes.splice(index, 1);
       this._checkPlaybackFinished();
-      if (this.activeSourceNodes.length === 0 && this.client.ui.orb) {
-        this.client.ui.orb.style.setProperty("--audio-level", "0");
-      }
     };
 
     this.nextPlaybackTime = this.nextPlaybackTime + audioBuffer.duration;
