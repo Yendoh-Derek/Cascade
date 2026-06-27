@@ -12,14 +12,13 @@ Latency Measurement:
     - t_tts_request_sent: time when API request is sent
     - t_first_audio_chunk: time when first audio byte is yielded
 
-Architecture — Deepgram Speak-many / Flush-once (fix 1.1):
+Architecture — Deepgram Speak-many / Flush-once:
   pipeline.py uses synthesise_streaming() which reads sentences from a queue
   and sends Speak messages as they arrive, followed by a single Flush when
   the queue ends (None sentinel). This eliminates per-sentence audio
   finalization gaps while still enabling true streaming (no need to wait
   for all sentences before starting TTS).
 
-Fix 0.4 — WS not closed before discarding on error paths:
   All exception handlers that previously set self._ws = None now first
   attempt to send a Clear message and close the socket gracefully. This
   stops Deepgram from continuing to synthesize audio after an interruption,
@@ -149,7 +148,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
     handshake overhead (~20–50ms TCP/TLS + HTTP upgrade), which was the main
     remaining latency cost after switching from the REST API.
 
-    Protocol — Speak-many / Flush-once (fix 1.1):
+    Protocol — Speak-many / Flush-once:
       synthesise_turn() sends N Speak messages (one per sentence), then a
       single Flush. Deepgram returns audio for all sentences as one continuous
       stream, terminated by a single Flushed event. This avoids per-sentence
@@ -201,8 +200,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
         Calling Clear tells Deepgram to stop synthesizing immediately, which
         avoids wasting API quota on audio that has already been discarded
-        client-side (e.g., on interruption). This fixes the resource/spend
-        leak identified in review item 0.4.
+        client-side (e.g., on interruption).
         """
         ws = self._ws
         self._ws = None
@@ -235,7 +233,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
         This is the correct Speak-many/Flush-once pattern with true streaming.
         """
-        t_tts_request_sent = time.perf_counter()
+        t_tts_request_sent: Optional[float] = None
         t_first_audio_chunk: Optional[float] = None
         first_sentence_text = ""
         ws = None
@@ -249,7 +247,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
                 async def feeder():
                     """Drain sentence_queue, sending Speak per sentence, Flush at end."""
-                    nonlocal first_sentence_text
+                    nonlocal first_sentence_text, t_tts_request_sent
                     while True:
                         sentence = await sentence_queue.get()
                         if sentence is None:   # sentinel
@@ -265,6 +263,8 @@ class DeepgramTTSEngine(BaseTTSEngine):
                             sentence = sentence[:2000]
                         if not first_sentence_text:
                             first_sentence_text = sentence[:60]
+                        if t_tts_request_sent is None:
+                            t_tts_request_sent = time.perf_counter()
                         await ws.send_json({"type": "Speak", "text": sentence})
 
                 feeder_task = asyncio.create_task(feeder())
@@ -282,10 +282,10 @@ class DeepgramTTSEngine(BaseTTSEngine):
                                     "type": "tts_metadata",
                                     "engine": "deepgram",
                                     "text": first_sentence_text,
-                                    "t_tts_request_sent": t_tts_request_sent,
+                                    "t_tts_request_sent": t_tts_request_sent or time.perf_counter(),
                                     "t_first_audio_chunk": t_first_audio_chunk,
                                     "latency_ms": int(
-                                        (t_first_audio_chunk - t_tts_request_sent) * 1000
+                                        (t_first_audio_chunk - (t_tts_request_sent or t_first_audio_chunk)) * 1000
                                     ),
                                 }
                             yield bytes(msg.data)

@@ -13,7 +13,7 @@ import { STATE } from "./state.js";
 class CascadeClient {
   constructor() {
     this.state = STATE.IDLE;
-    
+
     // Turn & Guard variables
     this.sessionStartTime = null;
     this.totalTurns = 0;
@@ -23,15 +23,15 @@ class CascadeClient {
     this.playbackTurnId = null;
     this.audioEpoch = 0;
     this.decodeGeneration = 0;
-    
+
     this._interrupting = false;
     this._pendingCancelTurnId = null;
     this._interruptTimeout = null;
 
-    // Perceived-latency tracking (P2-C)
+    // Perceived-latency tracking
     this._turnStartMs = null;
     this._firstAudioPlayed = false;
-    
+
     this.currentResponse = "";
     this.currentStreamingBubble = null;
     this.selectedTTSEngine =
@@ -67,13 +67,13 @@ class CascadeClient {
     try {
       await this.audioOutput.resumeContext();
       await this.audioInput.start();
-      
+
       this.setState(STATE.CONNECTING);
       await this.transport.connect();
-      
+
       this.setState(STATE.LISTENING);
       this.sessionStartTime = Date.now();
-      
+
       if (this.ui.transcriptPanel) this.ui.transcriptPanel.innerHTML = "";
       this.ui._showEmptyStateIfNeeded();
     } catch (err) {
@@ -112,7 +112,7 @@ class CascadeClient {
     this.decodeGeneration += 1;
     this._interrupting = false;
     this._pendingCancelTurnId = null;
-    
+
     if (this._interruptTimeout) {
       clearTimeout(this._interruptTimeout);
       this._interruptTimeout = null;
@@ -197,18 +197,24 @@ class CascadeClient {
           format: msg.format,
           sampleRate: msg.sampleRate || msg.sample_rate,
         };
-        console.log("[Client] Received TTS config:", this.audioOutput.ttsConfig);
+        console.log(
+          "[Client] Received TTS config:",
+          this.audioOutput.ttsConfig,
+        );
         break;
       case "transcript":
         if (msg.text) {
-          if (this.audioOutput.activeSourceNodes.length > 0 || this.audioOutput.isPlaying) {
+          if (
+            this.audioOutput.activeSourceNodes.length > 0 ||
+            this.audioOutput.isPlaying
+          ) {
             this.audioOutput.stopAllPlayback();
           }
           if (msg.turn_id != null) {
             this.activeTurnId = msg.turn_id;
             this.playbackTurnId = msg.turn_id;
           }
-          // Stamp client-side turn start for perceived-latency measurement (P2-C).
+          // Stamp client-side turn start for perceived-latency measurement.
           // Measured from transcript receipt (not speech_final on server) since
           // we can't timestamp the server event from the client side.
           this._turnStartMs = performance.now();
@@ -236,14 +242,20 @@ class CascadeClient {
           this.currentResponse = this.currentResponse
             ? `${this.currentResponse} ${msg.text}`
             : msg.text;
-          
+
           if (!this.currentStreamingBubble) {
-            this.currentStreamingBubble = this.ui.addTranscriptItem("tutor", this.currentResponse);
-            if (this.currentStreamingBubble) this.currentStreamingBubble.classList.add("streaming");
+            this.currentStreamingBubble = this.ui.addTranscriptItem(
+              "tutor",
+              this.currentResponse,
+            );
+            if (this.currentStreamingBubble)
+              this.currentStreamingBubble.classList.add("streaming");
           } else {
             const p = this.currentStreamingBubble.querySelector("p");
             if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
-            if (this.ui.transcriptPanel) this.ui.transcriptPanel.scrollTop = this.ui.transcriptPanel.scrollHeight;
+            if (this.ui.transcriptPanel)
+              this.ui.transcriptPanel.scrollTop =
+                this.ui.transcriptPanel.scrollHeight;
           }
         }
         break;
@@ -253,7 +265,8 @@ class CascadeClient {
           this.currentStreamingBubble.classList.remove("streaming");
           this.currentStreamingBubble.classList.add("message-complete");
           setTimeout(() => {
-            if (this.currentStreamingBubble) this.currentStreamingBubble.classList.remove("message-complete");
+            if (this.currentStreamingBubble)
+              this.currentStreamingBubble.classList.remove("message-complete");
             this.currentStreamingBubble = null;
           }, 1200);
         } else if (this.currentResponse && this.currentResponse.trim()) {
@@ -272,13 +285,16 @@ class CascadeClient {
         // transition to LISTENING once all scheduled audio chunks finish playing.
         // Do NOT call _checkPlaybackFinished() here unconditionally — active source nodes may
         // still have buffered audio scheduled ahead; let their onended callbacks
-        // fire naturally to avoid a premature LISTENING state (fix N10).
+        // fire naturally to avoid a premature LISTENING state.
         this.audioOutput.isAudioSourceEnded = true;
-        
+
         // UX Bug Fix: If no audio was ever scheduled (e.g. TTS error or empty text),
         // we must manually trigger the transition back to LISTENING, otherwise
         // the UI will be permanently stuck in PROCESSING state.
-        if (this.audioOutput.activeSourceNodes.length === 0 && !this.audioOutput.isPlaying) {
+        if (
+          this.audioOutput.activeSourceNodes.length === 0 &&
+          !this.audioOutput.isPlaying
+        ) {
           this.audioOutput._checkPlaybackFinished();
         }
         break;
@@ -463,7 +479,10 @@ class CascadeClient {
         break;
       case "error":
         this.ui.showError(msg.message || "Unknown server error");
-        if (typeof msg.message === "string" && msg.message.includes("Unauthorized")) {
+        if (
+          typeof msg.message === "string" &&
+          msg.message.includes("Unauthorized")
+        ) {
           this.ui.openSecretModal();
           // Set up modal event listeners if not already done
           if (!this._secretModalInitialized) {
@@ -471,7 +490,7 @@ class CascadeClient {
             const submitBtn = document.getElementById("btn-submit-secret");
             const cancelBtn = document.getElementById("btn-cancel-secret");
             const input = document.getElementById("secret-input");
-            
+
             if (submitBtn) {
               submitBtn.addEventListener("click", () => {
                 if (input && input.value.trim()) {
@@ -481,19 +500,22 @@ class CascadeClient {
                 this.stopSession();
               });
             }
-            
+
             if (cancelBtn) {
               cancelBtn.addEventListener("click", () => {
                 this.ui.closeSecretModal();
                 this.stopSession();
               });
             }
-            
+
             if (input) {
               input.addEventListener("keydown", (e) => {
                 if (e.key === "Enter") {
                   if (input.value.trim()) {
-                    sessionStorage.setItem("cascade_secret", input.value.trim());
+                    sessionStorage.setItem(
+                      "cascade_secret",
+                      input.value.trim(),
+                    );
                   }
                   this.ui.closeSecretModal();
                   this.stopSession();
@@ -533,20 +555,23 @@ document.addEventListener("DOMContentLoaded", () => {
   window.cascadeClient = new CascadeClient();
   window.cascadeClient.ui._updateStatsBar();
   window.cascadeClient.ui._showEmptyStateIfNeeded();
-  
+
   // Add spacebar shortcut to toggle microphone
   document.addEventListener("keydown", (e) => {
     // Ignore if user is typing in an input field (like the secret modal)
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") {
       return;
     }
-    
+
     // Spacebar toggles the session
     if (e.code === "Space") {
       e.preventDefault(); // Prevent page scrolling
-      
+
       // If we are currently responding, interrupt instead of stopping
-      if (window.cascadeClient.state === STATE.SPEAKING || window.cascadeClient.state === STATE.PROCESSING) {
+      if (
+        window.cascadeClient.state === STATE.SPEAKING ||
+        window.cascadeClient.state === STATE.PROCESSING
+      ) {
         window.cascadeClient._triggerInterruption();
       } else {
         window.cascadeClient.toggleSession();

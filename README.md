@@ -29,7 +29,7 @@ Cascade: ![alt text](docs/images/cascade_concurrent_streaming_pipeline.svg)
 
 ## Architectural Decisions & Latency Measurement
 
-### In-Memory Conversation History (ARCH-05)
+### In-Memory Conversation History
 Conversation history is kept purely in-memory for the lifetime of a WebSocket session. There is no external persistence layer (database, Redis, etc.). This is a deliberate scope decision:
 
 - Avoids adding infrastructure dependencies (SQLite, Redis) that would complicate local development and deployment.
