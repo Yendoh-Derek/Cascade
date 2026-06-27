@@ -21,7 +21,6 @@ Fixes applied:
         unexpected errors (error level).
   [N7]  CORS origins configurable via CASCADE_CORS_ORIGINS env var.
 """
-import os
 import json
 import logging
 import asyncio
