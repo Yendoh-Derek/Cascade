@@ -18,7 +18,6 @@ Latency Measurement:
 
 import logging
 import asyncio
-import re
 import time
 from typing import AsyncGenerator, List, Optional, cast
 from groq import AsyncGroq
@@ -200,7 +199,6 @@ class LLMGenerator:
                         if ends_with_space_or_punct or time_based_flush:
                             # Do NOT strip the whitespace, so the frontend renders it correctly
                             chunk = sentence_buffer
-                            flush_reason = "time" if time_based_flush else "word_boundary"
                             # Record first chunk emission time (for streaming delay calculation)
                             if self.t_first_sentence_emitted is None:
                                 self.t_first_sentence_emitted = time.perf_counter()
