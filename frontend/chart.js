@@ -65,10 +65,7 @@ export class ChartRenderer {
         const sttVal = d.stt || 0;
         const llmVal = d.llm || 0;
         const ttsVal = d.tts || 0;
-        const systemVal =
-          d.system != null
-            ? d.system
-            : Math.max(0, (d.total || 0) - (llmVal + ttsVal));
+        const systemVal = Math.max(0, (d.total || 0) - (llmVal + ttsVal));
         return Math.max(
           (d.stt || 0) + (d.total || 0), // true e2e = stt phase + pipeline phase
           sttVal + llmVal + ttsVal + systemVal,
@@ -176,10 +173,7 @@ export class ChartRenderer {
       }
 
       // 4. System bar (top of the stack — pipeline overhead inside total_ms)
-      const systemVal =
-        d.system != null
-          ? d.system
-          : Math.max(0, (d.total || 0) - (llmVal + ttsVal)); // stt NOT in total
+      const systemVal = Math.max(0, (d.total || 0) - (llmVal + ttsVal)); // stt NOT in total
       if (systemVal > 0) {
         const barH = (systemVal / maxMs) * chartH;
         yBase -= barH;
@@ -197,7 +191,14 @@ export class ChartRenderer {
       ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.font = "9px JetBrains Mono, monospace";
       ctx.textAlign = "center";
-      ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 6);
+      
+      if (d.perceived != null) {
+        ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 16);
+        ctx.fillStyle = "rgba(52, 211, 153, 0.8)";
+        ctx.fillText(`felt ${d.perceived}ms`, scaleX(i), yTop - 4);
+      } else {
+        ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 6);
+      }
 
       // Turn label
       ctx.fillStyle = "rgba(255,255,255,0.25)";

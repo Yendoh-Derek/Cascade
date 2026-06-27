@@ -32,12 +32,12 @@ EARLY_FLUSH_TOKENS: int = 6
 
 # For all sentences after the first: flush after this many tokens even without a
 # sentence boundary. Prevents long clauses from stalling TTS.
-SUBSEQUENT_FLUSH_TOKENS: int = 8
+SUBSEQUENT_FLUSH_TOKENS: int = 10
 
 # Wall-clock fallback: flush the buffer if no sentence has been emitted within
 # this many seconds of the first token arriving in the current buffer.
 # 150ms chosen to keep latency tight given Groq's high speed.
-TIME_BASED_FLUSH_SEC: float = 0.150
+TIME_BASED_FLUSH_SEC: float = 0.200
 
 ABBREVIATIONS = {
     "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "etc",
@@ -153,6 +153,7 @@ class LLMGenerator:
                 t_buffer_start: Optional[float] = None  # per-buffer wall-clock timer
                 stream_iterator = stream.__aiter__()
                 stream_exhausted = False
+                pending_task: Optional[asyncio.Task] = None
 
                 while not stream_exhausted:
                     # Function to get next chunk or raise StopAsyncIteration
@@ -162,28 +163,22 @@ class LLMGenerator:
                         except StopAsyncIteration:
                             return None
 
+                    if pending_task is None:
+                        pending_task = asyncio.create_task(get_next_chunk())
+
                     # If we have content in buffer, race between next token and time-based flush
                     chunk = None
                     if sentence_buffer and t_buffer_start:
                         remaining_time = max(0, TIME_BASED_FLUSH_SEC - (time.perf_counter() - t_buffer_start))
-                        # Wait for either next chunk or flush timeout
-                        get_next_task = asyncio.create_task(get_next_chunk())
-                        get_next_task.set_name("get_next_chunk")
-                        sleep_task = asyncio.create_task(asyncio.sleep(remaining_time))
-                        sleep_task.set_name("sleep")
-                        done, pending = await asyncio.wait(
-                            [get_next_task, sleep_task],
-                            return_when=asyncio.FIRST_COMPLETED
-                        )
-                        for task in done:
-                            if task.get_name() == "get_next_chunk":
-                                chunk = task.result()
-                        # Cancel pending tasks
-                        for task in pending:
-                            task.cancel()
+                        try:
+                            chunk = await asyncio.wait_for(asyncio.shield(pending_task), timeout=remaining_time)
+                            pending_task = None
+                        except asyncio.TimeoutError:
+                            pass  # Buffer flushes; pending_task remains alive and untouched
                     else:
                         # No buffer, just wait for next chunk
-                        chunk = await get_next_chunk()
+                        chunk = await pending_task
+                        pending_task = None
 
                     if chunk is None:
                         stream_exhausted = True

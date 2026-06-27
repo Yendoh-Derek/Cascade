@@ -63,16 +63,13 @@ class TestLLMLatencyTracking:
             
             async def token_stream():
                 await asyncio.sleep(0.2)  # TTFT
-                yield "This "
-                yield "is "
-                yield "a "
-                yield "test "
-                yield "response "
-                yield "from "
-                yield "the "
-                yield "LLM."
+                tokens = ["This ", "is ", "a ", "test ", "response ", "from ", "the ", "LLM."]
+                for t in tokens:
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=t))])
             
-            return MagicMock(choices=[MagicMock(delta=MagicMock(content=None))])
+            stream_mock = MagicMock()
+            stream_mock.__aiter__.side_effect = lambda: token_stream()
+            return stream_mock
         
         client.chat.completions.create = mock_create
         return client

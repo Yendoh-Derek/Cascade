@@ -324,7 +324,7 @@ class CascadeClient {
       case "latency":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (typeof msg.total_ms === "number") {
-          this.lastLatencyMs = msg.total_ms;
+          this.lastLatencyMs = (msg.stt_ms || 0) + msg.total_ms;
 
           const turnNum = msg.turn_id != null ? msg.turn_id : this.totalTurns;
           let entry = this.latencyHistory.find((d) => d.turn === turnNum);
@@ -341,9 +341,6 @@ class CascadeClient {
           entry.stt = msg.stt_ms || 0;
           entry.llm = msg.llm_ms || 0;
           entry.tts = msg.tts_ms || 0;
-          // stt_ms is measured BEFORE utterance_end_time (it's the endpointing wait),
-          // so it is NOT part of total_ms. system = pipeline overhead after stt, llm, tts.
-          entry.system = Math.max(0, entry.total - (entry.llm + entry.tts));
 
           entry.llm_queue = entry.llm_queue || 0;
           entry.llm_ttft = entry.llm_ttft || 0;
@@ -386,12 +383,6 @@ class CascadeClient {
           llmEntry.llm_queue = msg.queue_ms || 0;
           llmEntry.llm_ttft = msg.ttft_ms || 0;
           llmEntry.llm_streaming = msg.streaming_delay_ms || 0;
-          if (llmEntry.total > 0) {
-            llmEntry.system = Math.max(
-              0,
-              llmEntry.total - (llmEntry.stt + llmEntry.llm + llmEntry.tts),
-            );
-          }
         }
         const panel1 = document.getElementById("stats-panel");
         if (panel1 && panel1.classList.contains("open")) {
@@ -423,12 +414,6 @@ class CascadeClient {
           ttsEntry.tts = msg.first_sentence_latency_ms || 0;
           ttsEntry.tts_first_sentence = msg.first_sentence_latency_ms || 0;
           ttsEntry.tts_engine = msg.engine || "unknown";
-          if (ttsEntry.total > 0) {
-            ttsEntry.system = Math.max(
-              0,
-              ttsEntry.total - (ttsEntry.stt + ttsEntry.llm + ttsEntry.tts),
-            );
-          }
         }
         const panel2 = document.getElementById("stats-panel");
         if (panel2 && panel2.classList.contains("open")) {
