@@ -511,6 +511,8 @@ class PipelineSession:
             # Save to history — even partial response from interrupted turns (fix 2.2)
             if full_response:
                 self.tutor.add_assistant_message(full_response)
+            elif not self._cancel_event.is_set():
+                self.tutor.add_assistant_message("[No response generated]")
 
             logger.info(f"[Pipeline] Turn {turn_id} complete: '{full_response[:60]}'")
 

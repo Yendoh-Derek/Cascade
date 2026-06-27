@@ -11,3 +11,7 @@ services:
       - CASCADE_STT_ENDPOINTING=${CASCADE_STT_ENDPOINTING:-300}
       - CASCADE_MAX_HISTORY_TURNS=${CASCADE_MAX_HISTORY_TURNS:-10}
       - CASCADE_IDLE_TIMEOUT_SEC=${CASCADE_IDLE_TIMEOUT_SEC:-300}
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

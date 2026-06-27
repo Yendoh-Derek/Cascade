@@ -37,7 +37,7 @@ class ModelConfig:
     channels: int = 1
     # Endpointing window in ms — how long Deepgram waits after last speech
     # before emitting speech_final. Tune via CASCADE_STT_ENDPOINTING env var.
-    stt_endpointing_ms: int = int(os.getenv("CASCADE_STT_ENDPOINTING", "250"))
+    stt_endpointing_ms: int = int(os.getenv("CASCADE_STT_ENDPOINTING", "300"))
 
     # LLM
     groq_model: str = "llama-3.3-70b-versatile"
@@ -54,6 +54,10 @@ class ModelConfig:
 class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 8000
+    max_concurrent_sessions: int = int(os.getenv("CASCADE_MAX_CONCURRENT_SESSIONS", "5"))
+    cors_origins: str = os.getenv("CASCADE_CORS_ORIGINS", "*")
+    auth_secret: str | None = os.getenv("CASCADE_AUTH_SECRET")
+    idle_timeout_sec: int = int(os.getenv("CASCADE_IDLE_TIMEOUT_SEC", "300"))
 
 
 def _require_env(key: str) -> str:

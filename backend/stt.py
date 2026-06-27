@@ -208,6 +208,7 @@ class STTHandler:
                         self.is_open = False  # Prevents duplicate reconnect schedule
                         if not self._closing_intentionally:
                             await self._schedule_reconnect()
+                    break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
                     close_data = getattr(msg, "data", None)
                     logger.warning(f"[STT] WebSocket closed by server (data={close_data})")

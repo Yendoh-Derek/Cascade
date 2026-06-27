@@ -37,7 +37,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.config import get_api_keys, get_model_config
+from backend.config import get_api_keys, get_model_config, server_config
 from backend.pipeline import PipelineSession
 from groq import AsyncGroq
 
@@ -68,7 +68,7 @@ app = FastAPI(
 )
 
 # Process-wide concurrent WebSocket sessions cap
-MAX_CONCURRENT_SESSIONS = int(os.getenv("CASCADE_MAX_CONCURRENT_SESSIONS", "5"))
+MAX_CONCURRENT_SESSIONS = server_config.max_concurrent_sessions
 session_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SESSIONS)
 
 # Shared AsyncGroq client (initialized on app startup)
@@ -77,7 +77,7 @@ shared_groq_client: Optional[AsyncGroq] = None
 # Allow operators to tighten CORS in production via CASCADE_CORS_ORIGINS env var.
 # Default is "*" for local development only — restrict this before public deployment.
 # Example: CASCADE_CORS_ORIGINS=https://myapp.com,https://staging.myapp.com
-_cors_origins_raw = os.getenv("CASCADE_CORS_ORIGINS", "*")
+_cors_origins_raw = server_config.cors_origins
 CORS_ORIGINS = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
 
 app.add_middleware(
@@ -171,7 +171,7 @@ async def websocket_endpoint(
             # bypass via origins like "https://evila.com" when host="a.com".
             origin = websocket.headers.get("origin")
             if origin:
-                host = websocket.headers.get("host", "")
+                host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", "")
                 origin_host = urlsplit(origin).hostname or ""
                 allowed_hosts = {host.split(":")[0], "localhost", "127.0.0.1"}
                 if origin_host not in allowed_hosts:
@@ -183,7 +183,7 @@ async def websocket_endpoint(
                     return
 
             # 1. Auth Secret Verification (HMAC challenge-response)
-            auth_secret = os.getenv("CASCADE_AUTH_SECRET")
+            auth_secret = server_config.auth_secret
             pre_auth_audio: list[bytes] = []
             if auth_secret:
                 authorized = False
@@ -344,7 +344,7 @@ async def websocket_endpoint(
                     if len(chunk) >= 2:
                         await session.handle_audio(chunk)
 
-            idle_timeout = int(os.getenv("CASCADE_IDLE_TIMEOUT_SEC", "300"))  # 5 minutes by default
+            idle_timeout = server_config.idle_timeout_sec
 
             while True:
                 try:

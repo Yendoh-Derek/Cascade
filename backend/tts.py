@@ -241,6 +241,8 @@ class DeepgramTTSEngine(BaseTTSEngine):
         feeder_task: Optional[asyncio.Task] = None
         needs_reconnect = False
 
+        pending_exc: Optional[BaseException] = None
+
         async with self._ws_lock:
             try:
                 ws = await self._get_ws()
@@ -322,22 +324,22 @@ class DeepgramTTSEngine(BaseTTSEngine):
                     logger.warning("[TTS] Streaming synthesis ended without Flushed — reconnecting")
                     needs_reconnect = True
 
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as e:
                 logger.info("[TTS] Deepgram streaming synthesis cancelled — sending Clear")
                 needs_reconnect = True
-                raise
-            except asyncio.TimeoutError:
+                pending_exc = e
+            except asyncio.TimeoutError as e:
                 logger.error(f"[TTS] Deepgram streaming synthesis timed out after {timeout_sec}s")
                 needs_reconnect = True
-                raise
+                pending_exc = e
             except (aiohttp.ClientConnectionError, aiohttp.ServerDisconnectedError) as e:
                 logger.warning(f"[TTS] Deepgram WS connection error: {e} — reconnecting")
                 needs_reconnect = True
-                raise
+                pending_exc = e
             except Exception as e:
                 logger.error(f"[TTS] Deepgram streaming synthesis error: {e}")
                 needs_reconnect = True
-                raise
+                pending_exc = e
             finally:
                 if feeder_task and not feeder_task.done():
                     feeder_task.cancel()
@@ -349,6 +351,9 @@ class DeepgramTTSEngine(BaseTTSEngine):
         # Do slow WS cleanup outside the lock so new turns can proceed immediately
         if needs_reconnect or not ws_completed_cleanly:
             await self._clear_and_close_ws()
+
+        if pending_exc is not None:
+            raise pending_exc
 
     async def synthesise(self, text: str, timeout_sec: int = 15) -> AsyncGenerator[Union[Dict[str, Any], bytes], None]:
         """Synthesise a single sentence via the streaming queue interface."""
