@@ -533,4 +533,24 @@ document.addEventListener("DOMContentLoaded", () => {
   window.cascadeClient = new CascadeClient();
   window.cascadeClient.ui._updateStatsBar();
   window.cascadeClient.ui._showEmptyStateIfNeeded();
+  
+  // Add spacebar shortcut to toggle microphone
+  document.addEventListener("keydown", (e) => {
+    // Ignore if user is typing in an input field (like the secret modal)
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") {
+      return;
+    }
+    
+    // Spacebar toggles the session
+    if (e.code === "Space") {
+      e.preventDefault(); // Prevent page scrolling
+      
+      // If we are currently responding, interrupt instead of stopping
+      if (window.cascadeClient.state === STATE.SPEAKING || window.cascadeClient.state === STATE.PROCESSING) {
+        window.cascadeClient._triggerInterruption();
+      } else {
+        window.cascadeClient.toggleSession();
+      }
+    }
+  });
 });

@@ -1,5 +1,7 @@
 # Cascade — AI Voice Tutor
 
+![Cascade UI](docs/images/cascade.png)
+
 A low-latency AI tutoring voice agent built on a fully streaming pipeline.
 Students ask questions by voice and receive spoken responses in under 800ms,
 demonstrating that voice agent latency is a pipeline design problem — not a
@@ -21,16 +23,8 @@ hardware or model problem.
 Standard voice agents wait for each stage to fully complete before starting
 the next. Cascade streams between stages concurrently:
 
-```
-Standard:   [STT ████████] → [LLM ████████████] → [TTS ████████]  ~3–5s
-
-Cascade:    [STT ██▒▒▒▒▒▒]
-                   ↓ partial transcript
-                [LLM ██████▒▒▒▒]
-                         ↓ first sentence
-                       [TTS ████]  ← student hears this at ~400–800ms
-```
-
+Standard: ![alt text](docs/images/sequential_voice_pipeline.svg)
+Cascade: ![alt text](docs/images/cascade_concurrent_streaming_pipeline.svg)
 ---
 
 ## Architectural Decisions & Latency Measurement
@@ -56,6 +50,8 @@ Latency in Cascade is measured server-side and client-side as follows:
 2. **LLM Generation**: Segmented into Queue Time, Time to First Token (TTFT), and Streaming Delay (time to emit the first complete sentence).
 3. **TTS Synthesis**: Time to synthesize the first sentence.
 4. **End-to-End Latency**: Measured from the instant the STT confirms the utterance to the time the first byte of TTS audio is received. This is visualized live in the frontend chart.
+
+![Latency Metrics](docs/images/latency-metrics.png)
 
 ---
 

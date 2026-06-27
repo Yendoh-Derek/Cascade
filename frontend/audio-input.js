@@ -14,8 +14,8 @@ export class AudioInputController {
     this._speechDetected = false;
     this._finalizeTimeout = null;
     this._lastFinalizeAt = 0;
-    this.localFinalizeSilenceMs = 450;
-    this.localFinalizeCooldownMs = 800;
+    this.localFinalizeSilenceMs = 300;
+    this.localFinalizeCooldownMs = 600;
     this._interruptionBuffer = [];
     this.utteranceStartTime = null;
     this.lastUtteredTime = null;

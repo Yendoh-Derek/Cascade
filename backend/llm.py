@@ -28,16 +28,16 @@ logger = logging.getLogger(__name__)
 
 # Tuning constant: number of tokens to buffer before force-flushing the first
 # sentence chunk. Reduces first-audio latency on long opening sentences.
-EARLY_FLUSH_TOKENS: int = 12
+EARLY_FLUSH_TOKENS: int = 6
 
 # For all sentences after the first: flush after this many tokens even without a
 # sentence boundary. Prevents long clauses from stalling TTS (fix P2-B).
-SUBSEQUENT_FLUSH_TOKENS: int = 10
+SUBSEQUENT_FLUSH_TOKENS: int = 8
 
 # Wall-clock fallback: flush the buffer if no sentence has been emitted within
 # this many seconds of the first token arriving in the current buffer (fix P2-B).
-# 200ms chosen as best fit given Groq TTFT of 80–120ms.
-TIME_BASED_FLUSH_SEC: float = 0.200
+# 150ms chosen to keep latency tight given Groq's high speed.
+TIME_BASED_FLUSH_SEC: float = 0.150
 
 ABBREVIATIONS = {
     "dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "ave", "blvd", "etc",

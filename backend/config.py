@@ -37,7 +37,7 @@ class ModelConfig:
     channels: int = 1
     # Endpointing window in ms — how long Deepgram waits after last speech
     # before emitting speech_final. Tune via CASCADE_STT_ENDPOINTING env var.
-    stt_endpointing_ms: int = int(os.getenv("CASCADE_STT_ENDPOINTING", "300"))
+    stt_endpointing_ms: int = int(os.getenv("CASCADE_STT_ENDPOINTING", "250"))
 
     # LLM
     groq_model: str = "llama-3.3-70b-versatile"
