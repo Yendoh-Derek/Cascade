@@ -14,39 +14,13 @@ Cascade is built on a full-duplex WebSocket-based streaming architecture to achi
 
 Cascade processes a single interaction (turn) using a concurrent, asynchronous generator-based pipeline:
 
-```mermaid
-sequenceDiagram
-    participant C as Client (Browser)
-    participant S as Server (FastAPI)
-    participant STT as Deepgram STT
-    participant LLM as Groq LLM
-    participant TTS as TTS Engine
+![Cascade turn processing pipeline](images/cascade_turn_processing_pipeline.svg)
 
-    Note over C,STT: Session Connected & Authorized via Secure Handshake
-    C->>S: Raw Audio Stream (PCM16)
-    S->>STT: Forward Audio Bytes
-    Note over STT: Utterance start detected
-    STT->>S: Interim results
-    Note over STT: 300ms silence detected (endpointing)
-    STT->>S: speech_final Transcript
-    Note over S: Turn ID incremented (Turn N)
-    S->>C: {"type": "transcript", "text": "..."}
+**Diagram Notes:**
 
-    par Collect LLM chunks, then batch-synthesise
-        S->>LLM: Generate response (timeout=30s)
-        LLM->>S: Stream token chunk
-        Note over S: Buffer tokens to word boundary
-        S->>C: {"type": "response_chunk", "text": "First word..."}
-        Note over S: All chunks collected
-        S->>TTS: synthesise_turn(chunks) — Speak×N then Flush×1 (Deepgram Aura)
-        Note over TTS: Streams audio as tokens arrive
-        TTS->>S: Continuous audio stream (~311ms to first byte)
-        S->>C: Binary Audio Frames (Turn N)
-    end
-
-    Note over S: LLM Stream completes
-    S->>C: {"type": "response_end"}
-```
+- Dashed lifelines represent each participant; solid arrows are blocking requests, dashed arrows are streams/fire-and-forget
+- The outer dashed rectangle is the concurrent (par) block — key distinction from a sequential pipeline
+- The `↻ repeats until LLM stream ends` line inside the par block communicates the core streaming loop
 
 ---
 
