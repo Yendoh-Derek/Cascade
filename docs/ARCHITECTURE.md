@@ -6,23 +6,7 @@ Cascade is built on a full-duplex WebSocket-based streaming architecture to achi
 
 ## System Architecture
 
-```mermaid
-graph TD
-    Client[Client Browser]
-    Server[FastAPI Server]
-    STT[Deepgram Nova-2 STT]
-    LLM[Groq Llama 3.3 LLM]
-    TTS["TTS Engine: Deepgram Aura (primary) / Edge-TTS (fallback)"]
-
-    Client -- Raw Audio (PCM16 16kHz) --> Server
-    Server -- Raw Audio Streams --> STT
-    STT -- Transcript (speech_final) --> Server
-    Server -- History + Prompt --> LLM
-    LLM -- Streamed Tokens (Word Boundaries) --> Server
-    Server -- Clean Text Chunks (batched) --> TTS
-    TTS -- Streaming Audio Chunks (MP3/PCM) --> Server
-    Server -- Audio Frame + Turn ID --> Client
-```
+![Cascade system architecture](images/cascade_system_architecture.svg)
 
 ---
 
