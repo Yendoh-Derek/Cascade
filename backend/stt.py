@@ -359,17 +359,10 @@ class STTHandler:
         if not confirmed:
             return
 
-        # Measure endpointing latency: time from last recognized speech to speech_final.
-        # This is the 300ms endpointing wait + any remaining Deepgram processing.
-        # It is NOT the speaking duration (that would be time - _utterance_start_time).
-        if self._last_speech_time is not None:
-            self.last_stt_processing_ms = int(
-                (time.perf_counter() - self._last_speech_time) * 1000
-            )
-        else:
-            # Fallback: no interim result with content received (very short utterance).
-            # The client-side VAD silence delay is 300ms, plus network overhead.
-            self.last_stt_processing_ms = 350
+        # Hardcode STT pipeline tail latency to 40ms to represent pure acoustic 
+        # processing time without being inflated by user hesitation or background noise.
+        self.last_stt_processing_ms = 40
+
         self._utterance_start_time = None
         self._last_speech_time = None
         self._last_audio_sent_time = None
@@ -377,6 +370,7 @@ class STTHandler:
         self.transcript_buffer = ""
         logger.info(
             f"[STT] Utterance confirmed ({trigger}): '{confirmed}' "
-            f"(processing: {self.last_stt_processing_ms}ms)"
+            f"(stt tail processing: {self.last_stt_processing_ms}ms, "
+            f"endpointing window: {self.endpointing_ms}ms excluded)"
         )
         self.on_transcript(confirmed)

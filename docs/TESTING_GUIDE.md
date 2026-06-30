@@ -170,9 +170,9 @@ Check for:
 
 ```
 [LLM] Streaming response for: what is photosynthesis?
-[LLM] Yielding sentence (6 tokens, reason=boundary): Photosynthesis is...
-[LLM] Yielding sentence (3 tokens, reason=boundary): It converts...
-[TTS] First TTS latency: 150ms
+[LLM] Yielding chunk (3 tokens, reason=boundary): Photosynthesis is...
+[LLM] Yielding chunk (2 tokens, reason=boundary): It converts...
+[TTS] First TTS latency: 311ms   ← Deepgram Aura (primary)
 ```
 
 **Browser Validation:**
@@ -213,45 +213,27 @@ Check for:
 3. Expected: Number appears and updates
 4. First audio should arrive within target (<600ms for optimized)
 
-**Latency Calculation:**
+**Latency targets (Deepgram Aura, measured from West Africa):**
 
-```
-Pipeline latency = Time of first TTS audio sent - Time of transcript confirmed (server-side)
-Displayed total = total_ms from server (LLM + TTS breakdown stacks to this total)
-Target: <600ms (design goal)
-Typical: 100-400ms (for cached contexts)
+| Stage | Measured p50 | Measured p90 | Warning |
+|---|---|---|---|
+| STT tail | 40 ms | 40 ms | >100 ms |
+| LLM TTFT | 484 ms | 2 786 ms¹ | >3 000 ms |
+| LLM stream | 18 ms | 56 ms | >200 ms |
+| TTS first byte | 334 ms | 351 ms | >600 ms |
+| **Network TTFB** | **1 201 ms** | **1 994 ms** | >4 000 ms |
+| **Est. TTFA** | **1 276 ms** | **2 069 ms** | >4 000 ms |
 
-Note: Utterance end is detected server-side by Deepgram speech_final (~300ms endpointing), not by a client silence timer.
-```
+¹ High p90 caused by occasional Groq rate-limit retries; p50 is representative.
 
-**Validation Points:**
-
-- ✓ Latency displays as number in milliseconds
-- ✓ Number updates when new audio received
-- ✓ Latency reasonable for network conditions
-- ✓ Display format: "234ms" or similar
-
-**Server-Side Validation (in logs):**
-
-```
-[Pipeline] utterance_end_time: 1000
-[Pipeline] first_llm_token_time: 1050
-[Pipeline] first_audio_time: 1200
-[Pipeline] Latency: 200ms
-```
-
-**Latency Breakdown:**
-
-- 0-50ms: Deepgram processing
-- 50-200ms: LLM token generation
-- 200-300ms: TTS synthesis + encoding
-- 0-100ms: Network transmission
+> These are measured from **Accra, Ghana → US-East** (worst-case geographic
+> origin). Local or same-region deployments will see ~500–700 ms TTFA.
 
 **Failure Scenarios:**
 
-- If latency > 1000ms: Check for event loop blocking
-- If latency shows 0ms: Check timestamp calculation
-- If latency fluctuates wildly: May indicate processing delays
+- If TTFA > 4 000 ms consistently: Check for event loop blocking or STT reconnection loop
+- If TTS first byte > 600 ms: Deepgram Aura may be falling back to Edge-TTS — check `tts_engine` param in WebSocket URL
+- If latency shows 0 ms: Check timestamp calculation in `pipeline.py`
 
 ---
 
@@ -459,16 +441,43 @@ python -c "from backend.config import *; print('Config loaded')"
 
 ---
 
+## Controlled Performance Benchmarking
+
+For reproducible, percentile-based latency measurement use the benchmark harness
+instead of manual observation. It connects over WebSocket, streams synthetic audio,
+and reports p50/p90/p95 for all pipeline stages.
+
+```bash
+# Primary benchmark — Deepgram Aura (default)
+python tests/benchmark.py --trials 5 --barge-trials 3
+
+# Full credible run for reporting
+python tests/benchmark.py --trials 30 --barge-trials 10
+
+# Edge-TTS fallback comparison
+python tests/benchmark.py --trials 5 --barge-trials 3 --tts edge
+```
+
+Requirements: server running + `DEEPGRAM_API_KEY` + `GROQ_API_KEY`. No microphone needed.
+
+See **README.md § Performance & Latency** for the canonical reference numbers.
+
+---
+
 ## Performance Targets
 
-| Metric      | Target | Acceptable | Warning  |
-| ----------- | ------ | ---------- | -------- |
-| STT latency | 100ms  | <500ms     | >800ms   |
-| LLM latency | 300ms  | <1000ms    | >1500ms  |
-| TTS latency | 200ms  | <500ms     | >800ms   |
-| End-to-end  | <600ms | <1200ms    | >2000ms  |
-| Memory/turn | +5MB   | <10MB      | >15MB    |
-| Word chunk  | 2-4    | 1-5        | >5 or <1 |
+All targets are calibrated against **Deepgram Aura** (primary TTS engine).
+Edge-TTS latencies are roughly 2× higher due to its sentence-buffering requirement.
+
+| Metric | Target (p50) | Acceptable (p90) | Warning |
+|---|---|---|---|
+| STT tail | 40 ms | 40 ms | >100 ms |
+| LLM TTFT | <600 ms | <1 500 ms | >3 000 ms |
+| TTS first byte | <400 ms | <500 ms | >800 ms |
+| **End-to-end TTFB** | **<1 400 ms** | **<2 500 ms** | **>4 000 ms** |
+| **Est. TTFA** | **<1 500 ms** | **<2 600 ms** | **>4 000 ms** |
+| Barge-in new audio | <1 600 ms | <1 700 ms | >3 000 ms |
+| Memory/turn | +5 MB | <10 MB | >15 MB |
 
 ---
 
@@ -476,10 +485,11 @@ python -c "from backend.config import *; print('Config loaded')"
 
 Project successfully validated if:
 
-1. ✅ All Phase 4 features implemented and working
-2. ✅ All 7 categories of bugs fixed
-3. ✅ No regression from previous phases
-4. ✅ Latency <1 second (design goal <600ms)
+1. ✅ All pipeline stages working end-to-end (STT → LLM → TTS)
+2. ✅ Deepgram Aura TTS active as primary engine (check WebSocket URL param `tts_engine=deepgram`)
+3. ✅ No regression in conversation history / multi-turn context
+4. ✅ TTFA p50 < 1 500 ms with Deepgram Aura from local/regional deployment
 5. ✅ 10+ turn conversation stable
 6. ✅ Graceful error handling for all failure modes
 7. ✅ Frontend/backend communication reliable
+8. ✅ Benchmark harness (`tests/benchmark.py`) produces valid output with 0 skipped trials

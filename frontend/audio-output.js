@@ -198,21 +198,44 @@ export class AudioOutputController {
     this.isPlaying = true;
     this.playbackTurnId = turnId;
 
-    // Perceived-latency telemetry (P2-C): send once per turn, on first scheduled audio.
-    // Measures transcript-received → first audio buffer scheduled on speaker.
-    if (!this.client._firstAudioPlayed && this.client._turnStartMs != null) {
-      this.client._firstAudioPlayed = true;
-      const perceivedMs = Math.round(
-        performance.now() - this.client._turnStartMs,
-      );
-      if (this.client.transport && this.client.transport.isOpen()) {
-        this.client.transport.send(
-          JSON.stringify({
-            type: "client_latency",
-            first_audio_played_ms: perceivedMs,
-            turn_id: turnId,
-          }),
+    // Perceived-latency telemetry: send once per turn, on first scheduled audio.
+    // Measures user-speech-end → first audio heard (true felt latency).
+    //
+    // Start anchor: _speechEndMs — stamped by the VAD in audio-input.js at the
+    // moment client-side silence was detected (best proxy for "user stopped talking").
+    // Falls back to _turnStartMs (transcript receipt) if VAD stamp is unavailable.
+    //
+    // End correction: AudioContext audio is buffered by the OS audio stack before
+    // reaching the speaker. outputLatency (hardware buffer) and the scheduling
+    // lookahead (nextPlaybackTime - currentTime) are added so the measurement
+    // reflects when the user hears the first sample, not when it was queued.
+    if (!this.client._firstAudioPlayed) {
+      const startMs = this.client._speechEndMs ?? this.client._turnStartMs;
+      if (startMs != null) {
+        this.client._firstAudioPlayed = true;
+        const outputLatencyMs = (this.audioContext.outputLatency || 0) * 1000;
+        const schedulingOffsetMs = Math.max(
+          0,
+          (this.nextPlaybackTime - this.audioContext.currentTime) * 1000,
         );
+        const perceivedMs = Math.round(
+          performance.now() - startMs + outputLatencyMs + schedulingOffsetMs,
+        );
+        console.log(
+          `[AudioOutput] Felt latency: ${perceivedMs}ms ` +
+          `(startAnchor=${this.client._speechEndMs != null ? "VAD" : "transcript"}, ` +
+          `outputLatency=${outputLatencyMs.toFixed(1)}ms, ` +
+          `schedulingOffset=${schedulingOffsetMs.toFixed(1)}ms)`,
+        );
+        if (this.client.transport && this.client.transport.isOpen()) {
+          this.client.transport.send(
+            JSON.stringify({
+              type: "client_latency",
+              first_audio_played_ms: perceivedMs,
+              turn_id: turnId,
+            }),
+          );
+        }
       }
     }
 

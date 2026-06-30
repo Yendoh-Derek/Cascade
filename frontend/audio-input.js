@@ -19,6 +19,11 @@ export class AudioInputController {
     this._interruptionBuffer = [];
     this.utteranceStartTime = null;
     this.lastUtteredTime = null;
+
+    // Tracks performance.now() of the last audio frame that contained speech.
+    // Used to stamp client._speechEndMs when silence is first detected, giving
+    // an accurate "user stopped talking" anchor for felt-latency measurement.
+    this._lastSpeechPerfNow = null;
   }
 
   async start() {
@@ -90,6 +95,7 @@ export class AudioInputController {
     this._clearFinalizeTimer();
     this.utteranceStartTime = null;
     this.lastUtteredTime = null;
+    this._lastSpeechPerfNow = null;
     this.maxAudioLevel = 0;
     this._speechDetected = false;
   }
@@ -104,6 +110,11 @@ export class AudioInputController {
       this.utteranceStartTime = now;
     }
     this.lastUtteredTime = now;
+    // Record performance.now() of this speech frame (for felt-latency anchor).
+    // Also clear any stale _speechEndMs from the previous turn so the new
+    // turn's stamp is computed fresh when silence is detected.
+    this._lastSpeechPerfNow = performance.now();
+    this.client._speechEndMs = null;
     this._clearFinalizeTimer();
   }
 
@@ -130,6 +141,20 @@ export class AudioInputController {
     }
     if (now - this.lastUtteredTime < this.localFinalizeSilenceMs) return;
     if (this._finalizeTimeout) return;
+
+    // Stamp the felt-latency start once the silence window has passed.
+    // _lastSpeechPerfNow is performance.now() of the last audio frame that
+    // contained detectable speech — the best client-side proxy for
+    // "user stopped talking". This gives felt_ms a start anchor that
+    // pre-dates the transcript message by ~endpointing_ms, making felt_ms
+    // correctly larger than pipeline total_ms.
+    if (this._lastSpeechPerfNow != null && this.client._speechEndMs == null) {
+      this.client._speechEndMs = this._lastSpeechPerfNow;
+      console.log(
+        `[AudioInput] Felt-latency anchor stamped: _speechEndMs = ${this.client._speechEndMs.toFixed(1)}ms`,
+      );
+    }
+
     this._finalizeTimeout = setTimeout(() => {
       this._finalizeTimeout = null;
       if (this.client.state === STATE.LISTENING && this._speechDetected) {

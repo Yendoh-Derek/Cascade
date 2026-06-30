@@ -287,6 +287,11 @@ async def websocket_endpoint(
                         msg = await outbound_queue.get()
                         if msg is None:  # Sentinel value to stop sender
                             break
+                        if session and not session.can_send_message(msg):
+                            # Skip awaiting _send_ws_message if we already know we'll drop it.
+                            # This instantly purges hundreds of stale messages in one event loop tick
+                            # instead of yielding context for each one.
+                            continue
                         await _send_ws_message(websocket, msg, session.can_send_message)
                     except asyncio.CancelledError:
                         break

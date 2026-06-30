@@ -355,10 +355,10 @@ class PipelineSession:
                                 streaming_delay_ms = 0
 
                                 if (llm_generator.t_request_sent and
-                                        llm_generator.t_request_created):
+                                        self._metrics.utterance_end_time):
                                     queue_latency_ms = int(
                                         (llm_generator.t_request_sent -
-                                         llm_generator.t_request_created) * 1000
+                                         self._metrics.utterance_end_time) * 1000
                                     )
                                     queue_latency_ms = max(0, min(queue_latency_ms, 30000))
 
@@ -428,6 +428,17 @@ class PipelineSession:
                 """
                 first_audio_sent = False
                 any_chunk_received = False
+                audio_buffer = bytearray()
+                AUDIO_CHUNK_MIN_SIZE = 4096
+
+                def flush_audio_buffer():
+                    if audio_buffer and self._active_turn_id == turn_id and not self._cancel_event.is_set():
+                        # Route through _send_for_turn so _can_send() is
+                        # evaluated before the message enters the outbound
+                        # queue, closing the cancellation race window (fix P1-B).
+                        self._send_for_turn(turn_id, {"type": "audio", "data": bytes(audio_buffer)})
+                    audio_buffer.clear()
+
                 try:
                     async for chunk in tts_engine.synthesise_streaming(
                         chunk_queue, timeout_sec=30, cancel_event=self._cancel_event
@@ -479,10 +490,12 @@ class PipelineSession:
                                             "ms": total_ms,
                                         })
 
-                                # Route through _send_for_turn so _can_send() is
-                                # evaluated before the message enters the outbound
-                                # queue, closing the cancellation race window (fix P1-B).
-                                self._send_for_turn(turn_id, {"type": "audio", "data": bytes(chunk)})
+                                audio_buffer.extend(chunk)
+                                if len(audio_buffer) >= AUDIO_CHUNK_MIN_SIZE:
+                                    flush_audio_buffer()
+
+                    # Flush any remaining audio after the stream ends
+                    flush_audio_buffer()
 
                 except asyncio.CancelledError:
                     pass
