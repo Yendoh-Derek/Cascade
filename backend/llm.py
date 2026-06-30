@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 # 150ms chosen to keep latency tight given Groq's high speed.
 TIME_BASED_FLUSH_SEC: float = 0.200
 
+EARLY_FLUSH_TOKENS: int = 6
+SUBSEQUENT_FLUSH_TOKENS: int = 12
+
 
 class LLMGenerator:
     """
@@ -187,25 +190,38 @@ class LLMGenerator:
                     # Check flush conditions (either we got a token or timed out)
                     if sentence_buffer:
                         # Time-based fallback: flush if 200ms has elapsed since the
-                        # first token in this buffer, regardless of punctuation.
                         time_based_flush = (
                             t_buffer_start is not None and
                             (time.perf_counter() - t_buffer_start) >= TIME_BASED_FLUSH_SEC
                         )
 
-                        # Flush if we have at least one word boundary or if we timed out
+                        # We flush at a word boundary (whitespace/punctuation).
+                        # To prevent event loop congestion, we enforce a minimum token count
+                        # per chunk. The first chunk can be smaller to minimize initial latency.
+                        token_cap = (
+                            EARLY_FLUSH_TOKENS
+                            if self.t_first_sentence_emitted is None
+                            else SUBSEQUENT_FLUSH_TOKENS
+                        )
+
                         ends_with_space_or_punct = sentence_buffer[-1] in " \n\t\r.,!?;:—-"
-                        
-                        if ends_with_space_or_punct or time_based_flush:
-                            # Do NOT strip the whitespace, so the frontend renders it correctly
+                        has_enough_tokens = token_count_in_buffer >= token_cap
+
+                        if (ends_with_space_or_punct and has_enough_tokens) or time_based_flush:
+                            # Yield exact chunk (including punctuation/spaces)
                             chunk = sentence_buffer
-                            # Record first chunk emission time (for streaming delay calculation)
-                            if self.t_first_sentence_emitted is None:
-                                self.t_first_sentence_emitted = time.perf_counter()
-                            yield chunk
                             sentence_buffer = ""
                             token_count_in_buffer = 0
-                            t_buffer_start = None  # reset timer for next chunk
+                            t_buffer_start = None
+
+                            if self.t_first_sentence_emitted is None:
+                                self.t_first_sentence_emitted = time.perf_counter()
+                                ttft = (self.t_first_token - self.t_request_created) * 1000 if self.t_first_token else 0
+                                chunk_lat = (self.t_first_sentence_emitted - self.t_request_created) * 1000
+                                logger.info(
+                                    f"[LLM] First chunk emitted in {chunk_lat:.0f}ms (TTFT: {ttft:.0f}ms)"
+                                )
+                            yield chunk
 
                 # Yield any remaining buffer
                 if sentence_buffer:

@@ -1,6 +1,6 @@
 # Cascade AI Voice Tutor - Architecture Overview
 
-Cascade is built on a full-duplex WebSocket-based streaming architecture to achieve sub-second voice tutoring interactions. This document outlines the key components, data flow, and timing instrumentation.
+Cascade is built on a full-duplex WebSocket-based streaming architecture to achieve low-latency voice tutoring interactions. The primary configuration uses **Deepgram Aura** for TTS, achieving a measured TTFA p50 of ~1 276 ms from West Africa to US-East cloud services. This document outlines the key components, data flow, and timing instrumentation.
 
 ---
 
@@ -12,7 +12,7 @@ graph TD
     Server[FastAPI Server]
     STT[Deepgram Nova-2 STT]
     LLM[Groq Llama 3.3 LLM]
-    TTS[TTS Engine: Edge / Deepgram]
+    TTS["TTS Engine: Deepgram Aura (primary) / Edge-TTS (fallback)"]
 
     Client -- Raw Audio (PCM16 16kHz) --> Server
     Server -- Raw Audio Streams --> STT
@@ -54,8 +54,9 @@ sequenceDiagram
         Note over S: Buffer tokens to word boundary
         S->>C: {"type": "response_chunk", "text": "First word..."}
         Note over S: All chunks collected
-        S->>TTS: synthesise_turn(chunks) — Speak×N then Flush×1
-        TTS->>S: Continuous audio stream
+        S->>TTS: synthesise_turn(chunks) — Speak×N then Flush×1 (Deepgram Aura)
+        Note over TTS: Streams audio as tokens arrive
+        TTS->>S: Continuous audio stream (~311ms to first byte)
         S->>C: Binary Audio Frames (Turn N)
     end
 

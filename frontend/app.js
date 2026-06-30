@@ -29,7 +29,8 @@ class CascadeClient {
     this._interruptTimeout = null;
 
     // Perceived-latency tracking
-    this._turnStartMs = null;
+    this._turnStartMs = null;    // stamped at transcript receipt (fallback anchor)
+    this._speechEndMs = null;    // stamped by VAD at speech end (primary anchor)
     this._firstAudioPlayed = false;
 
     this.currentResponse = "";
@@ -118,6 +119,9 @@ class CascadeClient {
       this._interruptTimeout = null;
     }
     this._resetTurnState();
+    // Clear felt-latency anchors so a new session always starts clean.
+    this._speechEndMs = null;
+    this._turnStartMs = null;
     this.sessionStartTime = null;
 
     this.setState(STATE.IDLE);
@@ -214,9 +218,12 @@ class CascadeClient {
             this.activeTurnId = msg.turn_id;
             this.playbackTurnId = msg.turn_id;
           }
+          // If Deepgram endpointed before the local VAD detected silence,
+          // back-calculate the speech end using the 300ms endpointing window.
+          if (this._speechEndMs == null) {
+            this._speechEndMs = performance.now() - 300;
+          }
           // Stamp client-side turn start for perceived-latency measurement.
-          // Measured from transcript receipt (not speech_final on server) since
-          // we can't timestamp the server event from the client side.
           this._turnStartMs = performance.now();
           this._firstAudioPlayed = false;
           this._interrupting = false;

@@ -2,10 +2,9 @@
 
 ![Cascade UI](docs/images/cascade.png)
 
-A low-latency AI tutoring voice agent built on a fully streaming pipeline.
-Students ask questions by voice and receive spoken responses in under 800ms,
-demonstrating that voice agent latency is a pipeline design problem — not a
-hardware or model problem.
+A low-latency AI tutoring voice agent built on a fully streaming STT → LLM → TTS pipeline.
+The pipeline is engineered to minimise Time-To-First-Audio (TTFA): how long the user waits
+between finishing speaking and hearing the first word of the response.
 
 ---
 
@@ -39,6 +38,10 @@ Conversation history is kept purely in-memory for the lifetime of a WebSocket se
 - Conversation context resets on page refresh or disconnect, which is acceptable for a demo/prototype workload.
 
 _If you need multi-session persistence in a production fork, key `TutorSession.history` by a session UUID in Redis or SQLite._
+
+**True Token-Level Streaming**: The STT → LLM → TTS pipeline operates as a true token-level stream when using Deepgram Aura. Text is fed directly to the TTS websocket as fast as the LLM generates individual words, achieving sub-second latency floors without relying on arbitrary sentence-completion boundaries.
+- **EdgeTTS Sentence Buffering**: Microsoft Edge-tts does not support partial streaming. The pipeline maintains compatibility by automatically buffering LLM chunks into complete sentences directly within the `EdgeTTSEngine`, shielding the core pipeline's streaming speed.
+- **Deepgram TTS Batched Protocol**: All chunks for a turn are sent as individual `Speak` messages followed by a single `Flush`. Deepgram streams back audio as one continuous take. This eliminates the per-sentence finalization gaps of old patterns.
 
 ### Why WebSockets?
 
@@ -98,6 +101,7 @@ cascade/
 │   └── style.css       # Styling
 ├── tests/
 │   ├── verify_all.py           # Master verification runner
+│   ├── benchmark.py            # Controlled TTFA benchmark harness (p50/p90/p95)
 │   ├── test_stt.py             # Deepgram STT unit tests & live verification
 │   ├── test_llm.py             # Groq live verification
 │   ├── test_tts.py             # edge-tts live verification
@@ -159,11 +163,79 @@ Open: [http://localhost:8000](http://localhost:8000)
 
 ---
 
+## Performance & Latency
+
+All numbers below are **real measurements** from `tests/benchmark.py` run from
+**Accra, Ghana → US-East cloud services** (Deepgram Nova-2 STT, Groq, Deepgram Aura TTS).
+Ghana → US round-trip is ~150–200 ms — a deliberately challenging environment,
+not a cherry-picked local-machine result.
+
+### What is measured
+
+| Term | Definition |
+|---|---|
+| **TTFB** | `finalize` sent → first audio **byte** at the benchmark script |
+| **TTFA** | TTFB + ~75 ms browser decode + hardware output buffer |
+| **Barge-in cancel ack** | Client sends `cancel` → server begins new-turn STT transcript |
+| **Barge-in new audio** | Client sends `cancel` → first audio byte of the replacement turn |
+
+TTFB is what the server controls. The remaining ~75 ms is documented browser
+overhead; it is not baked into the numbers — add it yourself.
+
+### Steady-state results (Deepgram Aura, 5 trials)
+
+| Component | Avg | P50 | P90 |
+|---|---|---|---|
+| STT pipeline tail | 40 ms | 40 ms | 40 ms |
+| LLM queue + schedule | 0 ms | 0 ms | 1 ms |
+| LLM TTFT (Groq) | 862 ms¹ | 484 ms | 2 786 ms¹ |
+| LLM streaming delay | 20 ms | 18 ms | 56 ms |
+| TTS first byte (Deepgram Aura) | 311 ms | 334 ms | 351 ms |
+| System / transit | 484 ms | 377 ms | 1 197 ms |
+| **Network TTFB** | **1 292 ms** | **1 201 ms** | **1 994 ms** |
+| **Est. TTFA (+75 ms)** | **1 367 ms** | **1 276 ms** | **2 069 ms** |
+
+¹ One of 5 trials hit a Groq rate-limit retry, inflating avg and p90. The
+p50 of **484 ms** is the representative steady-state LLM latency.
+
+### Barge-in / interruption results (3 trials)
+
+| Metric | Avg | P50 | P90 |
+|---|---|---|---|
+| Cancel → new transcript | 519 ms | 504 ms | 554 ms |
+| Cancel → new audio | 1 484 ms | 1 472 ms | 1 521 ms |
+
+The ~520 ms cancel-ack includes Deepgram's 300 ms endpointing silence window.
+The remaining ~220 ms is STT processing + LLM queue scheduling.
+
+### Engine comparison
+
+| TTS Engine | TTS first byte | Est. TTFA (p50) | Use case |
+|---|---|---|---|
+| **Deepgram Aura** (primary) | ~311 ms | **~1 276 ms** | Production / low-latency |
+| Edge-TTS (fallback) | ~1 153 ms | ~2 976 ms | Free tier / no API key |
+
+### Running the benchmark yourself
+
+```bash
+# Deepgram Aura (primary — default)
+python tests/benchmark.py --trials 5 --barge-trials 3
+
+# Full credible run (report p50/p90/p95)
+python tests/benchmark.py --trials 30 --barge-trials 10
+
+# Edge-TTS fallback comparison
+python tests/benchmark.py --trials 5 --barge-trials 3 --tts edge
+```
+
+Requirements: server must be running (`uvicorn backend.main:app`) and both
+`DEEPGRAM_API_KEY` and `GROQ_API_KEY` must be set. The harness generates
+synthetic audio via Deepgram TTS — no microphone required.
+
+---
+
 ## Known Limitations
 
-- **True Token-Level Streaming**: The STT → LLM → TTS pipeline operates as a true token-level stream when using Deepgram Aura. Text is fed directly to the TTS websocket as fast as the LLM generates individual words, achieving sub-second latency floors without relying on arbitrary sentence-completion boundaries.
-- **EdgeTTS Sentence Buffering**: Microsoft Edge-tts does not support partial streaming. The pipeline maintains compatibility by automatically buffering LLM chunks into complete sentences directly within the `EdgeTTSEngine`, shielding the core pipeline's streaming speed.
-- **Deepgram TTS Batched Protocol**: All chunks for a turn are sent as individual `Speak` messages followed by a single `Flush`. Deepgram streams back audio as one continuous take. This eliminates the per-sentence finalization gaps of old patterns.
 - **Single-Process Session Cap**: The `CASCADE_MAX_CONCURRENT_SESSIONS` semaphore is process-local. Under multi-worker `uvicorn` deployments the effective cap is `N × MAX`, not `MAX`. Single-process deployment is recommended.
 - **Built-in Authentication**: `CASCADE_AUTH_SECRET` uses an HMAC challenge-response for basic private setups. This does not replace production-grade gateway controls (OAuth, mTLS, etc.).
 - **CORS Wide-Open by Default**: `allow_origins=["*"]` is the default for local development. Before any public or production deployment, restrict this by setting `CASCADE_CORS_ORIGINS=https://yourdomain.com` in your environment.
