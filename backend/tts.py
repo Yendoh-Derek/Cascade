@@ -294,7 +294,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
         This is the correct Speak-many/Flush-once pattern with true streaming.
         """
-        t_tts_request_sent: Optional[float] = None
+        t_tts_request_sent: Optional[float] = time.perf_counter()
         t_first_audio_chunk: Optional[float] = None
         first_sentence_text = ""
         ws = None
@@ -310,7 +310,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
                 async def feeder():
                     """Drain chunk_queue, sending Speak per chunk, Flush at end."""
-                    nonlocal first_sentence_text, t_tts_request_sent
+                    nonlocal first_sentence_text
                     while True:
                         chunk = await chunk_queue.get()
                         if chunk is None:   # sentinel
@@ -325,8 +325,6 @@ class DeepgramTTSEngine(BaseTTSEngine):
                             chunk = chunk[:2000]
                         if not first_sentence_text:
                             first_sentence_text = chunk[:60]
-                        if t_tts_request_sent is None:
-                            t_tts_request_sent = time.perf_counter()
                         await ws.send_json({"type": "Speak", "text": chunk})
 
                 feeder_task = asyncio.create_task(feeder())

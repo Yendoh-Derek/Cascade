@@ -80,12 +80,14 @@ class RateLimiter:
 class TurnMetrics:
     """Latency tracking for a single pipeline turn."""
     utterance_end_time: Optional[float] = None
-    last_stt_ms: int = 0
+    last_stt_tail_ms: int = 0
+    stt_endpointing_ms: int = 0
     last_llm_ms: int = 0
     llm_queue_ms: int = 0
     llm_ttft_ms: int = 0
     llm_streaming_ms: int = 0
-    tts_first_sentence_latency_ms: int = 0
+    llm_retry_ms: int = 0
+    tts_first_chunk_latency_ms: int = 0
     tts_metrics_sent: bool = False
 
 
@@ -247,14 +249,16 @@ class PipelineSession:
 
         self._metrics.utterance_end_time = time.perf_counter()
         if self.stt_handler:
-            self._metrics.last_stt_ms = self.stt_handler.last_stt_processing_ms
+            self._metrics.last_stt_tail_ms = self.stt_handler.last_stt_tail_ms
+            self._metrics.stt_endpointing_ms = self.stt_handler.endpointing_ms
         else:
-            self._metrics.last_stt_ms = 0
+            self._metrics.last_stt_tail_ms = 0
+            self._metrics.stt_endpointing_ms = 0
 
         self.is_processing_transcript = True
         logger.info(
             f"[Pipeline] Turn {current_turn_id} transcript: '{transcript[:60]}' "
-            f"(STT processing: {self._metrics.last_stt_ms}ms)"
+            f"(STT tail: {self._metrics.last_stt_tail_ms}ms, endpointing: {self._metrics.stt_endpointing_ms}ms)"
         )
 
         try:
@@ -308,9 +312,26 @@ class PipelineSession:
             # Hoisted above produce_chunks so the closure reference is valid
             # at definition time, not just at call time.
             full_response_parts: List[str] = []
+            response_chunk_buffer: List[str] = []
+            BATCH_THRESHOLD = 5
+            BATCH_TIMEOUT = 0.08  # 80ms
+            batch_timer_task: Optional[asyncio.Task] = None
+
+            async def flush_response_chunks():
+                nonlocal response_chunk_buffer, batch_timer_task
+                if not response_chunk_buffer:
+                    return
+                # Combine into one message
+                combined_text = "".join(response_chunk_buffer)
+                self._send_for_turn(turn_id, {"type": "response_chunk", "text": combined_text})
+                response_chunk_buffer = []
+                # Cancel timer if we're flushing early
+                if batch_timer_task and not batch_timer_task.done():
+                    batch_timer_task.cancel()
+                    batch_timer_task = None
 
             async def produce_chunks() -> None:
-                nonlocal first_token_received
+                nonlocal first_token_received, batch_timer_task
                 gen = llm_generator.generate(
                     messages=messages,
                     timeout_sec=30,
@@ -329,10 +350,10 @@ class PipelineSession:
                                 ttft_ms = 0
                                 streaming_delay_ms = 0
 
-                                if (llm_generator.t_request_sent and
+                                if (llm_generator.t_first_attempt_sent and
                                         self._metrics.utterance_end_time):
                                     queue_latency_ms = int(
-                                        (llm_generator.t_request_sent -
+                                        (llm_generator.t_first_attempt_sent -
                                          self._metrics.utterance_end_time) * 1000
                                     )
                                     queue_latency_ms = max(0, min(queue_latency_ms, 30000))
@@ -353,16 +374,18 @@ class PipelineSession:
                                     )
                                     streaming_delay_ms = max(0, min(streaming_delay_ms, 30000))
 
+                                retry_ms = llm_generator.retry_ms
                                 total_llm_ms = queue_latency_ms + ttft_ms + streaming_delay_ms
                                 self._metrics.last_llm_ms = total_llm_ms
                                 self._metrics.llm_queue_ms = queue_latency_ms
                                 self._metrics.llm_ttft_ms = ttft_ms
                                 self._metrics.llm_streaming_ms = streaming_delay_ms
+                                self._metrics.llm_retry_ms = retry_ms
 
                                 logger.info(
                                     f"[Pipeline] LLM metrics: queue={queue_latency_ms}ms, "
                                     f"ttft={ttft_ms}ms, streaming={streaming_delay_ms}ms, "
-                                    f"total={total_llm_ms}ms"
+                                    f"retry={retry_ms}ms, total={total_llm_ms}ms"
                                 )
 
                                 self._send_for_turn(turn_id, {
@@ -370,10 +393,20 @@ class PipelineSession:
                                     "queue_ms": queue_latency_ms,
                                     "ttft_ms": ttft_ms,
                                     "streaming_delay_ms": streaming_delay_ms,
+                                    "retry_ms": retry_ms,
                                     "total_ms": total_llm_ms,
                                 })
 
-                        self._send_for_turn(turn_id, {"type": "response_chunk", "text": chunk})
+                        response_chunk_buffer.append(chunk)
+                        # Start timer on first chunk in buffer
+                        if len(response_chunk_buffer) == 1 and not batch_timer_task:
+                            async def timer_callback():
+                                await asyncio.sleep(BATCH_TIMEOUT)
+                                await flush_response_chunks()
+                            batch_timer_task = asyncio.create_task(timer_callback())
+                        # Flush early if buffer reaches threshold
+                        if len(response_chunk_buffer) >= BATCH_THRESHOLD:
+                            await flush_response_chunks()
 
                         # Feed the clean chunk into the queue immediately so TTS
                         # can start synthesising it without waiting for the full LLM response.
@@ -381,6 +414,8 @@ class PipelineSession:
                         await chunk_queue.put(clean_chunk)
                         full_response_parts.append(chunk)
 
+                    # Flush any remaining response chunks
+                    await flush_response_chunks()
                     # Signal end-of-stream to consume_audio
                     await chunk_queue.put(_SENTINEL)
                 except Exception as e:
@@ -431,14 +466,14 @@ class PipelineSession:
                                 latency_ms = int(latency_ms)
 
                             logger.debug(f"[Pipeline] TTS metadata received: latency={latency_ms}ms")
-                            if not self._metrics.tts_first_sentence_latency_ms:
-                                self._metrics.tts_first_sentence_latency_ms = latency_ms
+                            if not self._metrics.tts_first_chunk_latency_ms:
+                                self._metrics.tts_first_chunk_latency_ms = latency_ms
                                 if not self._metrics.tts_metrics_sent:
                                     self._metrics.tts_metrics_sent = True
                                     logger.info(f"[Pipeline] First TTS latency: {latency_ms}ms")
                                     self._send_for_turn(turn_id, {
                                         "type": "tts_metrics",
-                                        "first_sentence_latency_ms": latency_ms,
+                                        "first_chunk_latency_ms": latency_ms,
                                         "engine": chunk.get("engine", "unknown"),
                                     })
 
@@ -451,18 +486,20 @@ class PipelineSession:
                                     if self._metrics.utterance_end_time and self._can_send(turn_id):
                                         total_ms = int((time.perf_counter() - self._metrics.utterance_end_time) * 1000)
                                         llm_ms = self._metrics.last_llm_ms
-                                        tts_ms = self._metrics.tts_first_sentence_latency_ms or 0
-                                        stt_ms = self._metrics.last_stt_ms
+                                        tts_ms = self._metrics.tts_first_chunk_latency_ms or 0
+                                        stt_tail_ms = self._metrics.last_stt_tail_ms
+                                        stt_endpointing_ms = self._metrics.stt_endpointing_ms
                                         logger.info(
                                             f"[Pipeline] First audio sent: {total_ms}ms "
-                                            f"(STT: {stt_ms}ms, LLM: {llm_ms}ms, TTS: {tts_ms}ms)"
+                                            f"(STT tail: {stt_tail_ms}ms, endpointing: {stt_endpointing_ms}ms, LLM: {llm_ms}ms, TTS: {tts_ms}ms)"
                                         )
                                         self._send_for_turn(turn_id, {
                                             "type": "latency",
                                             "total_ms": total_ms,
                                             "llm_ms": llm_ms,
                                             "tts_ms": tts_ms,
-                                            "stt_ms": stt_ms,
+                                            "stt_tail_ms": stt_tail_ms,
+                                            "endpointing_ms": stt_endpointing_ms,
                                             "ms": total_ms,
                                         })
                                 elif len(audio_buffer) >= AUDIO_CHUNK_MIN_SIZE:

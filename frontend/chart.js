@@ -42,7 +42,8 @@ export class ChartRenderer {
     const chartH = H - PAD.top - PAD.bottom;
 
     const colors = {
-      stt: "#818cf8", // Indigo
+      endpointing: "#60a5fa", // Blue
+      stt_tail: "#818cf8", // Indigo
       llm: "#c084fc", // Purple
       tts: "#34d399", // Emerald
       system: "#fb923c", // Warm Orange
@@ -60,15 +61,16 @@ export class ChartRenderer {
 
     const peakTotal = Math.max(
       ...data.map((d) => {
-        // stt is outside total_ms (measured before utterance_end_time).
-        // Bar height = stt + total since these are additive phases.
-        const sttVal = d.stt || 0;
+        // endpointing + stt_tail are outside total_ms (measured before utterance_end_time).
+        // Bar height = endpointing + stt_tail + total since these are additive phases.
+        const endpointingVal = d.endpointing || 0;
+        const sttTailVal = d.stt_tail || 0;
         const llmVal = d.llm || 0;
         const ttsVal = d.tts || 0;
         const systemVal = Math.max(0, (d.total || 0) - (llmVal + ttsVal));
         return Math.max(
-          (d.stt || 0) + (d.total || 0), // true e2e = stt phase + pipeline phase
-          sttVal + llmVal + ttsVal + systemVal,
+          endpointingVal + sttTailVal + (d.total || 0), // true e2e
+          endpointingVal + sttTailVal + llmVal + ttsVal + systemVal,
         );
       }),
       100,
@@ -95,7 +97,8 @@ export class ChartRenderer {
     ctx.textAlign = "left";
 
     const legendItems = [
-      { key: "stt", label: "STT" },
+      { key: "endpointing", label: "Endpointing" },
+      { key: "stt_tail", label: "STT Tail" },
       { key: "llm", label: "LLM" },
       { key: "tts", label: "TTS" },
       { key: "system", label: "System" },
@@ -128,7 +131,7 @@ export class ChartRenderer {
       ctx.fillText(label, PAD.left - 8, y + 4);
     }
 
-    // Stacked bars: Draw STT -> LLM -> TTS -> System
+    // Stacked bars: Draw Endpointing -> STT Tail -> LLM -> TTS -> System
     const BAR_W = Math.min(36, (chartW / data.length) * 0.55);
 
     data.forEach((d, i) => {
@@ -136,19 +139,31 @@ export class ChartRenderer {
       let yBase = scaleY(0);
       let yTop = yBase;
 
-      // 1. STT bar (bottom of the stack)
-      const sttVal = d.stt || 0;
-      if (sttVal > 0) {
-        const barH = (sttVal / maxMs) * chartH;
+      // 1. Endpointing bar (bottom of the stack)
+      const endpointingVal = d.endpointing || 0;
+      if (endpointingVal > 0) {
+        const barH = (endpointingVal / maxMs) * chartH;
         yBase -= barH;
         yTop = Math.min(yTop, yBase);
-        ctx.fillStyle = colors.stt;
+        ctx.fillStyle = colors.endpointing;
         ctx.globalAlpha = 0.85;
         ctx.fillRect(x, yBase, BAR_W, barH);
         ctx.globalAlpha = 1;
       }
 
-      // 2. LLM bar
+      // 2. STT Tail bar
+      const sttTailVal = d.stt_tail || 0;
+      if (sttTailVal > 0) {
+        const barH = (sttTailVal / maxMs) * chartH;
+        yBase -= barH;
+        yTop = Math.min(yTop, yBase);
+        ctx.fillStyle = colors.stt_tail;
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x, yBase, BAR_W, barH);
+        ctx.globalAlpha = 1;
+      }
+
+      // 3. LLM bar
       const llmVal = d.llm || 0;
       if (llmVal > 0) {
         const barH = (llmVal / maxMs) * chartH;
@@ -160,7 +175,7 @@ export class ChartRenderer {
         ctx.globalAlpha = 1;
       }
 
-      // 3. TTS bar
+      // 4. TTS bar
       const ttsVal = d.tts || 0;
       if (ttsVal > 0) {
         const barH = (ttsVal / maxMs) * chartH;
@@ -172,8 +187,8 @@ export class ChartRenderer {
         ctx.globalAlpha = 1;
       }
 
-      // 4. System bar (top of the stack — pipeline overhead inside total_ms)
-      const systemVal = Math.max(0, (d.total || 0) - (llmVal + ttsVal)); // stt NOT in total
+      // 5. System bar (top of the stack — pipeline overhead inside total_ms)
+      const systemVal = Math.max(0, (d.total || 0) - (llmVal + ttsVal));
       if (systemVal > 0) {
         const barH = (systemVal / maxMs) * chartH;
         yBase -= barH;
@@ -184,14 +199,14 @@ export class ChartRenderer {
         ctx.globalAlpha = 1;
       }
 
-      // Label shows full end-to-end latency (stt phase + pipeline phase).
-      // stt ≈ endpointing wait (≈300ms); total = LLM+TTS+system after speech_final.
-      const e2eTotal = (d.stt || 0) + (d.total || 0);
-      const displayTotal = e2eTotal || sttVal + llmVal + ttsVal + systemVal;
+      // Label shows full end-to-end latency.
+      const e2eTotal = endpointingVal + sttTailVal + (d.total || 0);
+      const displayTotal =
+        e2eTotal || endpointingVal + sttTailVal + llmVal + ttsVal + systemVal;
       ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.font = "9px JetBrains Mono, monospace";
       ctx.textAlign = "center";
-      
+
       if (d.perceived != null) {
         ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 16);
         ctx.fillStyle = "rgba(52, 211, 153, 0.8)";

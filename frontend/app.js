@@ -29,12 +29,14 @@ class CascadeClient {
     this._interruptTimeout = null;
 
     // Perceived-latency tracking
-    this._turnStartMs = null;    // stamped at transcript receipt (fallback anchor)
-    this._speechEndMs = null;    // stamped by VAD at speech end (primary anchor)
+    this._turnStartMs = null; // stamped at transcript receipt (fallback anchor)
+    this._speechEndMs = null; // stamped by VAD at speech end (primary anchor)
     this._firstAudioPlayed = false;
 
     this.currentResponse = "";
     this.currentStreamingBubble = null;
+    this.pendingSubtitleUpdate = false;
+    this.subtitleThrottleMs = 100;
     this.selectedTTSEngine =
       localStorage.getItem("cascade_tts_engine") || "deepgram";
 
@@ -258,17 +260,30 @@ class CascadeClient {
             );
             if (this.currentStreamingBubble)
               this.currentStreamingBubble.classList.add("streaming");
-          } else {
-            const p = this.currentStreamingBubble.querySelector("p");
-            if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
-            if (this.ui.transcriptPanel)
-              this.ui.transcriptPanel.scrollTop =
-                this.ui.transcriptPanel.scrollHeight;
+          } else if (!this.pendingSubtitleUpdate) {
+            this.pendingSubtitleUpdate = true;
+            setTimeout(() => {
+              this.pendingSubtitleUpdate = false;
+              const p = this.currentStreamingBubble.querySelector("p");
+              if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
+              if (this.ui.transcriptPanel)
+                this.ui.transcriptPanel.scrollTop =
+                  this.ui.transcriptPanel.scrollHeight;
+            }, this.subtitleThrottleMs);
           }
         }
         break;
       case "response_end":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
+        // Flush pending subtitle update immediately
+        if (this.pendingSubtitleUpdate && this.currentStreamingBubble) {
+          this.pendingSubtitleUpdate = false;
+          const p = this.currentStreamingBubble.querySelector("p");
+          if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
+          if (this.ui.transcriptPanel)
+            this.ui.transcriptPanel.scrollTop =
+              this.ui.transcriptPanel.scrollHeight;
+        }
         if (this.currentStreamingBubble) {
           this.currentStreamingBubble.classList.remove("streaming");
           this.currentStreamingBubble.classList.add("message-complete");
@@ -332,7 +347,8 @@ class CascadeClient {
       case "latency":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
         if (typeof msg.total_ms === "number") {
-          this.lastLatencyMs = (msg.stt_ms || 0) + msg.total_ms;
+          this.lastLatencyMs =
+            (msg.stt_tail_ms || 0) + (msg.endpointing_ms || 0) + msg.total_ms;
 
           const turnNum = msg.turn_id != null ? msg.turn_id : this.totalTurns;
           let entry = this.latencyHistory.find((d) => d.turn === turnNum);
@@ -346,14 +362,15 @@ class CascadeClient {
           }
 
           entry.total = msg.total_ms;
-          entry.stt = msg.stt_ms || 0;
+          entry.stt_tail = msg.stt_tail_ms || 0;
+          entry.endpointing = msg.endpointing_ms || 0;
           entry.llm = msg.llm_ms || 0;
           entry.tts = msg.tts_ms || 0;
 
           entry.llm_queue = entry.llm_queue || 0;
           entry.llm_ttft = entry.llm_ttft || 0;
           entry.llm_streaming = entry.llm_streaming || 0;
-          entry.tts_first_sentence = entry.tts || 0;
+          entry.tts_first_chunk = entry.tts_first_chunk || 0;
 
           this.ui._updateStatsBar();
 
@@ -374,14 +391,16 @@ class CascadeClient {
           llmEntry = {
             turn: llmTurnNum,
             total: 0,
-            stt: 0,
+            stt_tail: 0,
+            endpointing: 0,
             llm: msg.total_ms || 0,
             tts: 0,
             system: 0,
             llm_queue: msg.queue_ms || 0,
             llm_ttft: msg.ttft_ms || 0,
             llm_streaming: msg.streaming_delay_ms || 0,
-            tts_first_sentence: 0,
+            llm_retry: msg.retry_ms || 0,
+            tts_first_chunk: 0,
             timestamp: Date.now(),
           };
           this.latencyHistory.push(llmEntry);
@@ -391,6 +410,7 @@ class CascadeClient {
           llmEntry.llm_queue = msg.queue_ms || 0;
           llmEntry.llm_ttft = msg.ttft_ms || 0;
           llmEntry.llm_streaming = msg.streaming_delay_ms || 0;
+          llmEntry.llm_retry = msg.retry_ms || 0;
         }
         const panel1 = document.getElementById("stats-panel");
         if (panel1 && panel1.classList.contains("open")) {
@@ -407,20 +427,20 @@ class CascadeClient {
             total: 0,
             stt: 0,
             llm: 0,
-            tts: msg.first_sentence_latency_ms || 0,
+            tts: msg.first_chunk_latency_ms || 0,
             system: 0,
             llm_queue: 0,
             llm_ttft: 0,
             llm_streaming: 0,
-            tts_first_sentence: msg.first_sentence_latency_ms || 0,
+            tts_first_chunk: msg.first_chunk_latency_ms || 0,
             tts_engine: msg.engine || "unknown",
             timestamp: Date.now(),
           };
           this.latencyHistory.push(ttsEntry);
           if (this.latencyHistory.length > 10) this.latencyHistory.shift();
         } else {
-          ttsEntry.tts = msg.first_sentence_latency_ms || 0;
-          ttsEntry.tts_first_sentence = msg.first_sentence_latency_ms || 0;
+          ttsEntry.tts = msg.first_chunk_latency_ms || 0;
+          ttsEntry.tts_first_chunk = msg.first_chunk_latency_ms || 0;
           ttsEntry.tts_engine = msg.engine || "unknown";
         }
         const panel2 = document.getElementById("stats-panel");

@@ -66,7 +66,9 @@ class LLMGenerator:
         
         # Latency tracking (populated during generate())
         self.t_request_created: Optional[float] = None
+        self.t_first_attempt_sent: Optional[float] = None  # First attempt only
         self.t_request_sent: Optional[float] = None
+        self.retry_ms: int = 0
         self.t_first_token: Optional[float] = None
         self.t_first_sentence_emitted: Optional[float] = None
 
@@ -98,7 +100,9 @@ class LLMGenerator:
         
         # Record request creation time (start of generate() call)
         self.t_request_created = time.perf_counter()
+        self.t_first_attempt_sent = None
         self.t_request_sent = None
+        self.retry_ms = 0
         self.t_first_token = None
         self.t_first_sentence_emitted = None
         
@@ -115,7 +119,10 @@ class LLMGenerator:
                 retries = 3
                 for attempt in range(retries):
                     try:
-                        self.t_request_sent = time.perf_counter()
+                        t_attempt_start = time.perf_counter()
+                        if self.t_first_attempt_sent is None:
+                            self.t_first_attempt_sent = t_attempt_start
+                        self.t_request_sent = t_attempt_start
                         stream = await self.client.chat.completions.create(
                             model=self.model,
                             messages=request_messages,
@@ -127,7 +134,10 @@ class LLMGenerator:
                     except Exception as e:
                         if getattr(e, "status_code", None) == 503 and attempt < retries - 1:
                             logger.warning(f"[LLM] Groq 503 error, retrying in 300ms... ({attempt + 1}/{retries})")
+                            t_sleep_start = time.perf_counter()
                             await asyncio.sleep(0.3)
+                            t_sleep_end = time.perf_counter()
+                            self.retry_ms += int((t_sleep_end - t_sleep_start) * 1000)
                         else:
                             raise
                 

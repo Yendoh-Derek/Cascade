@@ -62,7 +62,7 @@ class STTHandler:
         # Used to measure endpointing latency (last recognized speech → speech_final)
         # rather than speaking duration. Typically ≈ 300ms (the endpointing window).
         self._last_speech_time: Optional[float] = None
-        self.last_stt_processing_ms: int = 0
+        self.last_stt_tail_ms: int = 0
 
     def _build_ws_url(self) -> str:
         base_url = "wss://api.deepgram.com/v1/listen"
@@ -362,10 +362,10 @@ class STTHandler:
         now = time.perf_counter()
         if self._last_speech_time is not None:
             tail = (now - self._last_speech_time) * 1000 - self.endpointing_ms
-            self.last_stt_processing_ms = max(0, int(tail))
+            self.last_stt_tail_ms = max(0, int(tail))
         else:
             # UtteranceEnd fired without prior interim content — no reliable anchor.
-            self.last_stt_processing_ms = 0
+            self.last_stt_tail_ms = 0
 
         self._utterance_start_time = None
         self._last_speech_time = None
@@ -374,7 +374,7 @@ class STTHandler:
         self.transcript_buffer = ""
         logger.info(
             f"[STT] Utterance confirmed ({trigger}): '{confirmed}' "
-            f"(stt tail processing: {self.last_stt_processing_ms}ms, "
-            f"endpointing window: {self.endpointing_ms}ms excluded)"
+            f"(stt tail processing: {self.last_stt_tail_ms}ms, "
+            f"endpointing window: {self.endpointing_ms}ms)"
         )
         self.on_transcript(confirmed)

@@ -347,22 +347,21 @@ class TestSTTLatencyMeasurement:
         from backend.stt import STTHandler
 
         handler = STTHandler(api_key="x", on_transcript=lambda t: None)
-        handler.endpointing_ms = 300
 
         # First flush: endpointing window + 10ms of Deepgram finalization overhead
         handler._last_speech_time = time.perf_counter() - (handler.endpointing_ms / 1000 + 0.010)
         handler.transcript_buffer = "hello"
         handler._flush_buffer("speech_final")
-        a = handler.last_stt_processing_ms
+        a = handler.last_stt_tail_ms
 
         # Second flush: endpointing window + 60ms of finalization overhead
         handler._last_speech_time = time.perf_counter() - (handler.endpointing_ms / 1000 + 0.060)
         handler.transcript_buffer = "world"
         handler._flush_buffer("speech_final")
-        b = handler.last_stt_processing_ms
+        b = handler.last_stt_tail_ms
 
         assert a != b, (
-            "last_stt_processing_ms must vary with real silence duration, not return a constant"
+            "last_stt_tail_ms must vary with real silence duration, not return a constant"
         )
 
     def test_stt_tail_zero_when_no_speech_anchor(self):
@@ -370,12 +369,11 @@ class TestSTTLatencyMeasurement:
         from backend.stt import STTHandler
 
         handler = STTHandler(api_key="x", on_transcript=lambda t: None)
-        handler.endpointing_ms = 300
         handler._last_speech_time = None
         handler.transcript_buffer = "hello"
         handler._flush_buffer("utterance_end")
 
-        assert handler.last_stt_processing_ms == 0
+        assert handler.last_stt_tail_ms == 0
 
 
 class TestDashboardMetrics:
@@ -394,9 +392,10 @@ class TestDashboardMetrics:
 
         import time as _time
         session._metrics.utterance_end_time = _time.perf_counter()
-        session._metrics.last_stt_ms = 15
+        session._metrics.last_stt_tail_ms = 15
+        session._metrics.stt_endpointing_ms = 300
         session._metrics.last_llm_ms = 400
-        session._metrics.tts_first_sentence_latency_ms = 200
+        session._metrics.tts_first_chunk_latency_ms = 200
 
         # Trigger _send_for_turn directly with a realistic latency payload
         session._send_for_turn(1, {
@@ -404,7 +403,8 @@ class TestDashboardMetrics:
             "total_ms": 620,
             "llm_ms": 400,
             "tts_ms": 200,
-            "stt_ms": 15,
+            "stt_tail_ms": 15,
+            "endpointing_ms": 300,
             "ms": 620,
         })
 
@@ -413,7 +413,8 @@ class TestDashboardMetrics:
         assert "total_ms" in msg
         assert "llm_ms" in msg
         assert "tts_ms" in msg
-        assert "stt_ms" in msg
+        assert "stt_tail_ms" in msg
+        assert "endpointing_ms" in msg
         assert "turn_id" in msg
 
     def test_llm_metrics_fields_present(self, pipeline_session):
@@ -428,6 +429,7 @@ class TestDashboardMetrics:
             "queue_ms": 5,
             "ttft_ms": 380,
             "streaming_delay_ms": 25,
+            "retry_ms": 300,
             "total_ms": 410,
         })
 
@@ -444,13 +446,13 @@ class TestDashboardMetrics:
 
         session._send_for_turn(1, {
             "type": "tts_metrics",
-            "first_sentence_latency_ms": 220,
+            "first_chunk_latency_ms": 220,
             "engine": "deepgram",
         })
 
         msg = session.outbound_queue.get_nowait()
         assert msg["type"] == "tts_metrics"
-        assert isinstance(msg["first_sentence_latency_ms"], int)
+        assert isinstance(msg["first_chunk_latency_ms"], int)
         assert msg["engine"] in ("edge", "deepgram")
 
 
@@ -487,7 +489,7 @@ class TestEndToEndFlow:
         """Test session is initialised in a clean state for TTS turns."""
         session = make_pipeline_session()
 
-        assert session._metrics.tts_first_sentence_latency_ms == 0
+        assert session._metrics.tts_first_chunk_latency_ms == 0
         assert session._metrics.tts_metrics_sent is False
         assert session._rate_limiter.allow(1) is True
     pytest.main([__file__, "-v"])
