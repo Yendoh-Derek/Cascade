@@ -107,7 +107,8 @@ def test_websocket_auth_unauthorized():
         assert "Unauthorized" in msg["message"]
 
 
-def test_websocket_auth_authorized(mock_pipeline_dependencies):
+@pytest.mark.usefixtures("mock_pipeline_dependencies")
+def test_websocket_auth_authorized():
     """Verify WebSocket connection succeeds when correct CASCADE_AUTH_SECRET is sent."""
     client = TestClient(app)
     with client.websocket_connect("/ws") as websocket:
@@ -117,7 +118,8 @@ def test_websocket_auth_authorized(mock_pipeline_dependencies):
         websocket.send_text("stop")
 
 
-def test_websocket_auth_first_message(mock_pipeline_dependencies):
+@pytest.mark.usefixtures("mock_pipeline_dependencies")
+def test_websocket_auth_first_message():
     """Verify WebSocket connection succeeds using the first-message JSON handshake."""
     client = TestClient(app)
     with client.websocket_connect("/ws") as websocket:
@@ -177,7 +179,7 @@ class TestRateLimiter:
     def test_refills_over_time(self):
         import time
         rl = self._make_limiter(bps=32_000, burst=0.1)
-        rl.allow(32_000 * 0.1)     # drain
+        rl.allow(3_200)     # drain
         time.sleep(0.05)            # ~50ms → refills ~1600B
         assert rl.allow(1_000) is True
 
@@ -273,7 +275,8 @@ class TestTurnMetrics:
         from backend.pipeline import TurnMetrics
         m = TurnMetrics()
         assert m.utterance_end_time is None
-        assert m.last_stt_ms == 0
+        assert m.last_stt_tail_ms == 0
+        assert m.stt_endpointing_ms == 0
         assert m.tts_metrics_sent is False
 
     def test_mutation(self):
