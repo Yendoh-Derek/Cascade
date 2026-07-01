@@ -5,25 +5,6 @@ Core streaming pipeline orchestrator.
 
 Responsibility: Wire STT → LLM → TTS together and manage the WebSocket
 connection to the browser. Measure latency at each stage.
-
-Fixes applied:
-  [M4]  When is_processing_transcript guard drops a concurrent transcript,
-        a "busy" message is now sent to the client so the user knows to
-        wait rather than thinking their question was heard.
-  [0.5] Zero-sentence LLM output now emits an explicit error message to
-        the client instead of silently ending the turn.
-  [1.1] pipeline.py uses tts.synthesise_streaming() with Speak-many / Flush-once
-        pattern via sentence queue. This eliminates per-sentence audio
-        finalization gaps while still enabling true streaming.
-  [1.4+N3] TTS semaphore and task set are now scoped per-turn, so a new
-        turn always starts with fresh capacity instead of competing with
-        dying tasks from the interrupted turn.
-  [2.1] Latency tracking fields moved into TurnMetrics dataclass.
-  [2.2] Partial assistant response from interrupted turns is saved to history
-        to maintain user/assistant message pairing.
-  [N8]  _on_done callback edge case fixed: is_processing_transcript is now
-        cleared correctly when a task is replaced mid-flight.
-  [N9]  Inner consume_audio() timeout aligned with outer LLM timeout (30s).
 """
 
 import asyncio
@@ -74,8 +55,7 @@ class RateLimiter:
 
     Prevents a single client from flooding the STT pipeline with more audio
     than is physically possible to speak. Default: 32KB/s (PCM16 at 16kHz mono)
-    with a 2-second burst allowance — enough for normal microphone pre-buffering
-    but not enough for a bulk-upload DoS attack (fix 0.6).
+    with a 2-second burst allowance.
     """
 
     def __init__(self, bytes_per_sec: int = 32_000, burst_sec: float = 2.0):
@@ -98,11 +78,7 @@ class RateLimiter:
 
 @dataclass
 class TurnMetrics:
-    """Latency tracking for a single pipeline turn.
-
-    Extracted from PipelineSession to keep per-turn state self-contained
-    and to declutter the session class (review item 2.1).
-    """
+    """Latency tracking for a single pipeline turn."""
     utterance_end_time: Optional[float] = None
     last_stt_ms: int = 0
     last_llm_ms: int = 0
@@ -156,7 +132,7 @@ class PipelineSession:
         self.processing_task: Optional[asyncio.Task] = None
         self._cancel_event = asyncio.Event()
 
-        # Per-session audio rate limiter (fix 0.6)
+        # Per-session audio rate limiter
         self._rate_limiter = RateLimiter()
 
         logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject}, tts_engine={tts_engine})")
@@ -290,8 +266,7 @@ class PipelineSession:
 
             def _on_done(t):
                 # Always clear is_processing_transcript if this task is still
-                # the active one — prevents stuck state when a task is replaced
-                # mid-flight (fix N8).
+                # the active one.
                 if self.processing_task is _captured_task:
                     self.processing_task = None
                     self.is_processing_transcript = False
@@ -331,7 +306,7 @@ class PipelineSession:
             chunk_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
             # Hoisted above produce_chunks so the closure reference is valid
-            # at definition time, not just at call time (fix BUG-01).
+            # at definition time, not just at call time.
             full_response_parts: List[str] = []
 
             async def produce_chunks() -> None:
@@ -434,8 +409,7 @@ class PipelineSession:
                 def flush_audio_buffer():
                     if audio_buffer and self._active_turn_id == turn_id and not self._cancel_event.is_set():
                         # Route through _send_for_turn so _can_send() is
-                        # evaluated before the message enters the outbound
-                        # queue, closing the cancellation race window (fix P1-B).
+                        # evaluated before the message enters the outbound queue.
                         self._send_for_turn(turn_id, {"type": "audio", "data": bytes(audio_buffer)})
                     audio_buffer.clear()
 
@@ -470,8 +444,10 @@ class PipelineSession:
 
                         elif isinstance(chunk, (bytes, bytearray, memoryview)):
                             if not self._cancel_event.is_set() and turn_id == self._active_turn_id:
+                                audio_buffer.extend(chunk)
                                 if not first_audio_sent:
                                     first_audio_sent = True
+                                    flush_audio_buffer()   # send immediately; don't wait for 4096 bytes
                                     if self._metrics.utterance_end_time and self._can_send(turn_id):
                                         total_ms = int((time.perf_counter() - self._metrics.utterance_end_time) * 1000)
                                         llm_ms = self._metrics.last_llm_ms
@@ -489,9 +465,7 @@ class PipelineSession:
                                             "stt_ms": stt_ms,
                                             "ms": total_ms,
                                         })
-
-                                audio_buffer.extend(chunk)
-                                if len(audio_buffer) >= AUDIO_CHUNK_MIN_SIZE:
+                                elif len(audio_buffer) >= AUDIO_CHUNK_MIN_SIZE:
                                     flush_audio_buffer()
 
                     # Flush any remaining audio after the stream ends
@@ -508,7 +482,7 @@ class PipelineSession:
                         })
                 finally:
                     # Zero-chunk detection: if TTS never received any chunk,
-                    # the LLM produced no output (fix 0.5)
+                    # the LLM produced no output.
                     if not any_chunk_received and self._can_send(turn_id):
                         logger.warning("[Pipeline] LLM generated no text chunks for this turn")
                         self._send_for_turn(turn_id, {
@@ -521,7 +495,7 @@ class PipelineSession:
             # Build full_response from collected parts
             full_response = " ".join(full_response_parts).strip()
 
-            # Save to history — even partial response from interrupted turns (fix 2.2)
+            # Save to history — even partial response from interrupted turns
             if full_response:
                 self.tutor.add_assistant_message(full_response)
             elif not self._cancel_event.is_set():
@@ -531,7 +505,7 @@ class PipelineSession:
 
         except asyncio.CancelledError:
             logger.info("[Pipeline] Processing cancelled")
-            # Save partial response even on interruption (fix 2.2)
+            # Save partial response even on interruption
             if full_response:
                 self.tutor.add_assistant_message(full_response)
         except Exception as e:

@@ -3,23 +3,6 @@ cascade/backend/main.py
 
 FastAPI application entry point.
 Handles routing for health checks, WebSocket voice pipeline, and static files.
-
-Fixes applied:
-  [C1] Disconnect message ({'type':'websocket.disconnect','code':N,'reason':''})
-       now detected before attempting another receive() — breaks the loop
-       cleanly instead of crashing with "Cannot call receive once a disconnect
-       message has been received."
-  [C2] Server-side: stop signal matching now handles both plain "stop" text
-       and graceful disconnect equally.
-  [M4] Sends user-visible "busy" message when a concurrent transcript is dropped
-       so the user knows to wait.
-  [0.1] Origin validation uses hostname equality (not substring containment)
-        to prevent bypass via origins like https://evila.com.
-  [0.3] Pre-auth audio buffer is capped: same 10MB-per-chunk limit as main
-        loop, plus a 256KB cumulative cap.
-  [N4]  sender_coroutine distinguishes expected disconnects (debug) from
-        unexpected errors (error level).
-  [N7]  CORS origins configurable via CASCADE_CORS_ORIGINS env var.
 """
 import json
 import logging
@@ -362,13 +345,6 @@ async def websocket_endpoint(
                     )
                     break
 
-                # ── FIX [C1] ─────────────────────────────────────────────────
-                # When the browser closes the connection, Starlette's receive()
-                # returns {"type": "websocket.disconnect", "code": N, "reason": ""}.
-                # The original code only checked for "bytes" and "text" keys,
-                # so this message was logged as an unknown format and receive()
-                # was called again — which raised the crash seen in the logs.
-                # Solution: check the message type first, break immediately.
                 msg_type = message.get("type", "")
                 if msg_type == "websocket.disconnect":
                     logger.info(

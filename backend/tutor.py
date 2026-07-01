@@ -163,7 +163,7 @@ class TutorSession:
         if total_tokens > max_tokens:
             # Remove oldest message pair (user + assistant) together to maintain
             # role ordering. Popping single messages can leave an orphaned
-            # assistant message at history[0], which confuses some LLMs (fix N6).
+            # assistant message at history[0], which confuses some LLMs.
             while len(self.history) >= 2 and total_tokens > max_tokens:
                 self.history.pop(0)  # user message
                 self.history.pop(0)  # assistant message

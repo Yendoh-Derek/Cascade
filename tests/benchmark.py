@@ -156,7 +156,7 @@ async def run_steady_state_trials(uri: str, audio_bytes: bytes, num_trials: int 
                     q    = turn_llm.get("queue_ms", 0)
                     ttft = turn_llm.get("ttft_ms", 0)
                     strm = turn_llm.get("streaming_delay_ms", 0)
-                    sys_over = max(0, ttfb - (q + ttft + strm + tts))
+                    sys_over = max(0, ttfb - (stt + q + ttft + strm + tts))
 
                     stt_ms_list.append(stt)
                     llm_queue_list.append(q)

@@ -18,11 +18,6 @@ Architecture — Deepgram Speak-many / Flush-once:
   the queue ends (None sentinel). This eliminates per-sentence audio
   finalization gaps while still enabling true streaming (no need to wait
   for all sentences before starting TTS).
-
-  All exception handlers that previously set self._ws = None now first
-  attempt to send a Clear message and close the socket gracefully. This
-  stops Deepgram from continuing to synthesize audio after an interruption,
-  eliminating a wasted API compute leak.
 """
 
 import logging
@@ -209,7 +204,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
     """
     Manages text-to-speech using Deepgram Aura WebSocket streaming API.
 
-    LAT-03 improvement: Uses a *persistent* WebSocket connection for the lifetime
+    Uses a *persistent* WebSocket connection for the lifetime
     of the TTS engine (one per session). This eliminates the per-sentence WS
     handshake overhead (~20–50ms TCP/TLS + HTTP upgrade), which was the main
     remaining latency cost after switching from the REST API.
@@ -391,7 +386,12 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
             except asyncio.CancelledError as e:
                 logger.info("[TTS] Deepgram streaming synthesis cancelled — sending Clear")
-                needs_reconnect = True
+                if ws is not None and not ws.closed:
+                    try:
+                        await ws.send_json({"type": "Clear"})
+                        needs_reconnect = False   # preserve the persistent connection
+                    except Exception:
+                        needs_reconnect = True
                 pending_exc = e
             except asyncio.TimeoutError as e:
                 logger.error(f"[TTS] Deepgram streaming synthesis timed out after {timeout_sec}s")
@@ -413,8 +413,9 @@ class DeepgramTTSEngine(BaseTTSEngine):
                     except (asyncio.CancelledError, Exception):
                         pass
 
-        # Do slow WS cleanup outside the lock so new turns can proceed immediately
-        if needs_reconnect or not ws_completed_cleanly:
+        # Do slow WS cleanup outside the lock so new turns can proceed immediately.
+        # Skip the reconnect path if we already handled the condition above (e.g. clean cancel).
+        if needs_reconnect or (not ws_completed_cleanly and pending_exc is None):
             await self._clear_and_close_ws()
 
         if pending_exc is not None:

@@ -333,127 +333,162 @@ class TestInterruptionHardening:
         assert session.processing_task is None
 
 
-class TestQueueOptimization:
-    """Phase 4: Queue Optimization Tests"""
-    
-    @pytest.fixture
-    def pipeline_session_with_queue(self):
-        """Create a pipeline session with initialized queue counters."""
-        return make_pipeline_session()
-    
-    def test_adaptive_concurrency_low_queue_depth(self, pipeline_session_with_queue):
-        """TTS concurrency is now fixed at 2."""
-        session = pipeline_session_with_queue
-        # Queue starts empty — session is ready to process turns
-        assert session.outbound_queue.qsize() == 0
+class TestSTTLatencyMeasurement:
+    """Tests that STT tail latency is measured from real timestamps."""
 
-    def test_adaptive_concurrency_medium_queue_depth(self, pipeline_session_with_queue):
-        """Fixed concurrency stays stable regardless of queue depth."""
-        session = pipeline_session_with_queue
-        # Rate limiter is functional
-        assert session._rate_limiter.allow(1) is True
+    def test_stt_tail_latency_is_measured_not_constant(self):
+        """Two different silence gaps must produce two different tail latencies.
 
-    def test_adaptive_concurrency_high_queue_depth(self, pipeline_session_with_queue):
-        """Fixed concurrency stays capped — verify session is in a clean state."""
-        session = pipeline_session_with_queue
-        assert session._active_turn_id is None
-        assert not session._cancel_event.is_set()
+        Deepgram only fires speech_final after its endpointing window (300ms) has
+        already closed, so elapsed time from last speech to flush is always greater
+        than endpointing_ms in production. The fixtures simulate that: both gaps
+        exceed 300ms by different amounts, yielding distinct positive tail values.
+        """
+        from backend.stt import STTHandler
+
+        handler = STTHandler(api_key="x", on_transcript=lambda t: None)
+        handler.endpointing_ms = 300
+
+        # First flush: endpointing window + 10ms of Deepgram finalization overhead
+        handler._last_speech_time = time.perf_counter() - (handler.endpointing_ms / 1000 + 0.010)
+        handler.transcript_buffer = "hello"
+        handler._flush_buffer("speech_final")
+        a = handler.last_stt_processing_ms
+
+        # Second flush: endpointing window + 60ms of finalization overhead
+        handler._last_speech_time = time.perf_counter() - (handler.endpointing_ms / 1000 + 0.060)
+        handler.transcript_buffer = "world"
+        handler._flush_buffer("speech_final")
+        b = handler.last_stt_processing_ms
+
+        assert a != b, (
+            "last_stt_processing_ms must vary with real silence duration, not return a constant"
+        )
+
+    def test_stt_tail_zero_when_no_speech_anchor(self):
+        """When no _last_speech_time is available, tail latency defaults to 0."""
+        from backend.stt import STTHandler
+
+        handler = STTHandler(api_key="x", on_transcript=lambda t: None)
+        handler.endpointing_ms = 300
+        handler._last_speech_time = None
+        handler.transcript_buffer = "hello"
+        handler._flush_buffer("utterance_end")
+
+        assert handler.last_stt_processing_ms == 0
 
 
 class TestDashboardMetrics:
-    """Phase 5: Dashboard Metrics Display Tests"""
-    
-    def test_latency_history_structure(self):
-        """Test that latency history has all required fields."""
-        # Simulate frontend latency history entry
-        entry = {
-            "turn": 1,
-            "total": 500,
-            "llm": 350,
-            "tts": 150,
-            "stt": 100,
-            "llm_queue": 50,        # Phase 1 breakdown
-            "llm_ttft": 200,        # Phase 1 breakdown
-            "llm_streaming": 100,   # Phase 1 breakdown
-            "tts_first_sentence": 150,  # Phase 2
-            "tts_engine": "edge",   # Phase 2
-            "timestamp": 1234567890,
-        }
-        
-        # Verify all fields are present
-        required_fields = [
-            "turn", "total", "llm", "tts", "stt",
-            "llm_queue", "llm_ttft", "llm_streaming",
-            "tts_first_sentence", "tts_engine", "timestamp"
-        ]
-        
-        for field in required_fields:
-            assert field in entry, f"Missing field: {field}"
-    
-    def test_llm_metrics_message_structure(self):
-        """Test structure of LLM metrics message sent to frontend."""
-        msg = {
+    """Tests that the pipeline emits correct latency message payloads."""
+
+    @pytest.fixture
+    def pipeline_session(self):
+        return make_pipeline_session()
+
+    def test_latency_message_fields_present(self, pipeline_session):
+        """The latency message must contain all required fields."""
+        session = pipeline_session
+        session.turn_id = 1
+        session._active_turn_id = 1
+        session._cancel_event.clear()
+
+        import time as _time
+        session._metrics.utterance_end_time = _time.perf_counter()
+        session._metrics.last_stt_ms = 15
+        session._metrics.last_llm_ms = 400
+        session._metrics.tts_first_sentence_latency_ms = 200
+
+        # Trigger _send_for_turn directly with a realistic latency payload
+        session._send_for_turn(1, {
+            "type": "latency",
+            "total_ms": 620,
+            "llm_ms": 400,
+            "tts_ms": 200,
+            "stt_ms": 15,
+            "ms": 620,
+        })
+
+        msg = session.outbound_queue.get_nowait()
+        assert msg["type"] == "latency"
+        assert "total_ms" in msg
+        assert "llm_ms" in msg
+        assert "tts_ms" in msg
+        assert "stt_ms" in msg
+        assert "turn_id" in msg
+
+    def test_llm_metrics_fields_present(self, pipeline_session):
+        """The llm_metrics message must contain all required breakdown fields."""
+        session = pipeline_session
+        session.turn_id = 1
+        session._active_turn_id = 1
+        session._cancel_event.clear()
+
+        session._send_for_turn(1, {
             "type": "llm_metrics",
-            "queue_ms": 50,
-            "ttft_ms": 200,
-            "streaming_delay_ms": 100,
-            "total_ms": 350,
-            "turn_id": 1,
-        }
-        
+            "queue_ms": 5,
+            "ttft_ms": 380,
+            "streaming_delay_ms": 25,
+            "total_ms": 410,
+        })
+
+        msg = session.outbound_queue.get_nowait()
         assert msg["type"] == "llm_metrics"
         assert msg["queue_ms"] + msg["ttft_ms"] + msg["streaming_delay_ms"] == msg["total_ms"]
-    
-    def test_tts_metrics_message_structure(self):
-        """Test structure of TTS metrics message sent to frontend."""
-        msg = {
+
+    def test_tts_metrics_fields_present(self, pipeline_session):
+        """The tts_metrics message must contain engine and latency fields."""
+        session = pipeline_session
+        session.turn_id = 1
+        session._active_turn_id = 1
+        session._cancel_event.clear()
+
+        session._send_for_turn(1, {
             "type": "tts_metrics",
-            "first_sentence_latency_ms": 150,
-            "engine": "edge",
-            "turn_id": 1,
-        }
-        
+            "first_sentence_latency_ms": 220,
+            "engine": "deepgram",
+        })
+
+        msg = session.outbound_queue.get_nowait()
         assert msg["type"] == "tts_metrics"
         assert isinstance(msg["first_sentence_latency_ms"], int)
-        assert msg["engine"] in ["edge", "deepgram"]
+        assert msg["engine"] in ("edge", "deepgram")
 
 
 class TestEndToEndFlow:
     """Integration tests for complete flow with all phases."""
-    
+
     @pytest.mark.asyncio
     async def test_metrics_flow_with_interruption(self):
         """Test complete flow: metrics tracked and interruption handled correctly."""
         session = make_pipeline_session()
-        
+
         # Simulate turn 1
         session.turn_id = 1
         session._active_turn_id = 1
         session._cancel_event.clear()
-        
+
         # Message for turn 1 should be allowed
         msg1 = {"turn_id": 1, "type": "text", "text": "Response"}
         assert session.can_send_message(msg1) is True
-        
+
         # Simulate user interruption (new turn)
         session.turn_id = 2
         session._active_turn_id = 2
         session._cancel_event.clear()
-        
+
         # Messages from old turn should be rejected
         assert session.can_send_message(msg1) is False
-        
+
         # New turn messages should pass
         msg2 = {"turn_id": 2, "type": "text", "text": "New response"}
         assert session.can_send_message(msg2) is True
-    
+
     def test_concurrent_tts_concurrency_tracking(self):
         """Test session is initialised in a clean state for TTS turns."""
         session = make_pipeline_session()
 
-        # _compute_ideal_concurrency stub was removed.
-        # Verify the session's relevant state directly:
         assert session._metrics.tts_first_sentence_latency_ms == 0
         assert session._metrics.tts_metrics_sent is False
         assert session._rate_limiter.allow(1) is True
     pytest.main([__file__, "-v"])
+

@@ -30,7 +30,7 @@ To prevent stale audio or responses from previous turns reaching the user after 
 
 1. **Turn ID Validation:** Every outgoing frame or JSON packet is stamped with a `turn_id`. The client and final WebSocket consumer only send/play frames if the `turn_id == active_turn_id`.
 2. **Newest-Wins Policy:** If a new transcript starts processing while a previous turn is active or playing back, the active turn is aborted synchronously (tasks cancelled, LLM generator closed via `.aclose()`), and the pipeline starts the new turn immediately.
-3. **Semaphore-Gated TTS:** TTS concurrency is controlled by `asyncio.Semaphore(2)`, scoped per turn so a new turn always starts with fresh capacity (not competing with dying tasks from the interrupted turn).
+3. **Lock-Serialized TTS:** TTS access is controlled by `asyncio.Lock` (`DeepgramTTSEngine._ws_lock`), serializing turns on a single persistent WebSocket connection — fully serial by design, not 2-wide. Cleanup (Clear + WS teardown on failure) is performed *outside* the lock so a new turn can acquire it and start immediately while the previous turn's teardown completes in the background.
 
 ---
 

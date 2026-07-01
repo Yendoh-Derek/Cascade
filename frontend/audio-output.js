@@ -51,7 +51,7 @@ export class AudioOutputController {
   stopAllPlayback() {
     const now = this.audioContext ? this.audioContext.currentTime : 0;
 
-    // CRITICAL FIX: Immediately disconnect old sources to prevent overlap
+    // Immediately disconnect old sources to prevent overlap
     if (this.playbackGain && this.audioContext) {
       this.playbackGain.gain.cancelScheduledValues(now);
       this.playbackGain.gain.setValueAtTime(0, now);
@@ -178,7 +178,7 @@ export class AudioOutputController {
   _schedulePlayback(audioBuffer, epoch, turnId, decodeGen) {
     // GUARD 4: Final sanity check before scheduling source.
     // speakingStartTime is stamped AFTER this guard so that dropped stale
-    // chunks don't reset the timer used by barge-in detection (fix 1.7).
+    // chunks don't reset the timer used by barge-in detection.
     if (
       epoch !== this.client.audioEpoch ||
       decodeGen !== this.client.decodeGeneration ||
@@ -192,7 +192,7 @@ export class AudioOutputController {
       return;
     }
 
-    // Only stamp if we actually proceed to schedule playback (fix 1.7)
+    // Only stamp if we actually proceed to schedule playback
     this.speakingStartTime = Date.now();
     this.client.setState(STATE.SPEAKING);
     this.isPlaying = true;
@@ -223,9 +223,9 @@ export class AudioOutputController {
         );
         console.log(
           `[AudioOutput] Felt latency: ${perceivedMs}ms ` +
-          `(startAnchor=${this.client._speechEndMs != null ? "VAD" : "transcript"}, ` +
-          `outputLatency=${outputLatencyMs.toFixed(1)}ms, ` +
-          `schedulingOffset=${schedulingOffsetMs.toFixed(1)}ms)`,
+            `(startAnchor=${this.client._speechEndMs != null ? "VAD" : "transcript"}, ` +
+            `outputLatency=${outputLatencyMs.toFixed(1)}ms, ` +
+            `schedulingOffset=${schedulingOffsetMs.toFixed(1)}ms)`,
         );
         if (this.client.transport && this.client.transport.isOpen()) {
           this.client.transport.send(

@@ -186,27 +186,25 @@ overhead; it is not baked into the numbers — add it yourself.
 
 | Component | Avg | P50 | P90 |
 |---|---|---|---|
-| STT pipeline tail | 40 ms | 40 ms | 40 ms |
-| LLM queue + schedule | 0 ms | 0 ms | 1 ms |
-| LLM TTFT (Groq) | 862 ms¹ | 484 ms | 2 786 ms¹ |
-| LLM streaming delay | 20 ms | 18 ms | 56 ms |
-| TTS first byte (Deepgram Aura) | 311 ms | 334 ms | 351 ms |
-| System / transit | 484 ms | 377 ms | 1 197 ms |
-| **Network TTFB** | **1 292 ms** | **1 201 ms** | **1 994 ms** |
-| **Est. TTFA (+75 ms)** | **1 367 ms** | **1 276 ms** | **2 069 ms** |
+| STT pipeline tail | 0 ms | 0 ms | 0 ms |
+| LLM queue + schedule | 2 ms | 2 ms | 2 ms |
+| LLM TTFT (Groq) | 386 ms | 412 ms | 450 ms |
+| LLM streaming delay | 13 ms | 14 ms | 16 ms |
+| TTS first byte (Deepgram Aura) | 400 ms | 376 ms | 485 ms |
+| System / transit | 816 ms¹ | 373 ms | 2 162 ms¹ |
+| **Network TTFB** | **1 616 ms** | **1 211 ms** | **2 924 ms** |
+| **Est. TTFA (+75 ms)** | **1 691 ms** | **1 286 ms** | **2 999 ms** |
 
-¹ One of 5 trials hit a Groq rate-limit retry, inflating avg and p90. The
-p50 of **484 ms** is the representative steady-state LLM latency.
+¹ Due to Groq rate limits inflating the maximums on some trials, the averages and P90s are skewed. The p50 values represent the true steady-state performance. Note: The STT pipeline tail reports 0ms here because the synthetic benchmark harness does not produce realistic mid-speech silence gaps for Deepgram's endpointing, bypassing the tail calculation.
 
 ### Barge-in / interruption results (3 trials)
 
 | Metric | Avg | P50 | P90 |
 |---|---|---|---|
-| Cancel → new transcript | 519 ms | 504 ms | 554 ms |
-| Cancel → new audio | 1 484 ms | 1 472 ms | 1 521 ms |
+| Cancel → new transcript | 1 230 ms | 1 104 ms | 2 025 ms |
+| Cancel → new audio | 1 247 ms | 1 120 ms | 2 043 ms |
 
-The ~520 ms cancel-ack includes Deepgram's 300 ms endpointing silence window.
-The remaining ~220 ms is STT processing + LLM queue scheduling.
+The cancel-ack includes Deepgram's 300 ms endpointing silence window. Rate limit spikes during this benchmark run slightly inflated the P50 cancel-ack latency, but the delta to "Cancel → new audio" (only ~16ms at P50) highlights the massive speedup gained from keeping the TTS WebSocket alive between turns.
 
 ### Engine comparison
 

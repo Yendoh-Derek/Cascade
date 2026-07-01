@@ -359,9 +359,13 @@ class STTHandler:
         if not confirmed:
             return
 
-        # Hardcode STT pipeline tail latency to 40ms to represent pure acoustic 
-        # processing time without being inflated by user hesitation or background noise.
-        self.last_stt_processing_ms = 40
+        now = time.perf_counter()
+        if self._last_speech_time is not None:
+            tail = (now - self._last_speech_time) * 1000 - self.endpointing_ms
+            self.last_stt_processing_ms = max(0, int(tail))
+        else:
+            # UtteranceEnd fired without prior interim content — no reliable anchor.
+            self.last_stt_processing_ms = 0
 
         self._utterance_start_time = None
         self._last_speech_time = None

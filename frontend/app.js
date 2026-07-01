@@ -130,6 +130,7 @@ class CascadeClient {
   _resetTurnState() {
     this.audioInput.resetTurnState();
     this.audioOutput.resetState();
+    this._firstAudioPlayed = false;
   }
 
   _resetPlaybackOnly() {
@@ -295,7 +296,7 @@ class CascadeClient {
         // fire naturally to avoid a premature LISTENING state.
         this.audioOutput.isAudioSourceEnded = true;
 
-        // UX Bug Fix: If no audio was ever scheduled (e.g. TTS error or empty text),
+        // If no audio was ever scheduled (e.g. TTS error or empty text),
         // we must manually trigger the transition back to LISTENING, otherwise
         // the UI will be permanently stuck in PROCESSING state.
         if (
