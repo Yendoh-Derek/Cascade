@@ -15,32 +15,27 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Save original environment variables
-_orig_auth_secret = os.environ.get("CASCADE_AUTH_SECRET")
-_orig_max_sessions = os.environ.get("CASCADE_MAX_CONCURRENT_SESSIONS")
-
-# Set env var before importing app so it picks it up or we can test auth config
-os.environ["CASCADE_AUTH_SECRET"] = "test-secret"
-os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"] = "3"
-
 # Import app
 from backend.main import app  # noqa: E402
 import backend.main  # noqa: E402
 
-
 @pytest.fixture(scope="module", autouse=True)
-def clean_env():
-    yield
-    # Restore original environment variables after all tests in this module run
-    if _orig_auth_secret is not None:
-        os.environ["CASCADE_AUTH_SECRET"] = _orig_auth_secret
-    elif "CASCADE_AUTH_SECRET" in os.environ:
-        del os.environ["CASCADE_AUTH_SECRET"]
-
-    if _orig_max_sessions is not None:
-        os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"] = _orig_max_sessions
-    elif "CASCADE_MAX_CONCURRENT_SESSIONS" in os.environ:
-        del os.environ["CASCADE_MAX_CONCURRENT_SESSIONS"]
+def mock_server_config():
+    """Patch the already-imported server_config so it applies regardless of test execution order."""
+    import backend.main
+    from backend.config import ServerConfig
+    orig = backend.main.server_config
+    new_config = ServerConfig(
+        host=orig.host,
+        port=orig.port,
+        max_concurrent_sessions=3,
+        cors_origins=orig.cors_origins,
+        auth_secret="test-secret",
+        idle_timeout_sec=orig.idle_timeout_sec
+    )
+    with patch("backend.main.server_config", new_config):
+        with patch("backend.main.MAX_CONCURRENT_SESSIONS", 3):
+            yield
 
 
 @pytest.fixture
@@ -174,7 +169,8 @@ class TestRateLimiter:
     def test_blocks_above_capacity(self):
         rl = self._make_limiter()
         rl.allow(32_000 * 2)       # drain
-        assert rl.allow(1) is False
+        # Request a large chunk (1 second worth) so microsecond test delays don't refill enough to pass
+        assert rl.allow(32_000) is False
 
     def test_refills_over_time(self):
         import time

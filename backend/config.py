@@ -106,8 +106,8 @@ def load_api_keys() -> APIKeys:
 
 
 # Singletons — imported directly by other modules
-api_keys: APIKeys | None
-_config_error: str | None
+api_keys: APIKeys | None = None
+_config_error: str | None = None
 
 try:
     api_keys = load_api_keys()

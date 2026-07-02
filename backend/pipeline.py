@@ -43,8 +43,8 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r'^\s*[-*_]{3,}\s*$', ' ', text, flags=re.MULTILINE)
     # Remove blockquotes >
     text = re.sub(r'^\s*>\s+', '', text, flags=re.MULTILINE)
-    # Remove standalone dashes used as separators
-    text = re.sub(r'(?<!\w)-(?!\w)', ' ', text)
+    # Remove standalone dashes used as separators (but preserve negative numbers like -3)
+    text = re.sub(r'(?<!\w)(?<!\d)-(?!\w)(?!\d)', ' ', text)
     # Clean up whitespace
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
@@ -463,6 +463,10 @@ class PipelineSession:
                     raise
                 finally:
                     await gen.aclose()
+                    # Cancel any pending batch timer so it doesn't fire as an
+                    # orphaned task after this coroutine is cancelled mid-turn.
+                    if batch_timer_task and not batch_timer_task.done():
+                        batch_timer_task.cancel()
 
             async def consume_audio() -> None:
                 """Stream TTS audio as chunks arrive from the LLM.
@@ -571,13 +575,11 @@ class PipelineSession:
             await asyncio.gather(produce_chunks(), consume_audio())
 
             # Build full_response from collected parts
-            full_response = " ".join(full_response_parts).strip()
+            full_response = "".join(full_response_parts).strip()
 
             # Save to history — even partial response from interrupted turns
             if full_response:
                 self.tutor.add_assistant_message(full_response)
-            elif not self._cancel_event.is_set():
-                self.tutor.add_assistant_message("[No response generated]")
 
             logger.info(f"[Pipeline] Turn {turn_id} complete: '{full_response[:60]}'")
 
@@ -593,7 +595,7 @@ class PipelineSession:
         finally:
             if self._can_send(turn_id):
                 self._send_for_turn(turn_id, {"type": "response_end"})
-                self._active_turn_id = None
+            self._active_turn_id = None
 
     def _cancel_active_turn_tasks(self):
         """Synchronously cancels all running tasks of the active turn.

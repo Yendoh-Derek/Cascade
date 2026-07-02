@@ -103,6 +103,33 @@ async def test_stt_reconnect_exhausted():
         on_error.assert_called_with("STT connection lost — please start a new session")
 
 
+@pytest.mark.asyncio
+async def test_vad_interruption_triggers_on_speech_started():
+    """Test that VAD interruption fires on 'speech_started' but not 'speech_stopped'."""
+    on_speech_interrupted = MagicMock()
+
+    handler = STTHandler(
+        api_key="test_key",
+        on_transcript=MagicMock(),
+        on_speech_interrupted=on_speech_interrupted
+    )
+    handler.ws = AsyncMock()
+    handler.is_open = True
+    handler.ws.closed = False
+
+    # Simulate 'speech_stopped' event - should NOT trigger interruption
+    with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
+        mock_to_thread.return_value = ["speech_stopped"]
+        await handler.send_audio(b"dummy_audio_bytes")
+        on_speech_interrupted.assert_not_called()
+
+    # Simulate 'speech_started' event - SHOULD trigger interruption
+    with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
+        mock_to_thread.return_value = ["speech_started"]
+        await handler.send_audio(b"dummy_audio_bytes")
+        on_speech_interrupted.assert_called_once()
+
+
 # --- Live Verification for verify_all.py ---
 
 async def _test_deepgram_connection(api_key: str) -> dict:

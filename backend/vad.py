@@ -1,6 +1,18 @@
 import numpy as np
 import torch
 
+_shared_model = None
+
+def get_shared_vad_model():
+    global _shared_model
+    if _shared_model is None:
+        _shared_model, _ = torch.hub.load(
+            "snakers4/silero-vad", "silero_vad",
+            trust_repo=True, skip_validation=True,
+        )
+        _shared_model.eval()
+    return _shared_model
+
 class SileroVAD:
     """
     Thin wrapper around Silero VAD for local silence detection.
@@ -26,11 +38,7 @@ class SileroVAD:
         self.silence_ms = silence_ms
         self._silence_frames_needed = silence_ms // self.CHUNK_MS
 
-        self.model, _ = torch.hub.load(
-            "snakers4/silero-vad", "silero_vad",
-            trust_repo=True, skip_validation=True,
-        )
-        self.model.eval()
+        self.model = get_shared_vad_model()
 
         self._speech_active = False
         self._silence_frame_count = 0

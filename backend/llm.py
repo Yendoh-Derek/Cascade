@@ -244,6 +244,21 @@ class LLMGenerator:
 
                 logger.info(f"[LLM] Stream complete: {token_count} tokens total")
 
+        except asyncio.CancelledError:
+            logger.info("[LLM] Generation cancelled")
+            # pending_task may still be running inside asyncio.shield() — cancel it
+            # explicitly so it doesn't outlive this coroutine and leak a Groq stream.
+            if pending_task is not None and not pending_task.done():
+                pending_task.cancel()
+                try:
+                    await pending_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if sentence_buffer:
+                if self.t_first_sentence_emitted is None:
+                    self.t_first_sentence_emitted = time.perf_counter()
+                yield sentence_buffer
+            raise
         except asyncio.TimeoutError:
             logger.error(f"[LLM] Generation timed out after {timeout_sec}s")
             if sentence_buffer:

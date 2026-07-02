@@ -86,6 +86,7 @@ class STTHandler:
             "interim_results": "true",
             "endpointing": str(self.endpointing_ms),  # configurable via CASCADE_STT_ENDPOINTING
             "vad_events": "true",
+            "utterance_end_ms": "1000",
         }
         return base_url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
 
@@ -322,8 +323,8 @@ class STTHandler:
             
             # Feed to local VAD alongside Deepgram stream using to_thread
             events = await asyncio.to_thread(self._vad.feed, audio_bytes)
-            if "speech_stopped" in events:
-                self._on_vad_speech_stopped()
+            if "speech_started" in events:
+                self._on_vad_speech_started()
         except RuntimeError as e:
             self.is_open = False
             logger.warning(f"[STT] Transport closing mid-send (expected during shutdown): {e}")
@@ -340,16 +341,17 @@ class STTHandler:
             else:
                 self.on_error(str(e))
 
-    def _on_vad_speech_stopped(self):
+    def _on_vad_speech_started(self):
         """
-        Fires when Silero detects trailing silence locally.
-        Signals the pipeline to cancel any in-progress AI response immediately.
-        Does NOT trigger the LLM — Deepgram speech_final handles that.
+        Fires the instant Silero detects the user has started speaking.
+        Signals the pipeline to cancel any in-progress AI response immediately
+        (barge-in). Does NOT trigger the LLM - Deepgram speech_final handles that.
         """
         if not self.on_speech_interrupted:
             return
         speculative_text = (self.transcript_buffer + " " + self._latest_interim).strip()
-        self._latest_interim = ""  # prevent _flush_buffer from double-counting this text
+        self.transcript_buffer = ""   # prevent _flush_buffer from double-flushing buffered text
+        self._latest_interim = ""     # prevent _flush_buffer from double-counting this text
         self.last_stt_tail_ms = 0
         self.on_speech_interrupted(speculative_text)
 

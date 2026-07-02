@@ -66,7 +66,7 @@ def _has_sentence_boundary(text: str) -> bool:
     words = before_period.split()
     if words:
         last_word = words[-1].lower()
-        if last_word in ABBREVIATIONS or len(last_word) <= 2:
+        if last_word in ABBREVIATIONS or len(last_word) == 1:
             return False
     return True
 

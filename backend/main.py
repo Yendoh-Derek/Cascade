@@ -4,6 +4,7 @@ cascade/backend/main.py
 FastAPI application entry point.
 Handles routing for health checks, WebSocket voice pipeline, and static files.
 """
+import hashlib
 import json
 import logging
 import asyncio
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_api_keys, get_model_config, server_config
 from backend.pipeline import PipelineSession
+from backend.vad import get_shared_vad_model
 from groq import AsyncGroq
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,11 @@ async def lifespan(app: FastAPI):
     keys = get_api_keys()
     shared_groq_client = AsyncGroq(api_key=keys.groq)
     logger.info("[App] Shared Groq client initialized")
+    
+    # Initialize shared VAD model to prevent event-loop blocking on first session
+    get_shared_vad_model()
+    logger.info("[App] Shared VAD model initialized")
+    
     yield
     # Clean up on shutdown
     if shared_groq_client:
@@ -192,7 +199,7 @@ async def websocket_endpoint(
                                 if auth_msg.get("type") == "auth":
                                     candidate_hmac = auth_msg.get("response")
                                     expected_hmac = hmac.new(
-                                        auth_secret.encode(), nonce.encode(), "sha256"
+                                        auth_secret.encode(), nonce.encode(), hashlib.sha256
                                     ).hexdigest()
                                     if isinstance(candidate_hmac, str) and hmac.compare_digest(
                                         candidate_hmac, expected_hmac
