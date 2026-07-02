@@ -75,6 +75,8 @@ class CascadeClient {
       await this.transport.connect();
 
       this.setState(STATE.LISTENING);
+      this.currentStreamingBubble = null;
+      this.currentStudentBubble = null;
       this.sessionStartTime = Date.now();
 
       if (this.ui.transcriptPanel) this.ui.transcriptPanel.innerHTML = "";
@@ -209,6 +211,28 @@ class CascadeClient {
           this.audioOutput.ttsConfig,
         );
         break;
+      case "transcript_update":
+        if (msg.text) {
+          if (
+            this.audioOutput.activeSourceNodes.length > 0 ||
+            this.audioOutput.isPlaying
+          ) {
+            this.audioOutput.stopAllPlayback();
+          }
+          if (!this.currentStudentBubble) {
+            this._resetTurnState();
+            this.currentStudentBubble = this.ui.addTranscriptItem("student", msg.text);
+            this.currentResponse = "";
+            if (this.currentStreamingBubble) {
+              this.currentStreamingBubble.classList.remove("streaming");
+              this.currentStreamingBubble = null;
+            }
+          } else {
+            const p = this.currentStudentBubble.querySelector("p");
+            if (p) p.textContent = msg.text;
+          }
+        }
+        break;
       case "transcript":
         if (msg.text) {
           if (
@@ -217,32 +241,47 @@ class CascadeClient {
           ) {
             this.audioOutput.stopAllPlayback();
           }
+          let is_update = false;
           if (msg.turn_id != null) {
+            if (this.activeTurnId === msg.turn_id) {
+               is_update = true;
+            }
             this.activeTurnId = msg.turn_id;
             this.playbackTurnId = msg.turn_id;
           }
-          // If Deepgram endpointed before the local VAD detected silence,
-          // back-calculate the speech end using the 300ms endpointing window.
+          
           if (this._speechEndMs == null) {
             this._speechEndMs = performance.now() - 300;
           }
-          // Stamp client-side turn start for perceived-latency measurement.
           this._turnStartMs = performance.now();
           this._firstAudioPlayed = false;
           this._interrupting = false;
-          this._resetTurnState();
-          this.ui.addTranscriptItem("student", msg.text);
-          // Reset the stream buffer so previous turn's text does not bleed into
-          // the next turn's streaming bubble.  If there is an in-progress bubble
-          // from an interrupted turn, finalize it in place (remove the cursor
-          // animation) rather than deleting it — so the chat history stays intact.
-          this.currentResponse = "";
-          if (this.currentStreamingBubble) {
-            this.currentStreamingBubble.classList.remove("streaming");
-            this.currentStreamingBubble = null;
+          
+          if (!is_update && !this.currentStudentBubble) {
+            this._resetTurnState();
+            this.currentStudentBubble = this.ui.addTranscriptItem("student", msg.text);
+            this.currentResponse = "";
+            if (this.currentStreamingBubble) {
+              this.currentStreamingBubble.classList.remove("streaming");
+              this.currentStreamingBubble = null;
+            }
+            this.totalTurns++;
+            this.ui._updateStatsBar();
+          } else {
+             if (this.currentStudentBubble) {
+                 const p = this.currentStudentBubble.querySelector("p");
+                 if (p) p.textContent = msg.text;
+             }
+             this.currentResponse = "";
+             if (this.currentStreamingBubble) {
+                 this.currentStreamingBubble.classList.remove("streaming");
+                 this.currentStreamingBubble = null;
+             }
+             if (!is_update) {
+                 this.totalTurns++;
+                 this.ui._updateStatsBar();
+             }
           }
-          this.totalTurns++;
-          this.ui._updateStatsBar();
           this.setState(STATE.PROCESSING);
         }
         break;
@@ -258,6 +297,7 @@ class CascadeClient {
               "tutor",
               this.currentResponse,
             );
+            this.currentStudentBubble = null;
             if (this.currentStreamingBubble)
               this.currentStreamingBubble.classList.add("streaming");
           } else if (!this.pendingSubtitleUpdate) {

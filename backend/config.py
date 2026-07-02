@@ -38,6 +38,12 @@ class ModelConfig:
     # Endpointing window in ms — how long Deepgram waits after last speech
     # before emitting speech_final. Tune via CASCADE_STT_ENDPOINTING env var.
     stt_endpointing_ms: int = int(os.getenv("CASCADE_STT_ENDPOINTING", "300"))
+    
+    # Advanced STT / VAD features
+    vad_threshold: float = float(os.getenv("CASCADE_VAD_THRESHOLD", "0.5"))
+    vad_silence_ms: int = int(os.getenv("CASCADE_VAD_SILENCE_MS", "200"))
+    speculative_grace_ms: int = int(os.getenv("CASCADE_SPECULATIVE_GRACE_MS", "180"))
+    interim_trigger_words: int = int(os.getenv("CASCADE_INTERIM_TRIGGER_WORDS", "6"))
 
     # LLM
     groq_model: str = "llama-3.3-70b-versatile"
