@@ -146,7 +146,11 @@ class PipelineSession:
             on_transcript=self._on_transcript_received,
             on_error=self._on_stt_error,
             on_status=self._on_stt_status,
+            on_speech_interrupted=self._on_vad_interrupted,
+            on_transcript_update=self._on_stt_update,
             endpointing_ms=self.model_config.get("stt_endpointing_ms", 300),
+            vad_threshold=self.model_config.get("vad_threshold", 0.5),
+            vad_silence_ms=self.model_config.get("vad_silence_ms", 200),
         )
         self.llm_generator = LLMGenerator(
             api_key=self.api_keys["groq"],
@@ -212,6 +216,30 @@ class PipelineSession:
         payload = {**msg, "turn_id": turn_id}
         self.send_message(payload)
 
+    def _on_stt_update(self, transcript: str):
+        """
+        Live word-by-word streaming of the user's speech to the UI.
+        Does NOT trigger the LLM.
+        """
+        self.send_message({"type": "transcript_update", "text": transcript})
+
+    def _on_vad_interrupted(self, transcript: str):
+        """
+        Called when Silero VAD detects the user is speaking (local silence ended).
+        Immediately cancels any in-progress AI response so the user is not talking
+        over the AI. Does NOT trigger the LLM - that waits for Deepgram speech_final.
+        """
+        if self._active_turn_id is None and not self.is_processing_transcript:
+            return
+        logger.info("[Pipeline] VAD speech detected - interrupting AI response")
+        old_turn = self._active_turn_id
+        self._cancel_active_turn_tasks()
+        if old_turn is not None:
+            self.send_message({"type": "turn_cancelled", "turn_id": old_turn})
+        self._active_turn_id = None
+        self.is_processing_transcript = False
+        self.processing_task = None
+
     def _on_transcript_received(self, transcript: str):
         """
         Called by STT when a complete utterance is confirmed.
@@ -226,11 +254,9 @@ class PipelineSession:
                 self.send_message({"type": "response_end"})
             return
 
-        # Newest wins: if a new transcript arrives while we are already processing a turn,
-        # cancel the active turn cleanly and prepare to start the new one.
         if self.is_processing_transcript or self._active_turn_id is not None:
             old_turn = self._active_turn_id
-            logger.warning(f"[Pipeline] Turn {old_turn} interrupted by new transcript")
+            logger.info(f"[Pipeline] Turn {old_turn} cancelled by new transcript")
             self._final_turn_cutoff_time = time.perf_counter()
             self._cancel_active_turn_tasks()
             if old_turn is not None:
@@ -239,10 +265,10 @@ class PipelineSession:
             self.processing_task = None
 
         self.turn_id += 1
+        self._active_turn_id = self.turn_id
         current_turn_id = self.turn_id
 
         self._cancel_event.clear()
-        self._active_turn_id = current_turn_id
 
         # Reset metrics for new turn
         self._metrics = TurnMetrics()
@@ -296,6 +322,19 @@ class PipelineSession:
                 raise RuntimeError("Pipeline components are not initialized")
 
             self._send_for_turn(turn_id, {"type": "transcript", "text": transcript})
+
+            grace_ms = self.model_config.get("speculative_grace_ms", 180)
+            if grace_ms > 0:
+                try:
+                    await asyncio.wait_for(
+                        self._cancel_event.wait(),
+                        timeout=grace_ms / 1000,
+                    )
+                    # Cancel event fired during grace window — newer transcript incoming
+                    logger.info(f"[Pipeline] Turn {turn_id} superseded during grace window")
+                    return
+                except asyncio.TimeoutError:
+                    pass   # Grace window elapsed with no interruption — proceed normally
 
             self.tutor.add_user_message(transcript)
             self.tutor.trim_history(max_turns=self.model_config.get("max_history_turns", 10))
@@ -520,7 +559,9 @@ class PipelineSession:
                 finally:
                     # Zero-chunk detection: if TTS never received any chunk,
                     # the LLM produced no output.
-                    if not any_chunk_received and self._can_send(turn_id):
+                    # Only show the error if the turn was not intentionally cancelled
+                    # (e.g. user spoke again or interrupted the AI).
+                    if not any_chunk_received and self._can_send(turn_id) and not self._cancel_event.is_set():
                         logger.warning("[Pipeline] LLM generated no text chunks for this turn")
                         self._send_for_turn(turn_id, {
                             "type": "error",

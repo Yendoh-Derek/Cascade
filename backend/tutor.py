@@ -14,10 +14,60 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Cascade, an expert AI tutor. Your role is to explain \
-concepts clearly, ask guiding questions to check understanding, and adapt your \
-explanations to the student's level. Keep responses concise and conversational — \
-two to four sentences per turn. Never lecture at length. Always engage the student."""
+# Voice-channel system prompt: lead + session prompt + tail (strongest
+# constraints last). Composition mirrors a lead/session/tail pattern rather
+# than one undifferentiated string, so persona and voice-formatting rules can
+# evolve independently and the behavioral tail always survives dynamic
+# context (e.g. subject) being injected without losing its "last" position.
+
+VOICE_LEAD = """\
+You are in a spoken conversation. The user speaks and hears you.
+The session prompt below defines your persona and goals. These voice rules
+control only how you format and pace spoken output.
+"""
+
+TUTOR_SESSION_PROMPT = """\
+You are Cascade, an expert AI tutor. Explain concepts clearly, ask guiding
+questions to check understanding, and adapt explanations to the student's level.
+"""
+
+VOICE_TAIL = """\
+## Voice Rules
+- Default to one or two spoken sentences. Go longer only when the concept
+  genuinely needs it or the student asks for more depth.
+- Speak naturally. No markdown, bullets, headers, or action/emote text like
+  *chuckles* — this is read aloud exactly as written.
+- Treat transcripts as noisy. Only correct a likely mishearing if the student
+  asks or the meaning genuinely depends on it.
+- Always end with something that keeps the student engaged — a check, a
+  question, or a nudge to try the next step.
+"""
+
+
+def build_system_prompt(subject: Optional[str] = None) -> str:
+    """
+    Compose the full voice-channel system prompt.
+
+    Order is: lead (channel framing) -> session prompt (persona + optional
+    subject context) -> tail (voice/behavior rules, strongest constraints
+    last). Subject is injected inside the session block, before the tail,
+    so it can never displace the behavioral rules from the final position.
+
+    Args:
+        subject: Optional subject area the student is studying
+
+    Returns:
+        Fully composed system prompt string
+    """
+    session = TUTOR_SESSION_PROMPT.rstrip()
+    if subject:
+        session += f'\n\nThe student is studying: "{subject}".'
+
+    return (
+        f"{VOICE_LEAD.rstrip()}\n\n"
+        f"Session Prompt:\n{session}\n\n"
+        f"{VOICE_TAIL.rstrip()}"
+    )
 
 
 def build_messages(
@@ -27,7 +77,6 @@ def build_messages(
     Build the complete messages array for an LLM request.
 
     Constructs: [system_message, ...conversation_history]
-    If a subject is set, it is appended to the system prompt.
 
     Args:
         history: Conversation history as list of {"role": "...", "content": "..."}
@@ -36,10 +85,7 @@ def build_messages(
     Returns:
         Complete messages list ready for LLM
     """
-    system_content = SYSTEM_PROMPT
-
-    if subject:
-        system_content += f'\n\nThe student is studying: "{subject}".'
+    system_content = build_system_prompt(subject)
 
     messages = [{"role": "system", "content": system_content}] + history
 
@@ -163,7 +209,7 @@ class TutorSession:
         if total_tokens > max_tokens:
             # Remove oldest message pair (user + assistant) together to maintain
             # role ordering. Popping single messages can leave an orphaned
-            # assistant message at history[0], which confuses some LLMs.
+            # assistant message at history[0], which confuses some LLMs (fix N6).
             while len(self.history) >= 2 and total_tokens > max_tokens:
                 self.history.pop(0)  # user message
                 self.history.pop(0)  # assistant message

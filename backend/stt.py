@@ -13,6 +13,8 @@ from typing import Callable, Optional
 
 import aiohttp
 
+from backend.vad import SileroVAD
+
 logger = logging.getLogger(__name__)
 
 MAX_RECONNECT_ATTEMPTS = 3
@@ -35,18 +37,26 @@ class STTHandler:
         on_transcript: Callable[[str], None],
         on_error: Optional[Callable[[str], None]] = None,
         on_status: Optional[Callable[[str, dict], None]] = None,
+        on_speech_interrupted: Optional[Callable[[str], None]] = None,
+        on_transcript_update: Optional[Callable[[str], None]] = None,
         model: str = "nova-2",
         language: str = "en-US",
         endpointing_ms: int = 300,
+        vad_threshold: float = 0.5,
+        vad_silence_ms: int = 200,
     ):
         self.api_key = api_key
         self.on_transcript = on_transcript
         self.on_error = on_error or (lambda e: logger.error(f"[STT] {e}"))
         self.on_status = on_status
+        self.on_speech_interrupted = on_speech_interrupted
+        self.on_transcript_update = on_transcript_update
         self.model = model
         self.language = language
         self.endpointing_ms = endpointing_ms
 
+        self._vad = SileroVAD(threshold=vad_threshold, silence_ms=vad_silence_ms)
+        self._latest_interim: str = ""
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.is_open = False
@@ -259,11 +269,21 @@ class STTHandler:
                     if transcript:
                         if not self.transcript_buffer.strip() and self._utterance_start_time is None:
                             self._utterance_start_time = time.perf_counter()
-                        
+
                         if not speech_final:
                             # Update speech time on ALL transcripts (interim or final)
                             # EXCEPT the one bundled with speech_final.
                             self._last_speech_time = time.perf_counter()
+
+                        # Stream live interim words to the UI (not is_final to avoid
+                        # showing words twice — once as interim, once committed to buffer).
+                        if self.on_transcript_update and not is_final:
+                            live_text = (self.transcript_buffer + " " + transcript).strip()
+                            if live_text:
+                                self.on_transcript_update(live_text)
+
+                    if transcript and not is_final:
+                        self._latest_interim = transcript
 
                     if transcript and is_final:
                         self.transcript_buffer = (
@@ -271,6 +291,7 @@ class STTHandler:
                             if self.transcript_buffer
                             else transcript
                         )
+                        self._latest_interim = ""
                         logger.debug(f"[STT] is_final: '{transcript}'")
 
                     if speech_final:
@@ -298,6 +319,11 @@ class STTHandler:
         try:
             self._last_audio_sent_time = time.perf_counter()
             await self.ws.send_bytes(audio_bytes)
+            
+            # Feed to local VAD alongside Deepgram stream using to_thread
+            events = await asyncio.to_thread(self._vad.feed, audio_bytes)
+            if "speech_stopped" in events:
+                self._on_vad_speech_stopped()
         except RuntimeError as e:
             self.is_open = False
             logger.warning(f"[STT] Transport closing mid-send (expected during shutdown): {e}")
@@ -314,10 +340,26 @@ class STTHandler:
             else:
                 self.on_error(str(e))
 
+    def _on_vad_speech_stopped(self):
+        """
+        Fires when Silero detects trailing silence locally.
+        Signals the pipeline to cancel any in-progress AI response immediately.
+        Does NOT trigger the LLM — Deepgram speech_final handles that.
+        """
+        if not self.on_speech_interrupted:
+            return
+        speculative_text = (self.transcript_buffer + " " + self._latest_interim).strip()
+        self._latest_interim = ""  # prevent _flush_buffer from double-counting this text
+        self.last_stt_tail_ms = 0
+        self.on_speech_interrupted(speculative_text)
+
     def clear_buffer(self):
         """Reset accumulated transcript buffer (e.g. after user interruption)."""
         self.transcript_buffer = ""
+        self._latest_interim = ""
         self._utterance_start_time = None
+        if hasattr(self, '_vad'):
+            self._vad.reset()
 
     async def finalize(self):
         """Send a Finalize message to Deepgram to flush any remaining audio buffer."""
@@ -355,9 +397,14 @@ class STTHandler:
 
     def _flush_buffer(self, trigger: str):
         """Emit the accumulated transcript buffer as a confirmed utterance."""
-        confirmed = self.transcript_buffer.strip()
-        if not confirmed:
+        full_transcript = (self.transcript_buffer + " " + self._latest_interim).strip()
+        if not full_transcript:
             return
+
+        # Consume both buffers now to prevent a subsequent UtteranceEnd from
+        # double-flushing the same text (e.g. after speech_final already fired).
+        self.transcript_buffer = ""
+        self._latest_interim = ""
 
         now = time.perf_counter()
         if self._last_speech_time is not None:
@@ -371,10 +418,10 @@ class STTHandler:
         self._last_speech_time = None
         self._last_audio_sent_time = None
 
-        self.transcript_buffer = ""
         logger.info(
-            f"[STT] Utterance confirmed ({trigger}): '{confirmed}' "
+            f"[STT] Utterance confirmed ({trigger}): '{full_transcript}' "
             f"(stt tail processing: {self.last_stt_tail_ms}ms, "
             f"endpointing window: {self.endpointing_ms}ms)"
         )
-        self.on_transcript(confirmed)
+        self.on_transcript(full_transcript)
+
