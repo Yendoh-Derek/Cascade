@@ -16,6 +16,13 @@ export class AudioInputController {
     this._lastFinalizeAt = 0;
     this.localFinalizeSilenceMs = 130;
     this.localFinalizeCooldownMs = 600;
+    // Configurable RMS VAD parameters
+    this.rmsSilenceMinThreshold = 0.02;
+    this.rmsSilenceMultiplier = 0.05;
+    this.rmsInterruptionSpeakingMultiplier = 0.25;
+    this.rmsInterruptionProcessingMultiplier = 0.15;
+    this.rmsInterruptionMinThreshold = 0.05;
+    
     this._interruptionBuffer = [];
     this.utteranceStartTime = null;
     this.lastUtteredTime = null;
@@ -301,7 +308,7 @@ export class AudioInputController {
     // Leaky peak detector
     this.maxAudioLevel = Math.max(0.05, this.maxAudioLevel * 0.995);
     if (rms > this.maxAudioLevel) this.maxAudioLevel = rms;
-    const threshold = Math.max(0.02, this.maxAudioLevel * 0.05);
+    const threshold = Math.max(this.rmsSilenceMinThreshold, this.maxAudioLevel * this.rmsSilenceMultiplier);
 
     if (this.client.ui.orb && this.client.state === STATE.LISTENING)
       this.client.ui.orb.style.setProperty("--rms", rms.toFixed(3));
@@ -344,8 +351,10 @@ export class AudioInputController {
       this._interruptionBuffer.reduce((a, b) => a + b, 0) /
       this._interruptionBuffer.length;
     
-    const multiplier = this.client.state === STATE.SPEAKING ? 0.25 : 0.15;
-    const threshold = Math.max(0.05, this.maxAudioLevel * multiplier);
+    const multiplier = this.client.state === STATE.SPEAKING 
+      ? this.rmsInterruptionSpeakingMultiplier 
+      : this.rmsInterruptionProcessingMultiplier;
+    const threshold = Math.max(this.rmsInterruptionMinThreshold, this.maxAudioLevel * multiplier);
 
     if (avgRms > threshold) {
       this.client._triggerInterruption();

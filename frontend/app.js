@@ -111,6 +111,13 @@ class CascadeClient {
       this.currentStreamingBubble.remove();
       this.currentStreamingBubble = null;
     }
+    this.resetTurnAndEpochState();
+    this.sessionStartTime = null;
+
+    this.setState(STATE.IDLE);
+  }
+
+  resetTurnAndEpochState() {
     this.activeTurnId = null;
     this.playbackTurnId = null;
     this.audioEpoch += 1;
@@ -126,9 +133,6 @@ class CascadeClient {
     // Clear felt-latency anchors so a new session always starts clean.
     this._speechEndMs = null;
     this._turnStartMs = null;
-    this.sessionStartTime = null;
-
-    this.setState(STATE.IDLE);
   }
 
   _resetTurnState() {

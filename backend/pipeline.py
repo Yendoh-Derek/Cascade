@@ -35,8 +35,11 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r'`([^`]+)`', r'\1', text)
     # Remove links [text](url) → text
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    # Remove emphasis/strikethrough *text*, **text**, ~~text~~
-    text = re.sub(r'(\*\*|__|\*|_|~~)', '', text)
+    # Remove emphasis/strikethrough formatting markers while preserving the inner text,
+    # ensuring we don't strip lone math asterisks or snake_case underscores.
+    text = re.sub(r'(\*\*|__)(.*?)\1', r'\2', text)
+    text = re.sub(r'(?<!\w)(\*|_)(?=\S)(.*?)(?<=\S)\1(?!\w)', r'\2', text)
+    text = re.sub(r'~~(.*?)~~', r'\1', text)
     # Remove headers #, ##, etc.
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     # Replace horizontal rules (---, ***, ___) with space

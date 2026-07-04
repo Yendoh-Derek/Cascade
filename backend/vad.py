@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import torch
 
@@ -41,7 +42,9 @@ class SileroVAD:
         self._silence_frames_needed = silence_ms // self.CHUNK_MS
         self.min_speech_frames = min_speech_frames
 
-        self.model = get_shared_vad_model()
+        # Each instance needs a separate model copy because Silero VAD contains
+        # mutable recurrent state (states are modified on forward() pass).
+        self.model = copy.deepcopy(get_shared_vad_model())
 
         self._speech_active = False
         self._silence_frame_count = 0

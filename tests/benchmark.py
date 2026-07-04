@@ -151,7 +151,7 @@ async def run_steady_state_trials(uri: str, audio_bytes: bytes, num_trials: int 
 
                 if turn_latency and turn_llm and t_first_audio and t_finalize_sent:
                     ttfb = (t_first_audio - t_finalize_sent) * 1000
-                    stt  = turn_latency.get("stt_ms", 0)
+                    stt  = turn_latency.get("stt_tail_ms", 0)
                     tts  = turn_latency.get("tts_ms", 0)
                     q    = turn_llm.get("queue_ms", 0)
                     ttft = turn_llm.get("ttft_ms", 0)
