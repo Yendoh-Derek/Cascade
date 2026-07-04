@@ -39,11 +39,16 @@ class STTHandler:
         on_status: Optional[Callable[[str, dict], None]] = None,
         on_speech_interrupted: Optional[Callable[[str], None]] = None,
         on_transcript_update: Optional[Callable[[str], None]] = None,
+        on_speculative_transcript: Optional[Callable[[str], None]] = None,
+        is_ai_speaking: Optional[Callable[[], bool]] = None,
         model: str = "nova-2",
         language: str = "en-US",
         endpointing_ms: int = 300,
         vad_threshold: float = 0.5,
         vad_silence_ms: int = 200,
+        vad_min_speech_frames: int = 3,
+        enable_speculative_llm: bool = False,
+        speculative_stability_matches: int = 2,
     ):
         self.api_key = api_key
         self.on_transcript = on_transcript
@@ -51,12 +56,17 @@ class STTHandler:
         self.on_status = on_status
         self.on_speech_interrupted = on_speech_interrupted
         self.on_transcript_update = on_transcript_update
+        self.on_speculative_transcript = on_speculative_transcript
+        self.is_ai_speaking = is_ai_speaking or (lambda: False)
         self.model = model
         self.language = language
         self.endpointing_ms = endpointing_ms
+        self.enable_speculative_llm = enable_speculative_llm
+        self.speculative_stability_matches = speculative_stability_matches
 
-        self._vad = SileroVAD(threshold=vad_threshold, silence_ms=vad_silence_ms)
+        self._vad = SileroVAD(threshold=vad_threshold, silence_ms=vad_silence_ms, min_speech_frames=vad_min_speech_frames)
         self._latest_interim: str = ""
+        self._recent_interims: list[str] = []
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.is_open = False
@@ -285,6 +295,9 @@ class STTHandler:
 
                     if transcript and not is_final:
                         self._latest_interim = transcript
+                        self._recent_interims.append(transcript)
+                        if len(self._recent_interims) > 4:  # Small buffer to prevent unbounded growth
+                            self._recent_interims.pop(0)
 
                     if transcript and is_final:
                         self.transcript_buffer = (
@@ -322,9 +335,11 @@ class STTHandler:
             await self.ws.send_bytes(audio_bytes)
             
             # Feed to local VAD alongside Deepgram stream using to_thread
-            events = await asyncio.to_thread(self._vad.feed, audio_bytes)
+            events = await asyncio.to_thread(self._vad.feed, audio_bytes, self.is_ai_speaking())
             if "speech_started" in events:
                 self._on_vad_speech_started()
+            if "speech_stopped" in events and self.enable_speculative_llm:
+                self._on_vad_speech_stopped_speculative()
         except RuntimeError as e:
             self.is_open = False
             logger.warning(f"[STT] Transport closing mid-send (expected during shutdown): {e}")
@@ -355,10 +370,32 @@ class STTHandler:
         self.last_stt_tail_ms = 0
         self.on_speech_interrupted(speculative_text)
 
+    def _on_vad_speech_stopped_speculative(self):
+        """
+        Fires when Silero detects the user has gone quiet.
+        Speculatively starts the LLM if the interim transcript has been stable.
+        """
+        if not self.on_speculative_transcript:
+            return
+        if not self._is_transcript_stable():
+            return
+        text = (self.transcript_buffer + " " + self._latest_interim).strip()
+        if text:
+            self.on_speculative_transcript(text)
+
+    def _is_transcript_stable(self) -> bool:
+        """True if the last required_matches interim results were identical."""
+        required = self.speculative_stability_matches
+        return (
+            len(self._recent_interims) >= required
+            and len(set(self._recent_interims[-required:])) == 1
+        )
+
     def clear_buffer(self):
         """Reset accumulated transcript buffer (e.g. after user interruption)."""
         self.transcript_buffer = ""
         self._latest_interim = ""
+        self._recent_interims.clear()
         self._utterance_start_time = None
         if hasattr(self, '_vad'):
             self._vad.reset()
@@ -407,6 +444,7 @@ class STTHandler:
         # double-flushing the same text (e.g. after speech_final already fired).
         self.transcript_buffer = ""
         self._latest_interim = ""
+        self._recent_interims.clear()
 
         now = time.perf_counter()
         if self._last_speech_time is not None:

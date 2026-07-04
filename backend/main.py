@@ -254,11 +254,17 @@ async def websocket_endpoint(
                 api_keys={"deepgram": keys.deepgram, "groq": keys.groq},
                 model_config={
                     "deepgram_model": config.deepgram_model,
+                    "deepgram_language": config.deepgram_language,
                     "groq_model": config.groq_model,
                     "edge_tts_voice": config.edge_tts_voice,
                     "deepgram_tts_model": config.deepgram_tts_model,
                     "stt_endpointing_ms": config.stt_endpointing_ms,
                     "max_history_turns": config.max_history_turns,
+                    "vad_threshold": config.vad_threshold,
+                    "vad_silence_ms": config.vad_silence_ms,
+                    "vad_min_speech_frames": config.vad_min_speech_frames,
+                    "enable_speculative_llm": config.enable_speculative_llm,
+                    "speculative_stability_matches": config.speculative_stability_matches,
                 },
                 outbound_queue=outbound_queue,
                 subject=subject,
@@ -394,6 +400,12 @@ async def websocket_endpoint(
                                 logger.info("[WS] Finalize signal received")
                                 if session and session.stt_handler:
                                     await session.stt_handler.finalize()
+                                continue
+                            elif ctrl_type == "playback_finished":
+                                turn_id = control_msg.get("turn_id")
+                                logger.info(f"[WS] Playback finished signal received (turn={turn_id})")
+                                if session:
+                                    session.set_ai_speaking(False)
                                 continue
                             elif ctrl_type == "client_latency":
                                 # Browser reports perceived latency: transcript-received
