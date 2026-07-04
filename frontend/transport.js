@@ -183,6 +183,9 @@ export class WebSocketTransport {
         ) {
           this.reconnectAttempts++;
           this.client.resetTurnAndEpochState();
+          if (this.client.state !== STATE.IDLE) {
+            this.client.setState(STATE.LISTENING);
+          }
           const delay = 1000 * Math.pow(2, this.reconnectAttempts - 1);
           console.log(
             `[Transport] Reconnect attempt ${this.reconnectAttempts} (delay ${delay})`,

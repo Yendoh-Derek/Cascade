@@ -219,13 +219,36 @@ export class UIController {
     if (backdrop) backdrop.classList.remove("open");
   }
 
-  setState(newState) {
+  resetOrbSpeakVars() {
     if (!this.orb) return;
+    this.orb.style.setProperty("--audio-level", "0");
+    this.orb.style.setProperty("--audio-level-norm", "0");
+    for (let i = 1; i <= 4; i++) {
+      this.orb.style.setProperty(`--speak-bar-${i}`, "0");
+    }
+  }
+
+  setState(newState, prevState = this.client.state) {
+    if (!this.orb) return;
+    if (
+      prevState === STATE.SPEAKING ||
+      prevState === STATE.WINDING_DOWN
+    ) {
+      if (newState !== STATE.SPEAKING) {
+        this.resetOrbSpeakVars();
+      }
+    }
+
+    this.orb.setAttribute(
+      "data-prev-state",
+      prevState ? prevState.toLowerCase().replace(/_/g, "-") : "none",
+    );
 
     this.orb.classList.remove(
       "state-idle",
       "state-connecting",
       "state-listening",
+      "state-winding-down",
       "state-processing",
       "state-speaking",
     );
@@ -233,6 +256,7 @@ export class UIController {
       [STATE.IDLE]: "state-idle",
       [STATE.CONNECTING]: "state-connecting",
       [STATE.LISTENING]: "state-listening",
+      [STATE.WINDING_DOWN]: "state-winding-down",
       [STATE.PROCESSING]: "state-processing",
       [STATE.SPEAKING]: "state-speaking",
     };
@@ -243,11 +267,14 @@ export class UIController {
         [STATE.IDLE]: "",
         [STATE.CONNECTING]: "connecting",
         [STATE.LISTENING]: "listening",
+        [STATE.WINDING_DOWN]: "listening",
         [STATE.PROCESSING]: "thinking",
         [STATE.SPEAKING]: "speaking",
       };
       this.statusText.textContent = statusLabels[newState] ?? "";
-      this.statusText.className = `status-text state-${newState.toLowerCase()}`;
+      const statusClass =
+        newState === STATE.WINDING_DOWN ? "listening" : newState.toLowerCase();
+      this.statusText.className = `status-text state-${statusClass}`;
     }
 
     if (this.btnToggleSession) {
@@ -262,6 +289,7 @@ export class UIController {
         [STATE.IDLE]: "Tap to start voice session",
         [STATE.CONNECTING]: "Connecting session",
         [STATE.LISTENING]: "Listening — tap to stop session",
+        [STATE.WINDING_DOWN]: "Finishing response — listening soon",
         [STATE.PROCESSING]: "Thinking — tap to stop session",
         [STATE.SPEAKING]: "Speaking — tap to stop or press Space to interrupt",
       };

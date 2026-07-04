@@ -111,6 +111,14 @@ export class AudioInputController {
     this._interruptionBuffer = [];
   }
 
+  /**
+   * Suspend client-side finalize/VAD while the orb is winding down after playback.
+   * Mic uplink continues; server STT still receives audio for barge-in.
+   */
+  pauseVadForWindDown() {
+    this._clearFinalizeTimer();
+  }
+
   _markSpeechDetected(now = Date.now()) {
     if (!this._speechDetected) {
       this._speechDetected = true;
@@ -295,6 +303,8 @@ export class AudioInputController {
 
   _detectSilence(bytes) {
     if (!bytes || bytes.length < 4) return;
+    // WINDING_DOWN is UI-only; client VAD must not run during playback tail.
+    if (this.client.state === STATE.WINDING_DOWN) return;
 
     let sum = 0;
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -313,7 +323,21 @@ export class AudioInputController {
     if (this.client.ui.orb && this.client.state === STATE.LISTENING) {
       this.client.ui.orb.style.setProperty("--rms", rms.toFixed(3));
       const normalizedRms = Math.min(1, rms / (this.maxAudioLevel || 0.05));
-      this.client.ui.orb.style.setProperty("--rms-norm", normalizedRms.toFixed(3));
+      this.client.ui.orb.style.setProperty(
+        "--rms-norm",
+        normalizedRms.toFixed(3),
+      );
+
+      const t = performance.now() / 180;
+      const barWeights = [0.72, 0.95, 1.0, 0.88, 0.76];
+      for (let i = 0; i < barWeights.length; i++) {
+        const wobble = 0.72 + 0.28 * Math.sin(t + i * 0.85);
+        const barNorm = Math.min(1, normalizedRms * barWeights[i] * wobble);
+        this.client.ui.orb.style.setProperty(
+          `--listen-bar-${i + 1}`,
+          barNorm.toFixed(3),
+        );
+      }
     }
 
     if (this.client.sessionStartTime && Date.now() - this.client.sessionStartTime < 1500)
