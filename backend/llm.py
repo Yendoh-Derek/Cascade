@@ -46,7 +46,7 @@ class LLMGenerator:
     5. Yield any remaining buffer after stream ends
     """
 
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", client: Optional[AsyncGroq] = None):
+    def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant", client: Optional[AsyncGroq] = None):
         """
         Initialise the LLM generator.
 

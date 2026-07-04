@@ -1,6 +1,12 @@
 export class ChartRenderer {
   constructor(client) {
     this.client = client;
+    window.addEventListener("resize", () => {
+      // Re-render chart on resize if it has data
+      if (this.client.latencyHistory && this.client.latencyHistory.length > 0) {
+        this.render();
+      }
+    });
   }
 
   _chartTickStep(maxMs) {
@@ -27,7 +33,11 @@ export class ChartRenderer {
 
     const data = this.client.latencyHistory;
     const dpr = window.devicePixelRatio || 1;
-    const W = 600;
+
+    // Dynamically calculate width from parent container padding/margin
+    const container = canvas.parentElement;
+    const containerWidth = container ? container.clientWidth : 600;
+    const W = Math.max(280, Math.min(600, containerWidth - 32)); // Leave margins, clamp range
     const H = 300;
     canvas.width = W * dpr;
     canvas.height = H * dpr;

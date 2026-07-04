@@ -68,8 +68,8 @@ Latency in Cascade is measured server-side and client-side as follows:
 
 | Layer     | Service                                               | Role                        |
 | --------- | ----------------------------------------------------- | --------------------------- |
-| STT       | Deepgram Nova-2                                       | Streaming speech-to-text    |
-| LLM       | Groq + Llama 3.3 70B                                  | High-speed token generation |
+| STT       | Deepgram Nova-3                                       | Streaming speech-to-text    |
+| LLM       | Groq + Llama 3.1 8B (Default) / 3.3 70B               | High-speed token generation |
 | TTS       | **Deepgram Aura** (Default) / **edge-tts** (Fallback) | Streaming TTS options       |
 | Transport | WebSockets                                            | Low-latency full-duplex     |
 | Backend   | FastAPI                                               | Async pipeline server       |
@@ -85,7 +85,7 @@ cascade/
 │   ├── config.py       # Env vars and model configuration
 │   ├── main.py         # FastAPI app, health check, WebSocket endpoint
 │   ├── pipeline.py     # Core streaming pipeline orchestrator
-│   ├── stt.py          # Deepgram Nova-2 integration
+│   ├── stt.py          # Deepgram Nova-3 integration
 │   ├── llm.py          # Groq streaming + sentence chunker
 │   ├── tts.py          # edge-tts streaming integration
 │   └── tutor.py        # Tutor persona + conversation history
@@ -195,7 +195,7 @@ overhead; it is not baked into the numbers — add it yourself.
 | **Network TTFB** | **1 616 ms** | **1 211 ms** | **2 924 ms** |
 | **Est. TTFA (+75 ms)** | **1 691 ms** | **1 286 ms** | **2 999 ms** |
 
-¹ Due to Groq rate limits inflating the maximums on some trials, the averages and P90s are skewed. The p50 values represent the true steady-state performance. Note: The STT pipeline tail reports 0ms here because the synthetic benchmark harness does not produce realistic mid-speech silence gaps for Deepgram's endpointing, bypassing the tail calculation.
+¹ Due to Groq rate limits inflating the maximums on some trials, the averages and P90s are skewed. The p50 values represent the true steady-state performance. Note: The STT pipeline tail represents the processing delay for the final confirmation from the STT provider after speech ends.
 
 ### Barge-in / interruption results (3 trials)
 

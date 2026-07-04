@@ -32,4 +32,4 @@ jobs:
 
       - name: Run isolated/mockable tests
         # Runs all pytest unit/integration tests that do not require live API keys
-        run: pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py -v
+        run: pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py tests/test_mock_integrations.py -v
