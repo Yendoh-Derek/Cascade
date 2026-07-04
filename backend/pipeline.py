@@ -53,15 +53,22 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
+# PCM16 mono @ 16 kHz — one 10 ms worklet frame is 320 bytes.
+_PCM16_16K_MONO_BPS = 32_000
+
 class RateLimiter:
     """Token-bucket rate limiter for per-session audio input.
 
     Prevents a single client from flooding the STT pipeline with more audio
     than is physically possible to speak. Default: 32KB/s (PCM16 at 16kHz mono)
-    with a 2-second burst allowance.
+    with a 5-second burst allowance (absorbs startup backlog after init).
     """
 
-    def __init__(self, bytes_per_sec: int = 32_000, burst_sec: float = 2.0):
+    def __init__(
+        self,
+        bytes_per_sec: int = _PCM16_16K_MONO_BPS,
+        burst_sec: float = 5.0,
+    ):
         self.rate = bytes_per_sec
         self.capacity = bytes_per_sec * burst_sec
         self.tokens = self.capacity
@@ -142,6 +149,10 @@ class PipelineSession:
 
         # Per-session audio rate limiter
         self._rate_limiter = RateLimiter()
+        # Bypass rate limiting briefly after init while draining WS/mic backlog.
+        self._rate_limit_grace_until: float = 0.0
+        self._last_rate_limit_notify: float = 0.0
+        self._rate_limit_notify_interval_sec: float = 5.0
 
         logger.info(f"[Pipeline] Session initialized (tts_engine={tts_engine})")
 
@@ -186,18 +197,37 @@ class PipelineSession:
         })
 
         await self.stt_handler.connect()
+        # Mic frames accumulate while initialize() runs; allow a short grace
+        # window so the post-init backlog is not mistaken for abuse.
+        self._rate_limit_grace_until = time.monotonic() + 4.0
         logger.info("[Pipeline] All components initialized and ready")
 
     async def handle_audio(self, audio_bytes: bytes):
         """Forward audio bytes to the STT handler, subject to per-session rate limiting."""
         if not self.stt_handler:
             return
-        if not self._rate_limiter.allow(len(audio_bytes)):
-            logger.warning(
-                f"[Pipeline] Audio rate limit exceeded ({len(audio_bytes)}B dropped)"
-            )
-            self.send_message({"type": "rate_limited", "message": "Audio rate limit exceeded"})
-            return
+        if time.monotonic() >= self._rate_limit_grace_until:
+            if not self._rate_limiter.allow(len(audio_bytes)):
+                logger.debug(
+                    "[Pipeline] Audio rate limit exceeded (%sB dropped)",
+                    len(audio_bytes),
+                )
+                now = time.monotonic()
+                if (
+                    now - self._last_rate_limit_notify
+                    >= self._rate_limit_notify_interval_sec
+                ):
+                    self._last_rate_limit_notify = now
+                    logger.warning(
+                        "[Pipeline] Audio rate limit exceeded — throttling client"
+                    )
+                    self.send_message(
+                        {
+                            "type": "rate_limited",
+                            "message": "Audio rate limit exceeded",
+                        }
+                    )
+                return
         await self.stt_handler.send_audio(audio_bytes)
 
     def _can_send(self, turn_id: int) -> bool:
