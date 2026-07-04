@@ -1,4 +1,10 @@
 import { STATE } from "./state.js?v=2.0.2";
+import {
+  canScheduleAudioChunk,
+  resolvePlaybackCompletion,
+} from "./playback-state.js?v=2.0.2";
+
+const PLAYBACK_TAIL_TIMEOUT_MS = 3000;
 
 export class AudioOutputController {
   constructor(client) {
@@ -8,7 +14,7 @@ export class AudioOutputController {
     this.analyser = null;
 
     this.isPlaying = false;
-    this.isAudioSourceEnded = false; // N2: explicit initialization
+    this.isAudioSourceEnded = false;
     this.nextPlaybackTime = null;
     this.speakingStartTime = null;
     this.activeSourceNodes = [];
@@ -16,7 +22,8 @@ export class AudioOutputController {
     this.ttsConfig = { format: "linear16", sampleRate: 24000 };
 
     this._audioResumed = false;
-    this._visualizationLoopId = null; // Track the animation frame loop
+    this._visualizationLoopId = null;
+    this._playbackTailTimeout = null;
   }
 
   initContext() {
@@ -56,10 +63,47 @@ export class AudioOutputController {
     }
   }
 
+  _clearPlaybackTailTimeout() {
+    if (this._playbackTailTimeout) {
+      clearTimeout(this._playbackTailTimeout);
+      this._playbackTailTimeout = null;
+    }
+  }
+
+  _startPlaybackTailTimeout() {
+    this._clearPlaybackTailTimeout();
+    this._playbackTailTimeout = setTimeout(() => {
+      this._playbackTailTimeout = null;
+      if (
+        this.activeSourceNodes.length === 0 &&
+        !this.isAudioSourceEnded &&
+        (this.client.state === STATE.WINDING_DOWN ||
+          this.client.state === STATE.SPEAKING)
+      ) {
+        console.warn(
+          "[AudioOutput] Playback tail timeout — forcing LISTENING recovery",
+        );
+        this.isAudioSourceEnded = true;
+        this._checkPlaybackFinished();
+      }
+    }, PLAYBACK_TAIL_TIMEOUT_MS);
+  }
+
+  _cleanupSpeakingVisuals() {
+    if (this._visualizationLoopId) {
+      cancelAnimationFrame(this._visualizationLoopId);
+      this._visualizationLoopId = null;
+    }
+    if (this.client.ui?.orb) {
+      this.client.ui.resetOrbSpeakVars();
+    }
+  }
+
   stopAllPlayback() {
     const now = this.audioContext ? this.audioContext.currentTime : 0;
 
-    // Immediately disconnect old sources to prevent overlap
+    this._clearPlaybackTailTimeout();
+
     if (this.playbackGain && this.audioContext) {
       this.playbackGain.gain.cancelScheduledValues(now);
       this.playbackGain.gain.setValueAtTime(0, now);
@@ -76,15 +120,7 @@ export class AudioOutputController {
     this.activeSourceNodes = [];
     this.nextPlaybackTime = null;
     this.isPlaying = false;
-
-    // Cancel the visualization loop
-    if (this._visualizationLoopId) {
-      cancelAnimationFrame(this._visualizationLoopId);
-      this._visualizationLoopId = null;
-      if (this.client.ui.orb) {
-        this.client.ui.orb.style.setProperty("--audio-level", "0");
-      }
-    }
+    this._cleanupSpeakingVisuals();
 
     if (this.playbackGain && this.audioContext) {
       this.playbackGain.gain.cancelScheduledValues(now);
@@ -103,24 +139,17 @@ export class AudioOutputController {
     const turnId = view.getUint32(0, false);
     const audioPayload = arrayBuffer.slice(4);
 
-    // Snapshot all guard values at the start
     const epoch = this.client.audioEpoch;
     const decodeGen = this.client.decodeGeneration;
-    const activeTurnAtStart = this.client.activeTurnId;
     const stateAtStart = this.client.state;
 
-    // Early guards - GUARD 1: Check if this turn is still active
     if (!this.client._isTurnActive(turnId)) {
       console.debug(
         `[AudioOutput] Audio chunk dropped (Guard 1): turnId=${turnId}, activeTurnId=${this.client.activeTurnId}, epoch=${epoch}, audioEpoch=${this.client.audioEpoch}`,
       );
       return;
     }
-    if (
-      stateAtStart === STATE.LISTENING ||
-      stateAtStart === STATE.IDLE ||
-      stateAtStart === STATE.CONNECTING
-    ) {
+    if (!canScheduleAudioChunk(stateAtStart, this.isAudioSourceEnded)) {
       return;
     }
 
@@ -160,14 +189,12 @@ export class AudioOutputController {
         );
       }
 
-      // FINAL guard check before playback - GUARD 3: Pre-playback validation
       if (
         audioBuffer &&
         epoch === this.client.audioEpoch &&
         decodeGen === this.client.decodeGeneration &&
         turnId === this.client.activeTurnId &&
-        this.client.state !== STATE.LISTENING &&
-        this.client.state !== STATE.IDLE
+        canScheduleAudioChunk(this.client.state, this.isAudioSourceEnded)
       ) {
         console.debug(
           `[AudioOutput] Audio chunk APPROVED for playback: turnId=${turnId}, epoch=${epoch}, gen=${decodeGen}, bufferDuration=${audioBuffer.duration.toFixed(3)}s`,
@@ -184,15 +211,11 @@ export class AudioOutputController {
   }
 
   _schedulePlayback(audioBuffer, epoch, turnId, decodeGen) {
-    // GUARD 4: Final sanity check before scheduling source.
-    // speakingStartTime is stamped AFTER this guard so that dropped stale
-    // chunks don't reset the timer used by barge-in detection.
     if (
       epoch !== this.client.audioEpoch ||
       decodeGen !== this.client.decodeGeneration ||
       turnId !== this.client.activeTurnId ||
-      this.client.state === STATE.LISTENING ||
-      this.client.state === STATE.IDLE
+      !canScheduleAudioChunk(this.client.state, this.isAudioSourceEnded)
     ) {
       console.debug(
         `[AudioOutput] Audio NOT scheduled (Guard 4): Guard check failed for turnId=${turnId}`,
@@ -200,52 +223,9 @@ export class AudioOutputController {
       return;
     }
 
-    // Only stamp if we actually proceed to schedule playback
-    this.speakingStartTime = Date.now();
-    this.client.setState(STATE.SPEAKING);
+    this._clearPlaybackTailTimeout();
     this.isPlaying = true;
     this.playbackTurnId = turnId;
-
-    // Perceived-latency telemetry: send once per turn, on first scheduled audio.
-    // Measures user-speech-end → first audio heard (true felt latency).
-    //
-    // Start anchor: _speechEndMs — stamped by the VAD in audio-input.js at the
-    // moment client-side silence was detected (best proxy for "user stopped talking").
-    // Falls back to _turnStartMs (transcript receipt) if VAD stamp is unavailable.
-    //
-    // End correction: AudioContext audio is buffered by the OS audio stack before
-    // reaching the speaker. outputLatency (hardware buffer) and the scheduling
-    // lookahead (nextPlaybackTime - currentTime) are added so the measurement
-    // reflects when the user hears the first sample, not when it was queued.
-    if (!this.client._firstAudioPlayed) {
-      const startMs = this.client._speechEndMs ?? this.client._turnStartMs;
-      if (startMs != null) {
-        this.client._firstAudioPlayed = true;
-        const outputLatencyMs = (this.audioContext.outputLatency || 0) * 1000;
-        const schedulingOffsetMs = Math.max(
-          0,
-          (this.nextPlaybackTime - this.audioContext.currentTime) * 1000,
-        );
-        const perceivedMs = Math.round(
-          performance.now() - startMs + outputLatencyMs + schedulingOffsetMs,
-        );
-        console.log(
-          `[AudioOutput] Felt latency: ${perceivedMs}ms ` +
-            `(startAnchor=${this.client._speechEndMs != null ? "VAD" : "transcript"}, ` +
-            `outputLatency=${outputLatencyMs.toFixed(1)}ms, ` +
-            `schedulingOffset=${schedulingOffsetMs.toFixed(1)}ms)`,
-        );
-        if (this.client.transport && this.client.transport.isOpen()) {
-          this.client.transport.send(
-            JSON.stringify({
-              type: "client_latency",
-              first_audio_played_ms: perceivedMs,
-              turn_id: turnId,
-            }),
-          );
-        }
-      }
-    }
 
     const currentTime = this.audioContext.currentTime;
     if (this.nextPlaybackTime === null || this.nextPlaybackTime < currentTime) {
@@ -277,8 +257,30 @@ export class AudioOutputController {
     source.start(this.nextPlaybackTime);
     this.activeSourceNodes.push(source);
 
+    const isFirstScheduledSource =
+      this.activeSourceNodes.length === 1 &&
+      !this.client._firstAudioPlayed &&
+      (this.client.state === STATE.PROCESSING ||
+        this.client.state === STATE.WINDING_DOWN);
+
+    if (isFirstScheduledSource) {
+      this.speakingStartTime = Date.now();
+    }
+
+    if (
+      this.client.state === STATE.PROCESSING ||
+      this.client.state === STATE.WINDING_DOWN
+    ) {
+      this.client.setState(STATE.SPEAKING);
+    }
+
+    if (isFirstScheduledSource) {
+      this._sendPerceivedLatency(turnId);
+    }
+
     if (this.analyser && !this._visualizationLoopId) {
       const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+      const barCount = 4;
       const tick = () => {
         if (this.client.state !== STATE.SPEAKING) {
           this._visualizationLoopId = null;
@@ -286,11 +288,30 @@ export class AudioOutputController {
         }
         this.analyser.getByteFrequencyData(dataArray);
         const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-        // Normalize against an expected average maximum (~60 for typical speech)
         const normalizedAudio = Math.min(1, avg / 60);
+        const sliceSize = Math.max(1, Math.floor(dataArray.length / barCount));
+        const t = performance.now() / 200;
+
         if (this.client.ui.orb) {
           this.client.ui.orb.style.setProperty("--audio-level", avg.toFixed(1));
-          this.client.ui.orb.style.setProperty("--audio-level-norm", normalizedAudio.toFixed(3));
+          this.client.ui.orb.style.setProperty(
+            "--audio-level-norm",
+            normalizedAudio.toFixed(3),
+          );
+          for (let i = 0; i < barCount; i++) {
+            const slice = dataArray.subarray(
+              i * sliceSize,
+              (i + 1) * sliceSize,
+            );
+            const sliceAvg =
+              slice.reduce((a, b) => a + b, 0) / Math.max(1, slice.length);
+            const sliceNorm = Math.min(1, sliceAvg / 60);
+            const wobble = 0.85 + 0.15 * Math.sin(t + i * 0.9);
+            this.client.ui.orb.style.setProperty(
+              `--speak-bar-${i + 1}`,
+              Math.min(1, sliceNorm * wobble).toFixed(3),
+            );
+          }
         }
         this._visualizationLoopId = requestAnimationFrame(tick);
       };
@@ -306,31 +327,77 @@ export class AudioOutputController {
     this.nextPlaybackTime = this.nextPlaybackTime + audioBuffer.duration;
   }
 
+  _sendPerceivedLatency(turnId) {
+    const startMs = this.client._speechEndMs ?? this.client._turnStartMs;
+    if (startMs == null) return;
+
+    this.client._firstAudioPlayed = true;
+    const outputLatencyMs = (this.audioContext.outputLatency || 0) * 1000;
+    const schedulingOffsetMs = Math.max(
+      0,
+      (this.nextPlaybackTime - this.audioContext.currentTime) * 1000,
+    );
+    const perceivedMs = Math.round(
+      performance.now() - startMs + outputLatencyMs + schedulingOffsetMs,
+    );
+    console.log(
+      `[AudioOutput] Felt latency: ${perceivedMs}ms ` +
+        `(startAnchor=${this.client._speechEndMs != null ? "VAD" : "transcript"}, ` +
+        `outputLatency=${outputLatencyMs.toFixed(1)}ms, ` +
+        `schedulingOffset=${schedulingOffsetMs.toFixed(1)}ms)`,
+    );
+    if (this.client.transport && this.client.transport.isOpen()) {
+      this.client.transport.send(
+        JSON.stringify({
+          type: "client_latency",
+          first_audio_played_ms: perceivedMs,
+          turn_id: turnId,
+        }),
+      );
+    }
+  }
+
   _checkPlaybackFinished() {
-    if (this.activeSourceNodes.length === 0 && this.isAudioSourceEnded) {
+    const result = resolvePlaybackCompletion({
+      activeSourceCount: this.activeSourceNodes.length,
+      isAudioSourceEnded: this.isAudioSourceEnded,
+      currentState: this.client.state,
+    });
+
+    if (result.action === "none") {
+      return;
+    }
+
+    if (result.action === "wind_down") {
       this.isPlaying = false;
+      this._cleanupSpeakingVisuals();
+      this.client.audioInput.pauseVadForWindDown();
+      this._startPlaybackTailTimeout();
+      this.client.setState(STATE.WINDING_DOWN);
+      return;
+    }
 
-      // Notify server that playback for this turn has truly finished over the speakers
-      if (this.client.transport && this.client.transport.isOpen()) {
-        this.client.transport.send(
-          JSON.stringify({
-            type: "playback_finished",
-            turn_id: this.playbackTurnId,
-          })
-        );
-      }
+    this._clearPlaybackTailTimeout();
+    this.isPlaying = false;
+    this._cleanupSpeakingVisuals();
 
-      if (this.client.state === STATE.SPEAKING) {
-        this.client.setState(STATE.LISTENING);
-        this.client._resetTurnState();
-      } else if (this.client.state === STATE.PROCESSING) {
-        this.client.setState(STATE.LISTENING);
-        this.client._resetTurnState();
-      }
+    if (this.client.transport && this.client.transport.isOpen()) {
+      this.client.transport.send(
+        JSON.stringify({
+          type: "playback_finished",
+          turn_id: this.playbackTurnId,
+        }),
+      );
+    }
+
+    if (result.nextState) {
+      this.client.setState(result.nextState);
+      this.client._resetTurnState();
     }
   }
 
   resetState() {
+    this._clearPlaybackTailTimeout();
     this.nextPlaybackTime = null;
     this.isPlaying = false;
     this.isAudioSourceEnded = false;

@@ -272,7 +272,11 @@ class CascadeClient {
           ) {
             this.audioOutput.stopAllPlayback();
             // Force state out of SPEAKING if we just interrupted it via STT update
-            if (this.state === STATE.SPEAKING || this.state === STATE.PROCESSING) {
+            if (
+              this.state === STATE.SPEAKING ||
+              this.state === STATE.PROCESSING ||
+              this.state === STATE.WINDING_DOWN
+            ) {
               this.setState(STATE.LISTENING);
             }
           }
@@ -297,8 +301,12 @@ class CascadeClient {
             this.audioOutput.isPlaying
           ) {
             this.audioOutput.stopAllPlayback();
-            // Force state out of SPEAKING if we just interrupted it via STT final
-            if (this.state === STATE.SPEAKING) {
+            // Force state out of SPEAKING/PROCESSING if interrupted via STT final
+            if (
+              this.state === STATE.SPEAKING ||
+              this.state === STATE.PROCESSING ||
+              this.state === STATE.WINDING_DOWN
+            ) {
               this.setState(STATE.LISTENING);
             }
           }
@@ -591,6 +599,8 @@ class CascadeClient {
           4000,
           "warning",
         );
+        this.audioOutput.isAudioSourceEnded = true;
+        this.audioOutput._checkPlaybackFinished();
         break;
       case "stt_reconnecting":
         this.ui.showToast(
@@ -630,8 +640,9 @@ class CascadeClient {
   }
 
   setState(newState) {
+    const prevState = this.state;
     this.state = newState;
-    this.ui.setState(newState);
+    this.ui.setState(newState, prevState);
   }
 
   _initSecretModal() {
