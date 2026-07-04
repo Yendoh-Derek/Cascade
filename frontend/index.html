@@ -3,13 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cascade</title>
+    <title>Cascade — AI Voice Tutor</title>
+    <meta name="description" content="Cascade is a premium AI voice tutor assistant. Speak naturally and get instant, intelligent responses." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=JetBrains+Mono&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css?v=1.0.4" />
+    <link rel="stylesheet" href="style.css?v=2.0.0" />
   </head>
   <body>
     <!-- App shell -->
@@ -21,8 +22,9 @@
 
       <!-- Main layout grid -->
       <div class="layout-grid">
-        <!-- Left Column: Orb and Status Panel -->
+        <!-- Left Column: Orb Panel -->
         <div class="orb-card glass">
+          <div class="orb-boundary">
           <div
             class="orb-wrapper state-idle"
             id="orb"
@@ -32,31 +34,56 @@
           >
             <!-- Layer 1: outer glow (box-shadow only, no background) -->
             <div class="orb-glow-ring" aria-hidden="true"></div>
-            <div class="orb-shell glass">
+            <div class="orb-shell">
               <div class="orb-core" id="orb-core"></div>
               <div class="orb-highlight" aria-hidden="true"></div>
               <div class="orb-ring ring-1" aria-hidden="true"></div>
               <div class="orb-ring ring-2" aria-hidden="true"></div>
               <div class="orb-ring ring-3" aria-hidden="true"></div>
-            </div>
-          </div>
-          <p class="status-text state-idle" id="status-text">tap to begin</p>
-          <p class="stats-bar" id="stats-bar">--ms</p>
 
-          <!-- TTS Engine Selector -->
-          <div class="tts-selector">
-            <span class="tts-label">TTS Engine</span>
-            <div class="tts-toggle-group">
-              <button class="tts-toggle-btn active" data-engine="deepgram">
-                Deepgram
-              </button>
-              <button class="tts-toggle-btn" data-engine="edge">Edge</button>
+              <!-- State Icons Layer -->
+              <div class="orb-icon-layer" aria-hidden="true">
+                <!-- Listening: animated mic waveform bars -->
+                <div class="orb-icon orb-icon-listen" id="orb-icon-listen">
+                  <div class="listen-bar" id="lbar-1"></div>
+                  <div class="listen-bar" id="lbar-2"></div>
+                  <div class="listen-bar" id="lbar-3"></div>
+                  <div class="listen-bar" id="lbar-4"></div>
+                  <div class="listen-bar" id="lbar-5"></div>
+                </div>
+                <!-- Thinking: orbiting dots -->
+                <div class="orb-icon orb-icon-think">
+                  <div class="think-dot dot-1"></div>
+                  <div class="think-dot dot-2"></div>
+                  <div class="think-dot dot-3"></div>
+                </div>
+                <!-- Speaking: equalizer bars -->
+                <div class="orb-icon orb-icon-speak" id="orb-icon-speak">
+                  <div class="speak-bar" id="sbar-1"></div>
+                  <div class="speak-bar" id="sbar-2"></div>
+                  <div class="speak-bar" id="sbar-3"></div>
+                  <div class="speak-bar" id="sbar-4"></div>
+                </div>
+              </div>
             </div>
           </div>
+          </div><!-- /.orb-boundary -->
+
+          <!-- Status label — hidden in idle, shown during active states -->
+          <p class="status-text state-idle" id="status-text"></p>
         </div>
 
         <!-- Right Column: Conversation Transcript Panel -->
         <div class="transcript-card glass">
+          <div class="transcript-header">
+            <span class="transcript-header-label">
+              <!-- Chat bubble icon -->
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              Conversation
+            </span>
+          </div>
           <div
             class="transcript-panel"
             id="transcript-panel"
@@ -73,23 +100,37 @@
 
       <!-- Bottom Menu Bar -->
       <footer class="menu-bar glass">
-        <button
-          class="menu-btn menu-btn-primary"
-          id="btn-toggle-session"
-          title="Start or Stop Session"
-        >
-          <span class="btn-label">Begin</span>
-        </button>
-        <button
-          class="menu-btn"
-          id="btn-clear-transcript"
-          title="Clear Conversation Log"
-        >
-          <span class="btn-label">Reset</span>
-        </button>
-        <button class="menu-btn" id="btn-stats" title="View Latency Chart">
-          <span class="btn-label">Charts</span>
-        </button>
+        <!-- Left: TTS Engine Selector -->
+        <div class="menu-bar-left">
+          <span class="tts-label">Voice</span>
+          <div class="tts-toggle-group">
+            <button class="tts-toggle-btn active" id="tts-btn-deepgram" data-engine="deepgram">
+              Aura 2
+            </button>
+            <button class="tts-toggle-btn" id="tts-btn-edge" data-engine="edge">Edge TTS</button>
+          </div>
+        </div>
+
+        <!-- Right: Action Buttons -->
+        <div class="menu-bar-right">
+          <button
+            class="menu-btn menu-btn-primary"
+            id="btn-toggle-session"
+            title="Start or Stop Session"
+          >
+            <span class="btn-label">Begin</span>
+          </button>
+          <button
+            class="menu-btn"
+            id="btn-clear-transcript"
+            title="Clear Conversation Log"
+          >
+            <span class="btn-label">Reset</span>
+          </button>
+          <button class="menu-btn" id="btn-stats" title="View Latency Chart">
+            <span class="btn-label">Charts</span>
+          </button>
+        </div>
       </footer>
 
       <!-- Latency Stats Panel -->
@@ -127,6 +168,6 @@
       </div>
     </div>
 
-    <script type="module" src="app.js?v=1.0.9"></script>
+    <script type="module" src="app.js?v=2.0.0"></script>
   </body>
 </html>

@@ -310,8 +310,11 @@ export class AudioInputController {
     if (rms > this.maxAudioLevel) this.maxAudioLevel = rms;
     const threshold = Math.max(this.rmsSilenceMinThreshold, this.maxAudioLevel * this.rmsSilenceMultiplier);
 
-    if (this.client.ui.orb && this.client.state === STATE.LISTENING)
+    if (this.client.ui.orb && this.client.state === STATE.LISTENING) {
       this.client.ui.orb.style.setProperty("--rms", rms.toFixed(3));
+      const normalizedRms = Math.min(1, rms / (this.maxAudioLevel || 0.05));
+      this.client.ui.orb.style.setProperty("--rms-norm", normalizedRms.toFixed(3));
+    }
 
     if (this.client.sessionStartTime && Date.now() - this.client.sessionStartTime < 1500)
       return;

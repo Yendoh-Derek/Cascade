@@ -9,7 +9,6 @@ export class UIController {
     this.btnToggleSession = document.getElementById("btn-toggle-session");
     this.btnClearTranscript = document.getElementById("btn-clear-transcript");
     this.btnStats = document.getElementById("btn-stats");
-    this.statsBar = document.getElementById("stats-bar");
     this.transcriptEmpty = document.getElementById("transcript-empty");
 
     this._initUIListeners();
@@ -136,7 +135,6 @@ export class UIController {
           btn.addEventListener("click", () => {
             if (this.transcriptPanel) this.transcriptPanel.innerHTML = "";
             this.client._resetTurnState();
-            this._updateStatsBar();
             this._showEmptyStateIfNeeded();
           });
         } else if (btn.id === "btn-stats") {
@@ -215,35 +213,44 @@ export class UIController {
 
     if (this.statusText) {
       const statusLabels = {
-        [STATE.IDLE]: "tap to begin",
+        [STATE.IDLE]: "",
         [STATE.CONNECTING]: "connecting",
         [STATE.LISTENING]: "listening",
         [STATE.PROCESSING]: "thinking",
         [STATE.SPEAKING]: "speaking",
       };
-      this.statusText.textContent = statusLabels[newState] || "";
+      this.statusText.textContent = statusLabels[newState] ?? "";
       this.statusText.className = `status-text state-${newState.toLowerCase()}`;
     }
 
     if (this.btnToggleSession) {
+      const label = this.btnToggleSession.querySelector(".btn-label");
+      const icon = this.btnToggleSession.querySelector(".btn-icon");
       if (newState === STATE.IDLE) {
         this.btnToggleSession.classList.remove("active");
-        const label = this.btnToggleSession.querySelector(".btn-label");
         if (label) label.textContent = "Begin";
+        // Restore play icon
+        if (icon) {
+          icon.innerHTML = `<polygon points="5 3 19 12 5 21 5 3"/>`;
+          icon.setAttribute("fill", "currentColor");
+          icon.setAttribute("stroke", "none");
+        }
       } else {
         this.btnToggleSession.classList.add("active");
-        const label = this.btnToggleSession.querySelector(".btn-label");
         if (label) label.textContent = "Stop";
+        // Switch to stop square icon
+        if (icon) {
+          icon.innerHTML = `<rect x="4" y="4" width="16" height="16" rx="2"/>`;
+          icon.setAttribute("fill", "currentColor");
+          icon.setAttribute("stroke", "none");
+        }
       }
     }
   }
 
-  _updateStatsBar() {
-    if (!this.statsBar) return;
-    this.statsBar.textContent = this.client.lastLatencyMs
-      ? `${this.client.lastLatencyMs}ms`
-      : `--ms`;
-  }
+
+  /** @deprecated stats-bar element removed — kept as no-op to avoid call-site errors */
+  _updateStatsBar() {}
 
   _showEmptyStateIfNeeded() {
     if (!this.transcriptPanel || !this.transcriptEmpty) return;

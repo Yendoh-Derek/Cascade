@@ -67,7 +67,7 @@ body {
     sans-serif;
   background-color: var(--bg-base);
   min-height: 100vh;
-  overflow: hidden; /* blobs fixed, content scrolls inside panel */
+  overflow: hidden;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -95,9 +95,9 @@ body {
 
 .wordmark {
   font-size: 13px;
-  font-weight: 300;
+  font-weight: 400;
   color: var(--text-ambient);
-  letter-spacing: 0.2em;
+  letter-spacing: 0.25em;
   text-transform: lowercase;
   opacity: 0;
   transform: translateY(-10px);
@@ -111,10 +111,10 @@ body {
 /* Layout grid */
 .layout-grid {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: 20px;
   flex: 1;
-  min-height: 0; /* Let grid shrink and scroll internal content */
+  min-height: 0;
 }
 
 /* Orb Sidebar Card */
@@ -123,27 +123,31 @@ body {
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  padding: 40px;
+  padding: 40px 32px;
   position: relative;
+  gap: 0;
 }
 
-/* Layered Glass Blur: Orb Card (lighter blur) */
+/* Layered Glass Blur: Orb Card */
 .orb-card {
   backdrop-filter: blur(12px) saturate(180%);
   -webkit-backdrop-filter: blur(12px) saturate(180%);
 }
 
-/* Status Text underneath the Orb */
+/* Status Text — hidden in idle, shown during active states */
 .status-text {
   font-family: "Inter", sans-serif;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   text-align: center;
-  color: var(--text-dim);
-  margin-top: 16px;
+  color: transparent;
+  height: 20px;
+  margin-top: 20px;
   transition: all 300ms ease;
+  pointer-events: none;
+  user-select: none;
 }
 
 .status-text.state-listening {
@@ -172,61 +176,244 @@ body {
   50% { opacity: 1; }
 }
 
-/* Stats Bar */
-.stats-bar {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-top: 12px;
-  text-align: center;
-}
+/* ==========================================
+   ORB ICON LAYER — animated state indicators
+   ========================================== */
 
-/* TTS Selector */
-.tts-selector {
-  margin-top: 24px;
+.orb-icon-layer {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
 }
 
-.tts-label {
-  font-family: "Inter", sans-serif;
+/* All icons hidden by default */
+.orb-icon {
+  position: absolute;
+  display: flex;
+  align-items: center; /* Center bars vertically */
+  justify-content: center;
+  gap: 4px;
+  opacity: 0;
+  /* Fade out quickly with no delay */
+  transition: opacity 150ms ease;
+}
+
+/* --- LISTENING ICON: bars driven by JS via --rms --- */
+.orb-icon-listen {
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.listen-bar {
+  width: 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.9);
+  height: 6px;
+  transform-origin: bottom center;
+  /* Fast transition for responsive bounce */
+  transition: height 50ms ease-out, opacity 50ms ease-out;
+}
+
+/* Calculate distinct heights for each bar using the --rms-norm variable (0 to 1) */
+.orb-wrapper.state-listening .listen-bar:nth-child(1) { height: calc(6px + var(--rms-norm, 0) * 16px); }
+.orb-wrapper.state-listening .listen-bar:nth-child(2) { height: calc(6px + var(--rms-norm, 0) * 28px); }
+.orb-wrapper.state-listening .listen-bar:nth-child(3) { height: calc(6px + var(--rms-norm, 0) * 36px); }
+.orb-wrapper.state-listening .listen-bar:nth-child(4) { height: calc(6px + var(--rms-norm, 0) * 24px); }
+.orb-wrapper.state-listening .listen-bar:nth-child(5) { height: calc(6px + var(--rms-norm, 0) * 14px); }
+
+/* Show listening icon when in listening state */
+.orb-wrapper.state-listening .orb-icon-listen {
+  opacity: 1;
+  /* Delay fade in by 150ms so the previous icon can fade out first (prevents merging) */
+  transition: opacity 150ms ease 150ms;
+}
+
+/* --- THINKING ICON: orbiting dots (pure CSS) --- */
+.orb-icon-think {
+  width: 44px;
+  height: 44px;
+  position: absolute;
+}
+
+.think-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  top: 50%;
+  left: 50%;
+  animation: thinkOrbit 1.4s linear infinite;
+  transform-origin: center;
+}
+
+.think-dot.dot-1 { animation-delay: 0s;     }
+.think-dot.dot-2 { animation-delay: -0.47s; }
+.think-dot.dot-3 { animation-delay: -0.93s; }
+
+@keyframes thinkOrbit {
+  0%   { transform: rotate(0deg)   translateX(16px) translateY(-50%); opacity: 1;    }
+  50%  { opacity: 0.4; }
+  100% { transform: rotate(360deg) translateX(16px) translateY(-50%); opacity: 1; }
+}
+
+.orb-wrapper.state-processing .orb-icon-think {
+  opacity: 1;
+  /* Delay fade in by 150ms to prevent merging */
+  transition: opacity 150ms ease 150ms;
+}
+
+/* --- SPEAKING ICON: bars driven by JS via --audio-level --- */
+.orb-icon-speak {
+  gap: 4px;
+  align-items: center;
+}
+
+.speak-bar {
+  width: 4px;
+  border-radius: 6px;
+  background-color: var(--text-primary);
+  transform-origin: center;
+  transition: height 50ms ease-out, opacity 50ms ease-out;
+}
+
+/* Calculate distinct heights using --audio-level-norm (0 to 1) */
+.orb-wrapper.state-speaking .speak-bar:nth-child(1) { height: calc(6px + var(--audio-level-norm, 0) * 18px); }
+.orb-wrapper.state-speaking .speak-bar:nth-child(2) { height: calc(6px + var(--audio-level-norm, 0) * 32px); }
+.orb-wrapper.state-speaking .speak-bar:nth-child(3) { height: calc(6px + var(--audio-level-norm, 0) * 24px); }
+.orb-wrapper.state-speaking .speak-bar:nth-child(4) { height: calc(6px + var(--audio-level-norm, 0) * 14px); }
+
+.orb-wrapper.state-speaking .orb-icon-speak {
+  opacity: 1;
+  /* Delay fade in by 150ms to prevent merging */
+  transition: opacity 150ms ease 150ms;
+}
+
+/* ======================
+   TRANSCRIPT PANEL
+   ====================== */
+
+/* Transcript Header */
+.transcript-header {
+  padding: 16px 24px 0;
+  flex-shrink: 0;
+}
+
+.transcript-header-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-dim);
-  text-align: center;
 }
 
+/* Transcript Panel Wrapper Card */
+.transcript-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Scroll fade gradient at bottom */
+.transcript-card::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  background: linear-gradient(to bottom, transparent, rgba(5, 5, 7, 0.6));
+  pointer-events: none;
+  border-bottom-left-radius: 20px;
+  border-bottom-right-radius: 20px;
+  z-index: 2;
+}
+
+/* Layered Glass Blur: Transcript Card */
+.transcript-card {
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+}
+
+/* ======================
+   BOTTOM MENU BAR
+   ====================== */
+
+.menu-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+}
+
+/* Layered Glass Blur: Menu Bar */
+.menu-bar {
+  backdrop-filter: blur(36px) saturate(180%);
+  -webkit-backdrop-filter: blur(36px) saturate(180%);
+}
+
+/* Left section: TTS engine selector */
+.menu-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Right section: action buttons */
+.menu-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* TTS Label */
+.tts-label {
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* TTS Toggle Group */
 .tts-toggle-group {
   display: flex;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 20px;
+  border-radius: 22px;
   padding: 4px;
-  gap: 4px;
-  width: 100%;
+  gap: 3px;
 }
 
 .tts-toggle-btn {
-  flex: 1;
-  padding: 8px 0;
-  border-radius: 16px;
+  padding: 10px 20px;
+  border-radius: 18px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 250ms ease;
+  transition: all 200ms ease;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 .tts-toggle-btn:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .tts-toggle-btn.active {
@@ -235,44 +422,23 @@ body {
   box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.3);
 }
 
-/* Transcript Panel Wrapper Card */
-.transcript-card {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-/* Layered Glass Blur: Transcript Card (medium blur) */
-.transcript-card {
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-}
-
-/* Bottom Menu Bar styling */
-.menu-bar {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 12px;
-  padding: 20px 28px;
-}
-
-/* Layered Glass Blur: Menu Bar (heaviest blur) */
-.menu-bar {
-  backdrop-filter: blur(36px) saturate(180%);
-  -webkit-backdrop-filter: blur(36px) saturate(180%);
-}
+/* ======================
+   MENU BUTTONS
+   ====================== */
 
 .menu-btn {
   position: relative;
   overflow: hidden;
-  padding: 12px 24px;
-  border-radius: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 20px;
+  border-radius: 22px;
   color: var(--text-primary);
   font-family: inherit;
   font-size: 13px;
   font-weight: 500;
-  line-height: 24px;
+  line-height: 1;
   background: rgba(43, 55, 80, 0.1);
   backdrop-filter: blur(12px);
   border: none;
@@ -302,9 +468,21 @@ body {
   transform: scale(0.975);
 }
 
+.menu-btn:active {
+  transform: scale(0.97);
+}
+
 .menu-btn.active {
   background: rgba(239, 68, 68, 0.1);
   color: #fca5a5;
+}
+
+.menu-btn.active .btn-icon-stop {
+  display: block;
+}
+
+.menu-btn.active .btn-icon-play {
+  display: none;
 }
 
 /* Primary button styling */
@@ -364,13 +542,27 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-/* The Orb */
+/* ======================
+   THE ORB
+   ====================== */
+
+/* Boundary container: defines the animation reserved space */
+.orb-boundary {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* We do NOT use clip-path here because cutting the shadow creates a harsh black ring effect on dark backgrounds */
+}
+
 .orb-wrapper {
   position: relative;
-  width: 140px;
-  height: 140px;
+  width: 148px;
+  height: 148px;
   cursor: pointer;
-  margin: 0 auto 24px;
+  margin: 0;
   opacity: 0;
   transform: scale(0.7);
   animation-name: orbEntry;
@@ -417,6 +609,8 @@ body {
   overflow: hidden;
   z-index: 2;
   border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
   transition-property: box-shadow, transform;
   transition-duration: 400ms, 400ms;
   transition-timing-function: ease, var(--spring);
@@ -465,6 +659,7 @@ body {
     transparent 50%
   );
   pointer-events: none;
+  z-index: 3;
 }
 
 /* Ripple rings */
@@ -655,10 +850,13 @@ body {
   }
 }
 
-/* Transcript Panel */
+/* ======================
+   TRANSCRIPT PANEL
+   ====================== */
+
 .transcript-panel {
-  padding: 24px;
-  height: 100%;
+  padding: 12px 24px 56px;
+  flex: 1;
   overflow-y: auto;
   scroll-behavior: smooth;
   scrollbar-width: thin;
@@ -669,13 +867,14 @@ body {
 .transcript-empty {
   color: var(--text-dim);
   text-align: center;
-  margin-top: 2rem;
-  font-size: 0.85rem;
+  margin-top: 20%;
+  font-size: 0.82rem;
   opacity: 0.5;
+  line-height: 1.6;
 }
 
 .message {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   padding: 12px 16px;
   border-radius: 14px;
   max-width: 82%;
@@ -704,6 +903,7 @@ body {
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 2px solid rgba(99, 102, 241, 0.25);
   margin-right: auto;
 }
 .message-tutor p {
@@ -733,6 +933,7 @@ body {
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid rgba(99, 102, 241, 0.12);
+  border-right: 2px solid rgba(99, 102, 241, 0.35);
   margin-left: auto;
 }
 .message-user p {
@@ -771,7 +972,10 @@ body {
   border-radius: 4px;
 }
 
-/* Error Toast System */
+/* ======================
+   ERROR TOAST SYSTEM
+   ====================== */
+
 .toast-container {
   position: fixed;
   bottom: 32px;
@@ -817,9 +1021,9 @@ body {
   }
 }
 
-/* Tutor message complete glow */
+/* Tutor message complete accent */
 .message-tutor.message-complete {
-  border-left: 2px solid rgba(52, 211, 153, 0.6);
+  border-left: 2px solid rgba(52, 211, 153, 0.5);
   transition: border-left-color 1200ms ease;
 }
 
@@ -835,7 +1039,10 @@ body {
   color: var(--text-primary);
 }
 
-/* Latency Stats Panel */
+/* ======================
+   LATENCY STATS PANEL
+   ====================== */
+
 .stats-panel {
   position: fixed;
   bottom: 0;
@@ -919,7 +1126,10 @@ body {
   margin: 0 4px;
 }
 
-/* Modal Styles */
+/* ======================
+   MODAL STYLES
+   ====================== */
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -998,10 +1208,13 @@ body {
   gap: 12px;
 }
 
-/* Responsive — Tablet/Mobile */
+/* ======================
+   RESPONSIVE — TABLET/MOBILE
+   ====================== */
+
 @media (max-width: 768px) {
   body {
-    overflow: auto; /* override the global overflow: hidden */
+    overflow: auto;
   }
 
   .app-shell {
@@ -1019,7 +1232,7 @@ body {
   }
 
   .orb-card {
-    padding: 24px;
+    padding: 32px 24px;
     min-height: auto;
   }
 
@@ -1028,7 +1241,7 @@ body {
   }
 
   .transcript-panel {
-    padding: 16px;
+    padding: 12px 16px 48px;
   }
 
   .menu-bar {
@@ -1037,10 +1250,20 @@ body {
     gap: 10px;
   }
 
+  .menu-bar-left {
+    order: 2;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .menu-bar-right {
+    order: 1;
+    width: 100%;
+    justify-content: center;
+  }
+
   .menu-btn {
     padding: 8px 16px;
     font-size: 12px;
-    flex: 1 1 calc(50% - 10px);
-    justify-content: center;
   }
 }

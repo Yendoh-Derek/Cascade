@@ -165,7 +165,7 @@ def test_websocket_concurrency_limit(mock_pipeline_dependencies):
 # ─── RateLimiter unit tests ───────────────────────────────────────────────────
 
 class TestRateLimiter:
-    """Unit tests for the token-bucket RateLimiter in pipeline.py (fix 0.6)."""
+    """Unit tests for the token-bucket RateLimiter in pipeline.py."""
 
     def _make_limiter(self, bps=32_000, burst=2.0):
         from backend.pipeline import RateLimiter
@@ -203,10 +203,10 @@ class TestRateLimiter:
 # ─── Origin hostname validation unit tests ────────────────────────────────────
 
 class TestOriginValidation:
-    """Tests for the hostname-equality origin check in main.py (fix 0.1).
+    """Tests for the hostname-equality origin check in main.py.
 
-    Validates that the new urlsplit-based check blocks the bypass vectors
-    that the old substring-containment check allowed.
+    Validates that the urlsplit-based check properly isolates the hostname
+    and prevents partial-match bypasses.
     """
 
     def _check(self, origin: str, host: str) -> bool:
@@ -225,11 +225,11 @@ class TestOriginValidation:
         assert self._check("http://127.0.0.1:5173", "myapp.com") is True
 
     def test_evil_suffix_bypass_blocked(self):
-        # Old bug: "myapp.com" in "https://evil-myapp.com" → True
+        # Prevent bypass via domain suffix matching
         assert self._check("https://evil-myapp.com", "myapp.com") is False
 
     def test_path_injection_bypass_blocked(self):
-        # Old bug: "a.com" in "https://b.com/a.com" → True
+        # Prevent bypass via path injection
         assert self._check("https://b.com/a.com", "a.com") is False
 
     def test_subdomain_rejected(self):
@@ -275,7 +275,7 @@ class TestPreAuthBuffer:
 # ─── TurnMetrics unit tests ───────────────────────────────────────────────────
 
 class TestTurnMetrics:
-    """Verify TurnMetrics dataclass defaults and mutation (fix 2.1)."""
+    """Verify TurnMetrics dataclass defaults and mutation."""
 
     def test_defaults(self):
         from backend.pipeline import TurnMetrics
@@ -295,7 +295,7 @@ class TestTurnMetrics:
 # ─── History trim pair correctness tests ─────────────────────────────────────
 
 class TestHistoryTrimming:
-    """Verify trim_history never orphans an assistant message at history[0] (fix N6)."""
+    """Verify trim_history never orphans an assistant message at history[0]."""
 
     def _make_tutor(self):
         from backend.tutor import TutorSession

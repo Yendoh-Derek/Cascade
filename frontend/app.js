@@ -222,6 +222,10 @@ class CascadeClient {
             this.audioOutput.isPlaying
           ) {
             this.audioOutput.stopAllPlayback();
+            // Force state out of SPEAKING if we just interrupted it via STT update
+            if (this.state === STATE.SPEAKING || this.state === STATE.PROCESSING) {
+              this.setState(STATE.LISTENING);
+            }
           }
           if (!this.currentStudentBubble) {
             this._resetTurnState();
@@ -244,6 +248,10 @@ class CascadeClient {
             this.audioOutput.isPlaying
           ) {
             this.audioOutput.stopAllPlayback();
+            // Force state out of SPEAKING if we just interrupted it via STT final
+            if (this.state === STATE.SPEAKING) {
+              this.setState(STATE.LISTENING);
+            }
           }
           let is_update = false;
           if (msg.turn_id != null) {
@@ -358,10 +366,7 @@ class CascadeClient {
         // If no audio was ever scheduled (e.g. TTS error or empty text),
         // we must manually trigger the transition back to LISTENING, otherwise
         // the UI will be permanently stuck in PROCESSING state.
-        if (
-          this.audioOutput.activeSourceNodes.length === 0 &&
-          !this.audioOutput.isPlaying
-        ) {
+        if (this.audioOutput.activeSourceNodes.length === 0) {
           this.audioOutput._checkPlaybackFinished();
         }
         break;
