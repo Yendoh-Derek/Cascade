@@ -26,25 +26,29 @@ class SileroVAD:
     SAMPLE_RATE = 16000
     SAMPLES_PER_CHUNK = 512
 
-    def __init__(self, threshold: float = 0.5, silence_ms: int = 200):
+    def __init__(self, threshold: float = 0.5, silence_ms: int = 200, min_speech_frames: int = 3):
         """
         threshold:   VAD confidence above which audio is considered speech (0–1).
                      0.5 is Silero's recommended default.
         silence_ms:  How many consecutive ms of sub-threshold audio triggers
                      SpeechStopped. Keep at 150–250ms; lower = more false triggers.
                      This replaces Deepgram's endpointing window as the decision point.
+        min_speech_frames: consecutive speech-positive frames required before
+                           speech_started fires.
         """
         self.threshold = threshold
         self.silence_ms = silence_ms
         self._silence_frames_needed = silence_ms // self.CHUNK_MS
+        self.min_speech_frames = min_speech_frames
 
         self.model = get_shared_vad_model()
 
         self._speech_active = False
         self._silence_frame_count = 0
+        self._speech_frame_count = 0
         self._buffer = np.array([], dtype=np.int16)
 
-    def feed(self, pcm16_bytes: bytes) -> list[str]:
+    def feed(self, pcm16_bytes: bytes, require_extra_frames: bool = False) -> list[str]:
         """
         Feed raw PCM16 audio bytes. Returns a list of events that fired:
           "speech_started"  — first frame above threshold after silence
@@ -68,10 +72,13 @@ class SileroVAD:
 
             if is_speech:
                 self._silence_frame_count = 0
-                if not self._speech_active:
+                self._speech_frame_count += 1
+                target_frames = self.min_speech_frames + (2 if require_extra_frames else 0)
+                if not self._speech_active and self._speech_frame_count >= target_frames:
                     self._speech_active = True
                     events.append("speech_started")
             else:
+                self._speech_frame_count = 0
                 if self._speech_active:
                     self._silence_frame_count += 1
                     if self._silence_frame_count >= self._silence_frames_needed:
@@ -85,4 +92,5 @@ class SileroVAD:
         self.model.reset_states()
         self._speech_active = False
         self._silence_frame_count = 0
+        self._speech_frame_count = 0
         self._buffer = np.array([], dtype=np.int16)

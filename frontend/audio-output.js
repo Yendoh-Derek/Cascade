@@ -297,6 +297,17 @@ export class AudioOutputController {
   _checkPlaybackFinished() {
     if (this.activeSourceNodes.length === 0 && this.client.isAudioSourceEnded) {
       this.isPlaying = false;
+
+      // Notify server that playback for this turn has truly finished over the speakers
+      if (this.client.transport && this.client.transport.isOpen()) {
+        this.client.transport.send(
+          JSON.stringify({
+            type: "playback_finished",
+            turn_id: this.playbackTurnId,
+          })
+        );
+      }
+
       if (this.client.state === STATE.SPEAKING) {
         this.client.setState(STATE.LISTENING);
         this.client._resetTurnState();

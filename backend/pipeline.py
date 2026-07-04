@@ -125,6 +125,10 @@ class PipelineSession:
         # Interruption tracking
         self._final_turn_cutoff_time: Optional[float] = None
 
+        # AI speaking state for dynamic VAD thresholding
+        self._ai_speaking: bool = False
+        self._playback_finished_time: Optional[float] = None
+
         # Turn tracking for interrupt safety
         self.turn_id: int = 0
         self._active_turn_id: Optional[int] = None
@@ -148,9 +152,16 @@ class PipelineSession:
             on_status=self._on_stt_status,
             on_speech_interrupted=self._on_vad_interrupted,
             on_transcript_update=self._on_stt_update,
+            on_speculative_transcript=self._on_speculative_transcript,
+            is_ai_speaking=self.is_ai_speaking,
+            model=self.model_config.get("deepgram_model", "nova-2"),
+            language=self.model_config.get("deepgram_language", "en-US"),
             endpointing_ms=self.model_config.get("stt_endpointing_ms", 300),
             vad_threshold=self.model_config.get("vad_threshold", 0.5),
             vad_silence_ms=self.model_config.get("vad_silence_ms", 200),
+            vad_min_speech_frames=self.model_config.get("vad_min_speech_frames", 3),
+            enable_speculative_llm=self.model_config.get("enable_speculative_llm", False),
+            speculative_stability_matches=self.model_config.get("speculative_stability_matches", 2),
         )
         self.llm_generator = LLMGenerator(
             api_key=self.api_keys["groq"],
@@ -239,6 +250,31 @@ class PipelineSession:
         self._active_turn_id = None
         self.is_processing_transcript = False
         self.processing_task = None
+
+    def _on_speculative_transcript(self, transcript: str):
+        """
+        Speculative pipeline trigger from VAD + stable interim transcript.
+        Treated identically to a confirmed transcript by the existing turn
+        machinery. If Deepgram's speech_final later arrives with a correction,
+        it supersedes this turn cleanly via the existing 'newest wins' logic.
+        """
+        logger.info(f"[Pipeline] Speculative trigger (VAD+stable): '{transcript[:60]}'")
+        self._on_transcript_received(transcript)
+
+    def set_ai_speaking(self, is_speaking: bool):
+        """Update AI speaking state based on frontend playback signals."""
+        self._ai_speaking = is_speaking
+        if not is_speaking:
+            self._playback_finished_time = time.perf_counter()
+
+    def is_ai_speaking(self) -> bool:
+        """Returns True if AI is currently speaking OR within the ~200ms grace period."""
+        if self._ai_speaking:
+            return True
+        # Provide a 200ms grace period after playback finishes as a floor
+        if self._playback_finished_time and (time.perf_counter() - self._playback_finished_time < 0.2):
+            return True
+        return False
 
     def _on_transcript_received(self, transcript: str):
         """
@@ -525,6 +561,7 @@ class PipelineSession:
                                 audio_buffer.extend(chunk)
                                 if not first_audio_sent:
                                     first_audio_sent = True
+                                    self.set_ai_speaking(True)
                                     flush_audio_buffer()   # send immediately; don't wait for 4096 bytes
                                     if self._metrics.utterance_end_time and self._can_send(turn_id):
                                         total_ms = int((time.perf_counter() - self._metrics.utterance_end_time) * 1000)
@@ -626,6 +663,7 @@ class PipelineSession:
         self._active_turn_id = None
         self._final_turn_cutoff_time = time.perf_counter()
 
+        self.set_ai_speaking(False)
         self.is_processing_transcript = False
 
         # Send turn cancelled message

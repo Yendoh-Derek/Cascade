@@ -31,7 +31,7 @@ class APIKeys:
 @dataclass(frozen=True)
 class ModelConfig:
     # STT
-    deepgram_model: str = "nova-2"
+    deepgram_model: str = "nova-3"
     deepgram_language: str = "en-US"
     sample_rate: int = 16000
     channels: int = 1
@@ -42,18 +42,21 @@ class ModelConfig:
     # Advanced STT / VAD features
     vad_threshold: float = float(os.getenv("CASCADE_VAD_THRESHOLD", "0.5"))
     vad_silence_ms: int = int(os.getenv("CASCADE_VAD_SILENCE_MS", "200"))
+    vad_min_speech_frames: int = int(os.getenv("CASCADE_VAD_MIN_SPEECH_FRAMES", "3"))
     speculative_grace_ms: int = int(os.getenv("CASCADE_SPECULATIVE_GRACE_MS", "180"))
     interim_trigger_words: int = int(os.getenv("CASCADE_INTERIM_TRIGGER_WORDS", "6"))
+    speculative_stability_matches: int = int(os.getenv("CASCADE_SPECULATIVE_STABILITY_MATCHES", "2"))
+    enable_speculative_llm: bool = os.getenv("CASCADE_ENABLE_SPECULATIVE_LLM", "false").lower() == "true"
 
     # LLM
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "llama-3.1-8b-instant"
 
     # Conversation history: max turn-pairs to retain. Tune via CASCADE_MAX_HISTORY_TURNS.
     max_history_turns: int = int(os.getenv("CASCADE_MAX_HISTORY_TURNS", "10"))
 
     # TTS — edge-tts requires no API key
     edge_tts_voice: str = "en-US-AriaNeural"
-    deepgram_tts_model: str = "aura-asteria-en"
+    deepgram_tts_model: str = "aura-2-asteria-en"
 
 
 @dataclass(frozen=True)
