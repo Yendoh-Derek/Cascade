@@ -1,4 +1,4 @@
-import { STATE } from "./state.js";
+import { STATE } from "./state.js?v=2.0.2";
 
 export class WebSocketTransport {
   constructor(client) {
@@ -8,84 +8,174 @@ export class WebSocketTransport {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 3;
 
-    // Config host configuration
     this.WS_HOST = window.location.hostname || "localhost";
     this.WS_PORT = window.location.port || "8000";
+  }
+
+  _teardownWs() {
+    if (!this.ws) return;
+    const ws = this.ws;
+    this.ws = null;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    if (
+      ws.readyState === WebSocket.CONNECTING ||
+      ws.readyState === WebSocket.OPEN
+    ) {
+      try {
+        ws.close();
+      } catch (_) {
+        /* ignore */
+      }
+    }
   }
 
   connect() {
     return new Promise((resolve, reject) => {
       this.intentionalDisconnect = false;
-      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      let settled = false;
 
-      const urlParams = new URLSearchParams(window.location.search);
-      const secret =
-        urlParams.get("secret") ||
-        sessionStorage.getItem("cascade_secret") ||
-        "";
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeout);
+        clearTimeout(authGraceTimeout);
+        fn(value);
+      };
+
+      const wsProtocol =
+        window.location.protocol === "https:" ? "wss:" : "ws:";
+      const secret = sessionStorage.getItem("cascade_secret") || "";
 
       const wsUrl = `${wsProtocol}//${this.WS_HOST}:${this.WS_PORT}/ws?tts_engine=${encodeURIComponent(this.client.selectedTTSEngine)}`;
       console.log(`[Transport] Connecting to ${wsUrl}`);
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = "arraybuffer";
 
-      const timeout = setTimeout(() => {
+      let awaitingAuth = false;
+      let authGraceTimeout = null;
+
+      const connectTimeout = setTimeout(() => {
         if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
-          reject(new Error("WebSocket connection timed out"));
+          this._teardownWs();
+          settle(reject, new Error("WebSocket connection timed out"));
         }
       }, 5000);
 
+      const finishConnect = () => {
+        if (!settled) settle(resolve);
+      };
+
+      const scheduleAuthGrace = () => {
+        clearTimeout(authGraceTimeout);
+        authGraceTimeout = setTimeout(() => {
+          if (!awaitingAuth) finishConnect();
+        }, 750);
+      };
+
       this.ws.onopen = () => {
-        clearTimeout(timeout);
+        if (settled) {
+          this._teardownWs();
+          return;
+        }
+        clearTimeout(connectTimeout);
         this.reconnectAttempts = 0;
         console.log("✓ [Transport] WebSocket connected");
-        resolve();
+        scheduleAuthGrace();
       };
 
       this.ws.onmessage = async (evt) => {
         if (evt.data instanceof ArrayBuffer) {
-          this.client.audioOutput.onAudioChunk(evt.data);
-        } else {
           try {
-            const msg = JSON.parse(evt.data);
-            if (msg.type === "challenge") {
-              if (secret) {
-                const enc = new TextEncoder();
-                const key = await crypto.subtle.importKey(
-                  "raw",
-                  enc.encode(secret),
-                  { name: "HMAC", hash: "SHA-256" },
-                  false,
-                  ["sign"],
-                );
-                const signature = await crypto.subtle.sign(
-                  "HMAC",
-                  key,
-                  enc.encode(msg.nonce),
-                );
-                const response = Array.from(new Uint8Array(signature))
-                  .map((b) => b.toString(16).padStart(2, "0"))
-                  .join("");
-                this.send(JSON.stringify({ type: "auth", response: response }));
-              }
-            } else if (msg.type === "ping") {
-              this.send(JSON.stringify({ type: "pong" }));
-            } else {
-              this.client._onServerMessage(msg);
-            }
-          } catch (_) {
-            console.warn("[Transport] Unparseable server message:", evt.data);
+            await this.client.audioOutput.onAudioChunk(evt.data);
+          } catch (err) {
+            console.error("[Transport] Audio chunk handling failed:", err);
           }
+          return;
+        }
+
+        try {
+          const msg = JSON.parse(evt.data);
+
+          if (msg.type === "challenge") {
+            awaitingAuth = true;
+            clearTimeout(authGraceTimeout);
+            if (!secret) {
+              settle(
+                reject,
+                new Error("Unauthorized: Invalid or missing auth secret"),
+              );
+              return;
+            }
+
+            try {
+              const enc = new TextEncoder();
+              const key = await crypto.subtle.importKey(
+                "raw",
+                enc.encode(secret),
+                { name: "HMAC", hash: "SHA-256" },
+                false,
+                ["sign"],
+              );
+              const signature = await crypto.subtle.sign(
+                "HMAC",
+                key,
+                enc.encode(msg.nonce),
+              );
+              const response = Array.from(new Uint8Array(signature))
+                .map((b) => b.toString(16).padStart(2, "0"))
+                .join("");
+              this.send(JSON.stringify({ type: "auth", response }));
+            } catch (err) {
+              settle(reject, new Error("Authentication failed"));
+            }
+            return;
+          }
+
+          if (msg.type === "auth_ok") {
+            awaitingAuth = false;
+            finishConnect();
+            return;
+          }
+
+          if (
+            msg.type === "error" &&
+            typeof msg.message === "string" &&
+            msg.message.includes("Unauthorized")
+          ) {
+            settle(reject, new Error(msg.message));
+            return;
+          }
+
+          if (msg.type === "ping") {
+            this.send(JSON.stringify({ type: "pong" }));
+            return;
+          }
+
+          if (!settled) finishConnect();
+          try {
+            await this.client._onServerMessage(msg);
+          } catch (err) {
+            console.error("[Transport] Server message handler failed:", err);
+          }
+        } catch (err) {
+          console.warn("[Transport] Unparseable server message:", evt.data);
         }
       };
 
-      this.ws.onerror = (err) => {
-        clearTimeout(timeout);
-        reject(new Error("WebSocket error"));
+      this.ws.onerror = () => {
+        if (settled) return;
+        this._teardownWs();
+        settle(reject, new Error("WebSocket error"));
       };
 
       this.ws.onclose = () => {
-        clearTimeout(timeout);
+        clearTimeout(connectTimeout);
+        clearTimeout(authGraceTimeout);
+        if (settled) return;
+
         if (
           !this.intentionalDisconnect &&
           this.client.state !== STATE.IDLE &&
@@ -98,7 +188,9 @@ export class WebSocketTransport {
             `[Transport] Reconnect attempt ${this.reconnectAttempts} (delay ${delay})`,
           );
           setTimeout(() => {
-            this.connect().catch(() => {});
+            this.connect().catch((err) => {
+              console.error("[Transport] Reconnect failed:", err);
+            });
           }, delay);
         } else if (
           !this.intentionalDisconnect &&
@@ -107,7 +199,9 @@ export class WebSocketTransport {
           this.client.ui.showError(
             "Connection lost. Please start a new session.",
           );
-          this.client.stopSession();
+          void this.client.stopSession({ force: true }).catch((err) => {
+            console.error("[Transport] stopSession failed:", err);
+          });
         }
       };
     });
@@ -121,12 +215,7 @@ export class WebSocketTransport {
 
   close() {
     this.intentionalDisconnect = true;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.close();
-      } catch (_) {}
-    }
-    this.ws = null;
+    this._teardownWs();
   }
 
   isOpen() {

@@ -5,20 +5,18 @@ Tutor Logic & Conversation Management.
 
 Responsibility: Manage the tutor's identity, conversation history, and
 context window across a session. Provides multi-turn coherence through
-conversation history trimming and subject-aware system prompts.
+conversation history trimming.
 """
 
 import logging
-import re
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
 # Voice-channel system prompt: lead + session prompt + tail (strongest
 # constraints last). Composition mirrors a lead/session/tail pattern rather
 # than one undifferentiated string, so persona and voice-formatting rules can
-# evolve independently and the behavioral tail always survives dynamic
-# context (e.g. subject) being injected without losing its "last" position.
+# evolve independently and the behavioral tail always stays last.
 
 VOICE_LEAD = """\
 You are in a spoken conversation. The user speaks and hears you.
@@ -44,19 +42,8 @@ VOICE_TAIL = """\
 """
 
 
-def build_system_prompt(subject: Optional[str] = None) -> str:
-    """
-    Compose the full voice-channel system prompt.
-
-    Order is: lead (channel framing) -> session prompt (persona + optional
-    subject context) -> tail (voice/behavior rules, strongest constraints
-    last).
-
-    Args:
-        subject: Deprecated/ignored parameter for subject context compatibility.
-
-    Returns:
-    """
+def build_system_prompt() -> str:
+    """Compose the full voice-channel system prompt."""
     session = TUTOR_SESSION_PROMPT.rstrip()
 
     return (
@@ -66,26 +53,14 @@ def build_system_prompt(subject: Optional[str] = None) -> str:
     )
 
 
-def build_messages(
-    history: List[Dict[str, str]], subject: Optional[str] = None
-) -> List[Dict[str, str]]:
+def build_messages(history: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
     Build the complete messages array for an LLM request.
 
     Constructs: [system_message, ...conversation_history]
-
-    Args:
-        history: Conversation history as list of {"role": "...", "content": "..."}
-        subject: Optional subject area the student is studying
-
-    Returns:
-        Complete messages list ready for LLM
     """
-    system_content = build_system_prompt(subject)
-
-    messages = [{"role": "system", "content": system_content}] + history
-
-    return messages
+    system_content = build_system_prompt()
+    return [{"role": "system", "content": system_content}] + history
 
 
 class TutorSession:
@@ -96,31 +71,9 @@ class TutorSession:
     trimming to prevent context window growth on long sessions.
     """
 
-    def __init__(self, subject: Optional[str] = None):
-        """
-        Initialize a tutor session.
-
-        Args:
-            subject: Optional subject area for subject-specific tutoring
-        """
-        # Validate and sanitize subject
-        if subject is not None:
-            if not isinstance(subject, str):
-                logger.warning(f"[TutorSession] Invalid subject type: {type(subject)}, ignoring")
-                subject = None
-            else:
-                # Remove characters that are not alphanumeric, space, hyphens, or underscores
-                # to prevent prompt injection, and limit length to 100 characters.
-                subject_clean = re.sub(r"[\r\n]", "", subject)
-                subject_clean = re.sub(r"[^a-zA-Z0-9 \-_]", "", subject_clean).strip()
-                if len(subject_clean) > 100:
-                    logger.warning(f"[TutorSession] Subject too long ({len(subject_clean)} chars), truncating")
-                    subject_clean = subject_clean[:100]
-                subject = subject_clean or None
-
+    def __init__(self):
         self.history: List[Dict[str, str]] = []
-        self.subject = subject
-        logger.info(f"[TutorSession] Initialized (subject={self.subject})")
+        logger.info("[TutorSession] Initialized")
 
     def add_user_message(self, content: str):
         """
@@ -167,13 +120,8 @@ class TutorSession:
         logger.debug(f"[TutorSession] Assistant: {content[:60]}...")
 
     def get_messages(self) -> List[Dict[str, str]]:
-        """
-        Get the complete messages array for an LLM request.
-
-        Returns:
-            Messages list with system prompt and full history
-        """
-        return build_messages(self.history, self.subject)
+        """Get the complete messages array for an LLM request."""
+        return build_messages(self.history)
 
     def trim_history(self, max_turns: int = 10):
         """
@@ -231,14 +179,8 @@ class TutorSession:
         return (total_chars // 4) + system_overhead
 
     def get_summary(self) -> Dict:
-        """
-        Get a summary of the current session state.
-
-        Returns:
-            Dict with turn count, subject, and history length
-        """
+        """Get a summary of the current session state."""
         return {
-            "subject": self.subject,
             "turns": len(self.history) // 2,
             "messages": len(self.history),
         }

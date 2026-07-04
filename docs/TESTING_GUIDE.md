@@ -69,7 +69,7 @@
 - ✓ CSS stylesheet loads (200 OK)
 - ✓ app.js loads (200 OK)
 - ✓ No console errors
-- ✓ UI renders: header, subject dropdown, start button, transcript area
+- ✓ UI renders: header, voice orb, start button, transcript area
 
 **Failure Scenarios:**
 

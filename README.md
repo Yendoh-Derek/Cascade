@@ -215,6 +215,9 @@ The cancel-ack includes Deepgram's 300 ms endpointing silence window. Rate limit
 
 ### Running the benchmark yourself
 
+See [docs/LATENCY.md](docs/LATENCY.md) for a full tuning guide and benchmark matrix
+aimed at **sub-1s TTFA** with headphones and aggressive endpointing.
+
 ```bash
 # Deepgram Aura (primary — default)
 python tests/benchmark.py --trials 5 --barge-trials 3
@@ -229,6 +232,23 @@ python tests/benchmark.py --trials 5 --barge-trials 3 --tts edge
 Requirements: server must be running (`uvicorn backend.main:app`) and both
 `DEEPGRAM_API_KEY` and `GROQ_API_KEY` must be set. The harness generates
 synthetic audio via Deepgram TTS — no microphone required.
+
+---
+
+## Self-Hosting Checklist
+
+Before exposing Cascade beyond localhost:
+
+1. **Set `CASCADE_AUTH_SECRET`** — HMAC challenge-response; store the secret in
+   `sessionStorage` on the client (never in URL query strings).
+2. **Restrict CORS** — `CASCADE_CORS_ORIGINS=https://yourdomain.com`
+3. **Single-worker Uvicorn** — `uvicorn backend.main:app` (session cap is per-process)
+4. **Reverse proxy** — Forward `Host` or `X-Forwarded-Host` for WebSocket origin checks
+5. **API keys** — Keep `DEEPGRAM_API_KEY` and `GROQ_API_KEY` server-side only (`.env`)
+6. **Headphones** — Document for users; solo-learner testing works best with headphones
+
+Conversation history is **in-memory per WebSocket session** — refreshing the page
+starts a new session. This is intentional for the current scope.
 
 ---
 

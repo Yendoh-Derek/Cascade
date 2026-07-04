@@ -28,6 +28,23 @@ from groq import AsyncGroq
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+LOCAL_WS_HOSTS = frozenset({"localhost", "127.0.0.1"})
+
+
+def is_websocket_origin_allowed(origin: Optional[str], host_header: str) -> bool:
+    """Validate WebSocket Origin against the server Host header.
+
+    Browsers always send Origin on cross-origin WebSocket handshakes. Missing
+    Origin is only permitted for local development hosts so curl and test
+    clients still work on localhost.
+    """
+    server_host = (host_header or "").split(":")[0]
+    if origin:
+        origin_host = urlsplit(origin).hostname or ""
+        allowed_hosts = {server_host, *LOCAL_WS_HOSTS}
+        return origin_host in allowed_hosts
+    return server_host in LOCAL_WS_HOSTS
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global shared_groq_client
@@ -111,9 +128,7 @@ def health():
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    subject: Optional[str] = Query(default=None),
     tts_engine: str = Query(default="deepgram"),
-    secret: Optional[str] = Query(default=None),
 ):
     """
     WebSocket endpoint for the streaming voice pipeline.
@@ -153,23 +168,25 @@ async def websocket_endpoint(
 
         try:
             await websocket.accept()
-            logger.info(f"[WS] Client connected (subject={subject})")
+            logger.info("[WS] Client connected")
 
             # Explicit Origin validation (SEC-02)
             # Use hostname equality, not substring containment, to prevent
             # bypass via origins like "https://evila.com" when host="a.com".
+            # Missing Origin is allowed only on localhost (dev/test clients).
             origin = websocket.headers.get("origin")
-            if origin:
-                host_header = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host") or ""
-                origin_host = urlsplit(origin).hostname or ""
-                allowed_hosts = {host_header.split(":")[0], "localhost", "127.0.0.1"}
-                if origin_host not in allowed_hosts:
-                    logger.warning(
-                        f"[WS] Rejecting connection from origin {origin} "
-                        f"(origin_host={origin_host!r}, allowed={allowed_hosts})"
-                    )
-                    await websocket.close(code=4003)
-                    return
+            host_header = (
+                websocket.headers.get("x-forwarded-host")
+                or websocket.headers.get("host")
+                or ""
+            )
+            if not is_websocket_origin_allowed(origin, host_header):
+                logger.warning(
+                    f"[WS] Rejecting connection from origin {origin!r} "
+                    f"(host={host_header!r})"
+                )
+                await websocket.close(code=4003)
+                return
 
             # 1. Auth Secret Verification (HMAC challenge-response)
             auth_secret = server_config.auth_secret
@@ -267,7 +284,6 @@ async def websocket_endpoint(
                     "speculative_stability_matches": config.speculative_stability_matches,
                 },
                 outbound_queue=outbound_queue,
-                subject=subject,
                 tts_engine=tts_engine,
                 llm_client=shared_groq_client,
             )

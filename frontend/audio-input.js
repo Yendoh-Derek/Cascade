@@ -1,4 +1,4 @@
-import { STATE } from "./state.js";
+import { STATE } from "./state.js?v=2.0.2";
 
 export class AudioInputController {
   constructor(client) {

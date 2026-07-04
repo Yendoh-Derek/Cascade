@@ -2,13 +2,13 @@
  * Cascade — AI Voice Tutor Frontend
  */
 
-import { UIController } from "./ui.js";
-import { AudioInputController } from "./audio-input.js";
-import { AudioOutputController } from "./audio-output.js";
-import { WebSocketTransport } from "./transport.js";
-import { ChartRenderer } from "./chart.js";
+import { UIController } from "./ui.js?v=2.0.2";
+import { AudioInputController } from "./audio-input.js?v=2.0.2";
+import { AudioOutputController } from "./audio-output.js?v=2.0.2";
+import { WebSocketTransport } from "./transport.js?v=2.0.2";
+import { ChartRenderer } from "./chart.js?v=2.0.2";
 
-import { STATE } from "./state.js";
+import { STATE } from "./state.js?v=2.0.2";
 
 class CascadeClient {
   constructor() {
@@ -37,6 +37,9 @@ class CascadeClient {
     this.currentStreamingBubble = null;
     this.pendingSubtitleUpdate = false;
     this.subtitleThrottleMs = 100;
+    this._subtitleTimer = null;
+    this._messageCompleteTimer = null;
+    this._sessionBusy = false;
     this.selectedTTSEngine =
       localStorage.getItem("cascade_tts_engine") || "deepgram";
 
@@ -59,6 +62,7 @@ class CascadeClient {
   }
 
   async toggleSession() {
+    if (this._sessionBusy) return;
     if (this.state === STATE.IDLE) {
       await this.startSession();
     } else {
@@ -66,8 +70,27 @@ class CascadeClient {
     }
   }
 
+  _cancelUiTimers() {
+    if (this._subtitleTimer) {
+      clearTimeout(this._subtitleTimer);
+      this._subtitleTimer = null;
+    }
+    if (this._messageCompleteTimer) {
+      clearTimeout(this._messageCompleteTimer);
+      this._messageCompleteTimer = null;
+    }
+    this.pendingSubtitleUpdate = false;
+  }
+
   async startSession() {
+    if (this._sessionBusy || this.state !== STATE.IDLE) return;
+    this._sessionBusy = true;
     try {
+      if (!this.audioOutput.ensurePlaybackReady()) {
+        throw new Error(
+          "Audio playback is not available. Try another browser or check your sound settings.",
+        );
+      }
       await this.audioOutput.resumeContext();
       await this.audioInput.start();
 
@@ -79,8 +102,8 @@ class CascadeClient {
       this.currentStudentBubble = null;
       this.sessionStartTime = Date.now();
 
-      if (this.ui.transcriptPanel) this.ui.transcriptPanel.innerHTML = "";
-      this.ui._showEmptyStateIfNeeded();
+      this.ui.clearTranscript();
+      this.ui.maybeShowFirstRunHint();
     } catch (err) {
       console.error("startSession failed:", err);
       let msg = `Failed to start: ${err.message}`;
@@ -90,11 +113,35 @@ class CascadeClient {
         msg = "🎤 No microphone found on this device.";
       }
       this.ui.showError(msg);
-      await this.stopSession();
+      if (
+        typeof err.message === "string" &&
+        err.message.includes("Unauthorized")
+      ) {
+        this.ui.openSecretModal();
+        this._initSecretModal();
+      }
+      await this._teardownSession();
+    } finally {
+      this._sessionBusy = false;
     }
   }
 
-  async stopSession() {
+  async stopSession({ force = false } = {}) {
+    if (!force) {
+      if (this._sessionBusy) return;
+      if (this.state === STATE.IDLE && !this.transport.isOpen()) return;
+    }
+    if (this._sessionBusy && !force) return;
+    this._sessionBusy = true;
+    try {
+      await this._teardownSession();
+    } finally {
+      this._sessionBusy = false;
+    }
+  }
+
+  async _teardownSession() {
+    this._cancelUiTimers();
     this.transport.intentionalDisconnect = true;
     if (this.transport.isOpen()) {
       try {
@@ -118,6 +165,7 @@ class CascadeClient {
   }
 
   resetTurnAndEpochState() {
+    this._cancelUiTimers();
     this.activeTurnId = null;
     this.playbackTurnId = null;
     this.audioEpoch += 1;
@@ -159,6 +207,7 @@ class CascadeClient {
       return;
     if (this._interrupting) return;
     this._interrupting = true;
+    this._cancelUiTimers();
 
     const prevTurnId = this.activeTurnId;
     const prevEpoch = this.audioEpoch;
@@ -202,7 +251,7 @@ class CascadeClient {
     }, 1000);
   }
 
-  _onServerMessage(msg) {
+  async _onServerMessage(msg) {
     if (!msg || typeof msg !== "object") return;
     switch (msg.type) {
       case "tts_config":
@@ -314,10 +363,14 @@ class CascadeClient {
               this.currentStreamingBubble.classList.add("streaming");
           } else if (!this.pendingSubtitleUpdate) {
             this.pendingSubtitleUpdate = true;
-            setTimeout(() => {
+            const bubble = this.currentStreamingBubble;
+            const response = this.currentResponse;
+            this._subtitleTimer = setTimeout(() => {
+              this._subtitleTimer = null;
               this.pendingSubtitleUpdate = false;
-              const p = this.currentStreamingBubble.querySelector("p");
-              if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
+              if (!bubble) return;
+              const p = bubble.querySelector("p");
+              if (p) p.innerHTML = this.ui._escapeHTML(response);
               if (this.ui.transcriptPanel)
                 this.ui.transcriptPanel.scrollTop =
                   this.ui.transcriptPanel.scrollHeight;
@@ -337,12 +390,12 @@ class CascadeClient {
               this.ui.transcriptPanel.scrollHeight;
         }
         if (this.currentStreamingBubble) {
-          this.currentStreamingBubble.classList.remove("streaming");
-          this.currentStreamingBubble.classList.add("message-complete");
-          setTimeout(() => {
-            if (this.currentStreamingBubble)
-              this.currentStreamingBubble.classList.remove("message-complete");
-            this.currentStreamingBubble = null;
+          const completedBubble = this.currentStreamingBubble;
+          completedBubble.classList.remove("streaming");
+          completedBubble.classList.add("message-complete");
+          this._messageCompleteTimer = setTimeout(() => {
+            this._messageCompleteTimer = null;
+            completedBubble.classList.remove("message-complete");
           }, 1200);
         } else if (this.currentResponse && this.currentResponse.trim()) {
           const bubble = this.ui.addTranscriptItem(
@@ -351,7 +404,10 @@ class CascadeClient {
           );
           if (bubble) {
             bubble.classList.add("message-complete");
-            setTimeout(() => bubble.classList.remove("message-complete"), 1200);
+            this._messageCompleteTimer = setTimeout(() => {
+              this._messageCompleteTimer = null;
+              bubble.classList.remove("message-complete");
+            }, 1200);
           }
         }
         this.currentResponse = "";
@@ -512,6 +568,13 @@ class CascadeClient {
           }
         }
         break;
+      case "rate_limited":
+        this.ui.showToast(
+          msg.message || "Speaking too fast — audio was throttled.",
+          3000,
+          "warning",
+        );
+        break;
       case "busy":
         this.ui.showToast(
           msg.message || "⏳ Still responding — please wait a moment.",
@@ -519,7 +582,7 @@ class CascadeClient {
           "info",
         );
         if (msg.reason === "capacity") {
-          this.stopSession();
+          await this.stopSession();
         }
         break;
       case "tts_error":
@@ -546,55 +609,14 @@ class CascadeClient {
           msg.message.includes("Unauthorized")
         ) {
           this.ui.openSecretModal();
-          // Set up modal event listeners if not already done
-          if (!this._secretModalInitialized) {
-            this._secretModalInitialized = true;
-            const submitBtn = document.getElementById("btn-submit-secret");
-            const cancelBtn = document.getElementById("btn-cancel-secret");
-            const input = document.getElementById("secret-input");
-
-            if (submitBtn) {
-              submitBtn.addEventListener("click", () => {
-                if (input && input.value.trim()) {
-                  sessionStorage.setItem("cascade_secret", input.value.trim());
-                }
-                this.ui.closeSecretModal();
-                this.stopSession();
-              });
-            }
-
-            if (cancelBtn) {
-              cancelBtn.addEventListener("click", () => {
-                this.ui.closeSecretModal();
-                this.stopSession();
-              });
-            }
-
-            if (input) {
-              input.addEventListener("keydown", (e) => {
-                if (e.key === "Enter") {
-                  if (input.value.trim()) {
-                    sessionStorage.setItem(
-                      "cascade_secret",
-                      input.value.trim(),
-                    );
-                  }
-                  this.ui.closeSecretModal();
-                  this.stopSession();
-                } else if (e.key === "Escape") {
-                  this.ui.closeSecretModal();
-                  this.stopSession();
-                }
-              });
-            }
-          }
+          this._initSecretModal();
           break;
         }
         if (this.state !== STATE.IDLE) {
           const isSTTError =
             typeof msg.message === "string" && msg.message.includes("STT");
           if (isSTTError) {
-            this.stopSession();
+            await this.stopSession();
           } else {
             this.audioOutput.isPlaying = false;
             this.audioOutput.isAudioSourceEnded = true;
@@ -610,6 +632,48 @@ class CascadeClient {
   setState(newState) {
     this.state = newState;
     this.ui.setState(newState);
+  }
+
+  _initSecretModal() {
+    if (this._secretModalInitialized) return;
+    this._secretModalInitialized = true;
+    const submitBtn = document.getElementById("btn-submit-secret");
+    const cancelBtn = document.getElementById("btn-cancel-secret");
+    const input = document.getElementById("secret-input");
+
+    if (submitBtn) {
+      submitBtn.addEventListener("click", async () => {
+        if (input && input.value.trim()) {
+          sessionStorage.setItem("cascade_secret", input.value.trim());
+        }
+        this.ui.closeSecretModal();
+        await this.stopSession();
+        await this.startSession();
+      });
+    }
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", async () => {
+        this.ui.closeSecretModal();
+        await this.stopSession();
+      });
+    }
+
+    if (input) {
+      input.addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") {
+          if (input.value.trim()) {
+            sessionStorage.setItem("cascade_secret", input.value.trim());
+          }
+          this.ui.closeSecretModal();
+          await this.stopSession();
+          await this.startSession();
+        } else if (e.key === "Escape") {
+          this.ui.closeSecretModal();
+          await this.stopSession();
+        }
+      });
+    }
   }
 }
 

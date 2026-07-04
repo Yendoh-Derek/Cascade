@@ -107,7 +107,6 @@ class PipelineSession:
         api_keys: Dict[str, str],
         model_config: Dict[str, Any],
         outbound_queue: asyncio.Queue[dict[str, Any] | None],
-        subject: Optional[str] = None,
         tts_engine: str = "edge",
         llm_client: Optional[AsyncGroq] = None,
     ):
@@ -117,7 +116,7 @@ class PipelineSession:
         self.outbound_queue = outbound_queue
         self._llm_client = llm_client
 
-        self.tutor = TutorSession(subject=subject)
+        self.tutor = TutorSession()
         self.stt_handler: Optional[STTHandler] = None
         self.llm_generator: Optional[LLMGenerator] = None
         self.tts_engine: Optional[TTSEngine] = None
@@ -144,7 +143,7 @@ class PipelineSession:
         # Per-session audio rate limiter
         self._rate_limiter = RateLimiter()
 
-        logger.info(f"[Pipeline] Session initialized (subject={self.tutor.subject}, tts_engine={tts_engine})")
+        logger.info(f"[Pipeline] Session initialized (tts_engine={tts_engine})")
 
     async def initialize(self):
         """Initialize all pipeline components."""

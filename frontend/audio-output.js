@@ -1,4 +1,4 @@
-import { STATE } from "./state.js";
+import { STATE } from "./state.js?v=2.0.2";
 
 export class AudioOutputController {
   constructor(client) {
@@ -20,6 +20,7 @@ export class AudioOutputController {
   }
 
   initContext() {
+    if (this.audioContext) return true;
     try {
       this.audioContext = new (
         window.AudioContext || window.webkitAudioContext
@@ -31,9 +32,16 @@ export class AudioOutputController {
       this.analyser.connect(this.playbackGain);
       this.playbackGain.connect(this.audioContext.destination);
       console.log("✓ AudioContext and gain graph initialized");
+      return true;
     } catch (err) {
       console.error("AudioContext not available:", err);
+      this.audioContext = null;
+      return false;
     }
+  }
+
+  ensurePlaybackReady() {
+    return this.initContext();
   }
 
   async resumeContext() {
@@ -120,7 +128,7 @@ export class AudioOutputController {
       await this.resumeContext();
     }
 
-    // Check guards again after async resume - GUARD 2: Epoch/generation validation
+    if (!this.audioContext) return;
     if (
       epoch !== this.client.audioEpoch ||
       decodeGen !== this.client.decodeGeneration ||
