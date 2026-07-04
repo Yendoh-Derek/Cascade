@@ -1,4 +1,4 @@
-import { STATE } from "./state.js";
+import { STATE } from "./state.js?v=2.0.2";
 
 export class UIController {
   constructor(client) {
@@ -22,12 +22,13 @@ export class UIController {
     const activeBtn = document.querySelector(
       `.tts-toggle-btn[data-engine="${this.client.selectedTTSEngine}"]`,
     );
-    if (activeBtn) {
-      document
-        .querySelectorAll(".tts-toggle-btn")
-        .forEach((btn) => btn.classList.remove("active"));
-      activeBtn.classList.add("active");
-    }
+    document.querySelectorAll(".tts-toggle-btn").forEach((btn) => {
+      const isActive =
+        btn.getAttribute("data-engine") === this.client.selectedTTSEngine;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+    if (activeBtn) activeBtn.classList.add("active");
   }
 
   _initUIListeners() {
@@ -67,7 +68,14 @@ export class UIController {
       this.orb.addEventListener("keydown", (evt) => {
         if (evt.key === " " || evt.key === "Enter") {
           evt.preventDefault();
-          this.client.toggleSession();
+          if (
+            this.client.state === STATE.SPEAKING ||
+            this.client.state === STATE.PROCESSING
+          ) {
+            this.client._triggerInterruption();
+          } else {
+            this.client.toggleSession();
+          }
         }
       });
     }
@@ -132,10 +140,12 @@ export class UIController {
         if (btn.id === "btn-toggle-session") {
           btn.addEventListener("click", () => this.client.toggleSession());
         } else if (btn.id === "btn-clear-transcript") {
-          btn.addEventListener("click", () => {
-            if (this.transcriptPanel) this.transcriptPanel.innerHTML = "";
+          btn.addEventListener("click", async () => {
+            if (this.client.state !== STATE.IDLE) {
+              await this.client.stopSession();
+            }
+            this.clearTranscript();
             this.client._resetTurnState();
-            this._showEmptyStateIfNeeded();
           });
         } else if (btn.id === "btn-stats") {
           btn.addEventListener("click", () => this._openStatsPanel());
@@ -151,11 +161,28 @@ export class UIController {
         localStorage.setItem("cascade_tts_engine", engine);
         document
           .querySelectorAll(".tts-toggle-btn")
-          .forEach((b) => b.classList.remove("active"));
+          .forEach((b) => {
+            b.classList.remove("active");
+            b.setAttribute(
+              "aria-pressed",
+              b.getAttribute("data-engine") === engine ? "true" : "false",
+            );
+          });
         btn.classList.add("active");
+        btn.setAttribute("aria-pressed", "true");
         console.log(`[Client] TTS Engine changed to: ${engine}`);
         if (this.client.state !== STATE.IDLE) {
-          this.client.stopSession().then(() => this.client.startSession());
+          this.showToast(
+            "Switching voice engine — restarting session…",
+            3000,
+            "info",
+          );
+          this.client
+            .stopSession()
+            .then(() => this.client.startSession())
+            .catch((err) => {
+              console.error("[UI] TTS engine switch failed:", err);
+            });
         }
       });
     });
@@ -226,6 +253,24 @@ export class UIController {
     if (this.btnToggleSession) {
       const label = this.btnToggleSession.querySelector(".btn-label");
       const icon = this.btnToggleSession.querySelector(".btn-icon");
+      this.btnToggleSession.disabled = newState === STATE.CONNECTING;
+      if (this.orb) {
+        this.orb.style.pointerEvents =
+          newState === STATE.CONNECTING ? "none" : "";
+      }
+      const ariaLabels = {
+        [STATE.IDLE]: "Tap to start voice session",
+        [STATE.CONNECTING]: "Connecting session",
+        [STATE.LISTENING]: "Listening — tap to stop session",
+        [STATE.PROCESSING]: "Thinking — tap to stop session",
+        [STATE.SPEAKING]: "Speaking — tap to stop or press Space to interrupt",
+      };
+      if (this.orb) {
+        this.orb.setAttribute(
+          "aria-label",
+          ariaLabels[newState] || ariaLabels[STATE.IDLE],
+        );
+      }
       if (newState === STATE.IDLE) {
         this.btnToggleSession.classList.remove("active");
         if (label) label.textContent = "Begin";
@@ -252,8 +297,42 @@ export class UIController {
   /** @deprecated stats-bar element removed — kept as no-op to avoid call-site errors */
   _updateStatsBar() {}
 
+  _ensureEmptyState() {
+    if (!this.transcriptPanel) return;
+    let empty = this.transcriptPanel.querySelector("#transcript-empty");
+    if (!empty) {
+      empty = document.createElement("p");
+      empty.className = "transcript-empty";
+      empty.id = "transcript-empty";
+      empty.textContent = "Your conversation will appear here...";
+      this.transcriptPanel.prepend(empty);
+    }
+    this.transcriptEmpty = empty;
+  }
+
+  clearTranscript() {
+    if (!this.transcriptPanel) return;
+    this.transcriptPanel
+      .querySelectorAll(".message")
+      .forEach((el) => el.remove());
+    this._ensureEmptyState();
+    this._showEmptyStateIfNeeded();
+  }
+
+  maybeShowFirstRunHint() {
+    if (localStorage.getItem("cascade_hints_seen")) return;
+    this.showToast(
+      "Tip: Use headphones for best results. Tap the orb to speak. Press Space to interrupt while Cascade is talking.",
+      8000,
+      "neutral",
+    );
+    localStorage.setItem("cascade_hints_seen", "1");
+  }
+
   _showEmptyStateIfNeeded() {
-    if (!this.transcriptPanel || !this.transcriptEmpty) return;
+    if (!this.transcriptPanel) return;
+    this._ensureEmptyState();
+    if (!this.transcriptEmpty) return;
     const hasMessages = this.transcriptPanel.querySelector(".message");
     this.transcriptEmpty.style.display = hasMessages ? "none" : "block";
   }

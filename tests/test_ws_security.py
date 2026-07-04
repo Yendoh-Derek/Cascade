@@ -19,6 +19,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from backend.main import app  # noqa: E402
 import backend.main  # noqa: E402
 
+# Starlette TestClient uses host "testserver" and sends no Origin by default.
+WS_TEST_HEADERS = {"origin": "http://testserver"}
+
 @pytest.fixture(scope="module", autouse=True)
 def mock_server_config():
     """Patch the already-imported server_config so it applies regardless of test execution order."""
@@ -95,7 +98,7 @@ def test_websocket_auth_unauthorized():
     client = TestClient(app)
 
     # 1. No auth response after challenge
-    with client.websocket_connect("/ws") as websocket:
+    with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as websocket:
         msg = websocket.receive_json()
         assert msg["type"] == "challenge"
         msg = websocket.receive_json()
@@ -103,7 +106,7 @@ def test_websocket_auth_unauthorized():
         assert "Unauthorized" in msg["message"]
 
     # 2. Incorrect HMAC response
-    with client.websocket_connect("/ws") as websocket:
+    with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as websocket:
         msg = websocket.receive_json()
         assert msg["type"] == "challenge"
         websocket.send_json({"type": "auth", "response": "wrong-secret"})
@@ -116,7 +119,7 @@ def test_websocket_auth_unauthorized():
 def test_websocket_auth_authorized():
     """Verify WebSocket connection succeeds when correct CASCADE_AUTH_SECRET is sent."""
     client = TestClient(app)
-    with client.websocket_connect("/ws") as websocket:
+    with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as websocket:
         _authenticate_websocket(websocket)
         msg = websocket.receive_json()
         assert msg["type"] == "auth_ok"
@@ -127,7 +130,7 @@ def test_websocket_auth_authorized():
 def test_websocket_auth_first_message():
     """Verify WebSocket connection succeeds using the first-message JSON handshake."""
     client = TestClient(app)
-    with client.websocket_connect("/ws") as websocket:
+    with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as websocket:
         _authenticate_websocket(websocket)
         msg = websocket.receive_json()
         assert msg["type"] == "auth_ok"
@@ -143,15 +146,15 @@ def test_websocket_concurrency_limit(mock_pipeline_dependencies):
     client = TestClient(app)
     try:
         # Establish connection 1
-        with client.websocket_connect("/ws") as ws1:
+        with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as ws1:
             _authenticate_websocket(ws1)
             assert ws1.receive_json()["type"] == "auth_ok"
             # Establish connection 2
-            with client.websocket_connect("/ws") as ws2:
+            with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as ws2:
                 _authenticate_websocket(ws2)
                 assert ws2.receive_json()["type"] == "auth_ok"
                 # Connection 3 should exceed cap (capacity is 2)
-                with client.websocket_connect("/ws") as ws3:
+                with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as ws3:
                     msg = ws3.receive_json()
                     assert msg["type"] == "busy"
                     assert "maximum capacity" in msg["message"]
@@ -209,11 +212,9 @@ class TestOriginValidation:
     and prevents partial-match bypasses.
     """
 
-    def _check(self, origin: str, host: str) -> bool:
-        from urllib.parse import urlsplit
-        origin_host = urlsplit(origin).hostname or ""
-        allowed_hosts = {host.split(":")[0], "localhost", "127.0.0.1"}
-        return origin_host in allowed_hosts
+    def _check(self, origin: str | None, host: str) -> bool:
+        from backend.main import is_websocket_origin_allowed
+        return is_websocket_origin_allowed(origin, host)
 
     def test_same_host_allowed(self):
         assert self._check("http://myapp.com", "myapp.com:8000") is True
@@ -223,6 +224,14 @@ class TestOriginValidation:
 
     def test_127_allowed(self):
         assert self._check("http://127.0.0.1:5173", "myapp.com") is True
+
+    def test_missing_origin_allowed_on_localhost(self):
+        assert self._check(None, "localhost:8000") is True
+        assert self._check(None, "127.0.0.1:8000") is True
+
+    def test_missing_origin_rejected_on_public_host(self):
+        assert self._check(None, "myapp.com:8000") is False
+        assert self._check(None, "myapp.com") is False
 
     def test_evil_suffix_bypass_blocked(self):
         # Prevent bypass via domain suffix matching
@@ -299,7 +308,7 @@ class TestHistoryTrimming:
 
     def _make_tutor(self):
         from backend.tutor import TutorSession
-        return TutorSession(subject="Math")
+        return TutorSession()
 
     def test_first_message_is_always_user_after_trim(self):
         tutor = self._make_tutor()

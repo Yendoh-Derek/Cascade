@@ -41,7 +41,6 @@ def make_pipeline_session() -> PipelineSession:
             "max_history_turns": 10,
         },
         outbound_queue=asyncio.Queue(),
-        subject="Test",
         tts_engine="edge",
     )
 

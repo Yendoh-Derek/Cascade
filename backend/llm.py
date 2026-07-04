@@ -116,6 +116,7 @@ class LLMGenerator:
             async with asyncio.timeout(timeout_sec):
                 # Retry loop for Groq 503s
                 stream = None
+                pending_task: Optional[asyncio.Task] = None
                 retries = 3
                 for attempt in range(retries):
                     try:
@@ -150,7 +151,6 @@ class LLMGenerator:
                 t_buffer_start: Optional[float] = None  # per-buffer wall-clock timer
                 stream_iterator = stream.__aiter__()
                 stream_exhausted = False
-                pending_task: Optional[asyncio.Task] = None
 
                 while not stream_exhausted:
                     # Function to get next chunk or raise StopAsyncIteration

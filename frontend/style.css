@@ -1038,6 +1038,11 @@ body {
   border-color: rgba(255, 255, 255, 0.12);
   color: var(--text-primary);
 }
+.toast.toast-warning {
+  background: rgba(251, 146, 60, 0.1);
+  border-color: rgba(251, 146, 60, 0.3);
+  color: #fed7aa;
+}
 
 /* ======================
    LATENCY STATS PANEL
