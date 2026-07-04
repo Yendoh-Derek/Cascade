@@ -50,18 +50,14 @@ def build_system_prompt(subject: Optional[str] = None) -> str:
 
     Order is: lead (channel framing) -> session prompt (persona + optional
     subject context) -> tail (voice/behavior rules, strongest constraints
-    last). Subject is injected inside the session block, before the tail,
-    so it can never displace the behavioral rules from the final position.
+    last).
 
     Args:
-        subject: Optional subject area the student is studying
+        subject: Deprecated/ignored parameter for subject context compatibility.
 
     Returns:
-        Fully composed system prompt string
     """
     session = TUTOR_SESSION_PROMPT.rstrip()
-    if subject:
-        session += f'\n\nThe student is studying: "{subject}".'
 
     return (
         f"{VOICE_LEAD.rstrip()}\n\n"
@@ -209,7 +205,7 @@ class TutorSession:
         if total_tokens > max_tokens:
             # Remove oldest message pair (user + assistant) together to maintain
             # role ordering. Popping single messages can leave an orphaned
-            # assistant message at history[0], which confuses some LLMs (fix N6).
+            # assistant message at history[0], which confuses some LLMs.
             while len(self.history) >= 2 and total_tokens > max_tokens:
                 self.history.pop(0)  # user message
                 self.history.pop(0)  # assistant message

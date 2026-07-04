@@ -38,7 +38,7 @@ def test_message_building():
 
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
-    assert "Biology" in messages[0]["content"]
+    assert "Biology" not in messages[0]["content"]
     assert messages[1]["role"] == "user"
     print("✓")
 
@@ -78,8 +78,8 @@ def test_multi_turn_coherence():
     messages = session.get_messages()
     assert len(messages) == 7  # system + 6 history
 
-    # Verify system prompt includes subject
-    assert "Physics" in messages[0]["content"]
+    # Verify system prompt does not include subject
+    assert "Physics" not in messages[0]["content"]
 
     # Verify all turns are present
     assert "gravity" in messages[1]["content"]

@@ -278,8 +278,12 @@ export class AudioOutputController {
         }
         this.analyser.getByteFrequencyData(dataArray);
         const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-        if (this.client.ui.orb)
+        // Normalize against an expected average maximum (~60 for typical speech)
+        const normalizedAudio = Math.min(1, avg / 60);
+        if (this.client.ui.orb) {
           this.client.ui.orb.style.setProperty("--audio-level", avg.toFixed(1));
+          this.client.ui.orb.style.setProperty("--audio-level-norm", normalizedAudio.toFixed(3));
+        }
         this._visualizationLoopId = requestAnimationFrame(tick);
       };
       this._visualizationLoopId = requestAnimationFrame(tick);
@@ -295,7 +299,7 @@ export class AudioOutputController {
   }
 
   _checkPlaybackFinished() {
-    if (this.activeSourceNodes.length === 0 && this.client.isAudioSourceEnded) {
+    if (this.activeSourceNodes.length === 0 && this.isAudioSourceEnded) {
       this.isPlaying = false;
 
       // Notify server that playback for this turn has truly finished over the speakers
@@ -321,5 +325,6 @@ export class AudioOutputController {
   resetState() {
     this.nextPlaybackTime = null;
     this.isPlaying = false;
+    this.isAudioSourceEnded = false;
   }
 }
