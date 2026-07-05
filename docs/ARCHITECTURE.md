@@ -1,6 +1,6 @@
 # Cascade AI Voice Tutor - Architecture Overview
 
-Cascade is built on a full-duplex WebSocket-based streaming architecture to achieve low-latency voice tutoring interactions. The primary configuration uses **Deepgram Aura** for TTS, achieving a measured TTFA p50 of ~1 276 ms from West Africa to US-East cloud services. This document outlines the key components, data flow, and timing instrumentation.
+Cascade is built on a full-duplex WebSocket-based streaming architecture to achieve low-latency voice tutoring interactions. The primary configuration uses **Deepgram Aura** for TTS and the defaults in [backend/config.py](../backend/config.py) for STT and LLM selection. This document outlines the key components, data flow, timing instrumentation, and the operational contracts for the live system.
 
 ---
 
@@ -30,7 +30,7 @@ To prevent stale audio or responses from previous turns reaching the user after 
 
 1. **Turn ID Validation:** Every outgoing frame or JSON packet is stamped with a `turn_id`. The client and final WebSocket consumer only send/play frames if the `turn_id == active_turn_id`.
 2. **Newest-Wins Policy:** If a new transcript starts processing while a previous turn is active or playing back, the active turn is aborted synchronously (tasks cancelled, LLM generator closed via `.aclose()`), and the pipeline starts the new turn immediately.
-3. **Lock-Serialized TTS:** TTS access is controlled by `asyncio.Lock` (`DeepgramTTSEngine._ws_lock`), serializing turns on a single persistent WebSocket connection — fully serial by design, not 2-wide. Cleanup (Clear + WS teardown on failure) is performed *outside* the lock so a new turn can acquire it and start immediately while the previous turn's teardown completes in the background.
+3. **Lock-Serialized TTS:** TTS access is controlled by `asyncio.Lock` (`DeepgramTTSEngine._ws_lock`), serializing turns on a single persistent WebSocket connection — fully serial by design, not 2-wide. Cleanup (Clear + WS teardown on failure) is performed _outside_ the lock so a new turn can acquire it and start immediately while the previous turn's teardown completes in the background.
 
 ---
 
@@ -53,6 +53,93 @@ sequenceDiagram
     Note over S: STT delivers next transcript → Turn N+1 starts
     S->>C: {type: "transcript", turn_id: N+1}
 ```
+
+---
+
+## WebSocket Protocol
+
+Cascade uses a single WebSocket endpoint at `/ws` for the full-duplex voice pipeline.
+
+### Connection
+
+- Endpoint: `/ws`
+- Query parameter: `tts_engine=deepgram|edge`
+- The server accepts binary PCM16 audio frames from the client and emits both binary audio frames and JSON control messages.
+
+### Authentication handshake
+
+If `CASCADE_AUTH_SECRET` is set, the server sends a `challenge` message with a nonce before any pipeline work begins. The client must reply with a JSON message shaped like:
+
+```json
+{ "type": "auth", "response": "<hmac-sha256>" }
+```
+
+On success, the server replies with `auth_ok`. If authentication fails or times out, the server closes the connection with an error message.
+
+### Client → server messages
+
+#### Binary audio
+
+- Raw PCM16 audio bytes captured from the browser microphone.
+- The server forwards these bytes to the STT pipeline.
+
+#### Text/JSON control messages
+
+- `cancel` — interrupt the active turn and start a new one.
+- `finalize` — flush any pending STT audio to the current utterance.
+- `auth` — respond to the challenge when auth is enabled.
+- `pong` — reply to a server-side ping.
+- `client_latency` — report client-perceived latency data.
+- `playback_finished` — notify the server that playback of the current turn has finished.
+
+### Server → client messages
+
+- `challenge` — issued at the start of auth when the secret is configured.
+- `auth_ok` — authentication successful.
+- `busy` — server capacity limit reached.
+- `ping` — periodic keepalive message.
+- `transcript` — finalized transcript for the current turn.
+- `response_chunk` — incremental streaming text chunk.
+- `response_end` — end of the current assistant response.
+- `latency` — latency snapshot for the turn.
+- `turn_cancelled` — an in-progress turn was interrupted.
+- Binary audio — synthesized audio chunks emitted to the client.
+
+### Protocol notes
+
+- The server uses a turn-id gate so outdated frames and stale audio are dropped after a turn is cancelled or replaced.
+- For local development, the auth secret can be left unset and the handshake is skipped.
+
+---
+
+## Deployment
+
+### Docker Compose
+
+The repository includes two compose entry points:
+
+- `docker-compose.yml` — production-style deployment.
+- `docker-compose.dev.yml` — development workflow with bind mounts for live reload.
+
+### Start the stack
+
+```bash
+docker compose up --build
+```
+
+The app is served on port `8000` and the health endpoint is available at `/health`.
+
+### Environment requirements
+
+- Copy `.env.example` to `.env` and fill in your API keys.
+- Keep the `.env` file mounted into the container so the runtime can read the same values as local development.
+- For production deployments, prefer a single Uvicorn worker because the concurrent-session cap is process-local.
+
+### Production notes
+
+- Set `CASCADE_AUTH_SECRET` if you want the WebSocket gateway to require an auth handshake.
+- Restrict `CASCADE_CORS_ORIGINS` instead of leaving it as `*` for public deployments.
+- Use a reverse proxy in front of the container if you need TLS termination or additional gateway controls.
 
 ---
 

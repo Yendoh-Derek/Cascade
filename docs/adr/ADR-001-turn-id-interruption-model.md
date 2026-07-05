@@ -32,4 +32,4 @@ at the client-side guards.
 - Sub-millisecond interruption response on the server; no audio overlap in practice.
 - Small bookkeeping overhead (integer comparison per message).
 - Audio sent via `send_message()` directly (not `_send_for_turn()`) bypasses the gate —
-  all audio must use `_send_for_turn()` to maintain safety (enforced as of P1-B fix).
+  all audio must use `_send_for_turn()` to maintain safety.

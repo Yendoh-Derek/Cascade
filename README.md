@@ -8,6 +8,16 @@ between finishing speaking and hearing the first word of the response.
 
 ---
 
+## Documentation
+
+- [Architecture overview](docs/ARCHITECTURE.md)
+- [Testing guide](docs/TESTING_GUIDE.md)
+- [Latency tuning guide](docs/LATENCY.md)
+- [ADR history](docs/adr/)
+- [Contributor guide](CONTRIBUTING.md)
+
+---
+
 ## Features
 
 - **Barge-in / Interruption Gating**: High-fidelity interruption model utilizing turn-id and audio epoch tracking to atomically suppress stale text/audio from interrupted turns at the network boundary.
@@ -40,6 +50,7 @@ Conversation history is kept purely in-memory for the lifetime of a WebSocket se
 _If you need multi-session persistence in a production fork, key `TutorSession.history` by a session UUID in Redis or SQLite._
 
 **True Token-Level Streaming**: The STT → LLM → TTS pipeline operates as a true token-level stream when using Deepgram Aura. Text is fed directly to the TTS websocket as fast as the LLM generates individual words, achieving sub-second latency floors without relying on arbitrary sentence-completion boundaries.
+
 - **EdgeTTS Sentence Buffering**: Microsoft Edge-tts does not support partial streaming. The pipeline maintains compatibility by automatically buffering LLM chunks into complete sentences directly within the `EdgeTTSEngine`, shielding the core pipeline's streaming speed.
 - **Deepgram TTS Batched Protocol**: All chunks for a turn are sent as individual `Speak` messages followed by a single `Flush`. Deepgram streams back audio as one continuous take. This eliminates the per-sentence finalization gaps of old patterns.
 
@@ -82,34 +93,40 @@ Latency in Cascade is measured server-side and client-side as follows:
 ```
 cascade/
 ├── backend/
-│   ├── config.py       # Env vars and model configuration
-│   ├── main.py         # FastAPI app, health check, WebSocket endpoint
-│   ├── pipeline.py     # Core streaming pipeline orchestrator
-│   ├── stt.py          # Deepgram Nova-3 integration
-│   ├── llm.py          # Groq streaming + sentence chunker
-│   ├── tts.py          # edge-tts streaming integration
-│   └── tutor.py        # Tutor persona + conversation history
+│   ├── config.py       # Env vars and model defaults
+│   ├── main.py         # FastAPI app, health endpoint, WebSocket gateway
+│   ├── pipeline.py     # Streaming turn orchestrator and latency metrics
+│   ├── stt.py          # Deepgram streaming STT client
+│   ├── llm.py          # Groq streaming + chunking logic
+│   ├── tts.py          # Deepgram Aura + Edge TTS engines
+│   ├── tutor.py        # Tutor persona + conversation history
+│   └── vad.py          # Voice activity detection wrapper
 ├── frontend/
-│   ├── index.html      # Main UI
-│   ├── app.js          # Coordinator ES6 module
-│   ├── audio-input.js  # Audio capturing & VAD module
-│   ├── audio-output.js # Audio playback & interruption module
-│   ├── transport.js    # WebSocket connection module
-│   ├── chart.js        # Canvas latency chart module
-│   ├── ui.js           # UI layout and interactive elements module
-│   ├── state.js        # Shared state constants module
-│   └── style.css       # Styling
+│   ├── app.js          # Coordinator module
+│   ├── audio-input.js  # Audio capture and VAD bridge
+│   ├── audio-output.js # Audio playback and interruption handling
+│   ├── chart.js        # Latency chart rendering
+│   ├── transport.js    # WebSocket client glue
+│   ├── ui.js           # UI state and interaction handlers
+│   ├── state.js        # Shared frontend constants
+│   └── index.html      # Main entry page
 ├── tests/
-│   ├── verify_all.py           # Master verification runner
-│   ├── benchmark.py            # Controlled TTFA benchmark harness (p50/p90/p95)
-│   ├── test_stt.py             # Deepgram STT unit tests & live verification
-│   ├── test_llm.py             # Groq live verification
-│   ├── test_tts.py             # edge-tts live verification
-│   ├── test_tutor.py           # Tutor integration check
-│   ├── test_latency_metrics.py # Latency and interruption pipeline tests
-│   └── test_ws_security.py     # WebSocket security and limits tests
+│   ├── benchmark.py            # TTFA benchmark harness
+│   ├── diagnose_ws.py          # WebSocket diagnostic helper
+│   ├── verify_all.py           # API verification runner
+│   ├── test_stt.py             # STT tests and checks
+│   ├── test_llm.py             # LLM verification tests
+│   ├── test_tts.py             # TTS verification tests
+│   ├── test_tutor.py           # Tutor integration checks
+│   ├── test_latency_metrics.py # Latency and interruption tests
+│   ├── test_mock_integrations.py
+│   ├── test_ws_security.py     # WebSocket security tests
+│   └── frontend/
+│       └── test_chart.js       # Frontend chart logic smoke test
+├── docs/                # Architecture, testing, ADRs, and protocol docs
 ├── .env.example
 ├── requirements.txt
+├── requirements-dev.txt
 └── README.md
 ```
 
@@ -130,6 +147,7 @@ source venv/bin/activate       # Windows: venv\Scripts\activate
 
 ```bash
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 ### 3. Configure API keys
@@ -161,57 +179,74 @@ uvicorn backend.main:app --reload
 
 Open: [http://localhost:8000](http://localhost:8000)
 
----
+## Development
 
-## Performance & Latency
+```bash
+pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py tests/test_mock_integrations.py -v
+ruff check .
+mypy backend/ --ignore-missing-imports
+node tests/frontend/test_chart.js
+```
 
-All numbers below are **real measurements** from `tests/benchmark.py` run from
-**Accra, Ghana → US-East cloud services** (Deepgram Nova-2 STT, Groq, Deepgram Aura TTS).
-Ghana → US round-trip is ~150–200 ms — a deliberately challenging environment,
-not a cherry-picked local-machine result.
+## Docker / Deployment
+
+The repository includes both a production compose file and a dev-reload compose file:
+
+```bash
+docker compose up --build
+```
+
+- `docker-compose.yml` is the production-style entry point.
+- `docker-compose.dev.yml` mounts the backend and frontend folders for live reloading.
+- The container exposes the FastAPI app on port `8000` and the health endpoint is available at `/health`.
+- For production, keep the `.env` file mounted and run a single Uvicorn worker so the per-process session limit behaves as expected.
+  All numbers below are **real measurements** from `tests/benchmark.py` run from
+  **Accra, Ghana → US-East cloud services** (Deepgram Nova-2 STT, Groq, Deepgram Aura TTS).
+  Ghana → US round-trip is ~150–200 ms — a deliberately challenging environment,
+  not a cherry-picked local-machine result.
 
 ### What is measured
 
-| Term | Definition |
-|---|---|
-| **TTFB** | `finalize` sent → first audio **byte** at the benchmark script |
-| **TTFA** | TTFB + ~75 ms browser decode + hardware output buffer |
-| **Barge-in cancel ack** | Client sends `cancel` → server begins new-turn STT transcript |
-| **Barge-in new audio** | Client sends `cancel` → first audio byte of the replacement turn |
+| Term                    | Definition                                                       |
+| ----------------------- | ---------------------------------------------------------------- |
+| **TTFB**                | `finalize` sent → first audio **byte** at the benchmark script   |
+| **TTFA**                | TTFB + ~75 ms browser decode + hardware output buffer            |
+| **Barge-in cancel ack** | Client sends `cancel` → server begins new-turn STT transcript    |
+| **Barge-in new audio**  | Client sends `cancel` → first audio byte of the replacement turn |
 
 TTFB is what the server controls. The remaining ~75 ms is documented browser
 overhead; it is not baked into the numbers — add it yourself.
 
 ### Steady-state results (Deepgram Aura, 5 trials)
 
-| Component | Avg | P50 | P90 |
-|---|---|---|---|
-| STT pipeline tail | 0 ms | 0 ms | 0 ms |
-| LLM queue + schedule | 2 ms | 2 ms | 2 ms |
-| LLM TTFT (Groq) | 386 ms | 412 ms | 450 ms |
-| LLM streaming delay | 13 ms | 14 ms | 16 ms |
-| TTS first byte (Deepgram Aura) | 400 ms | 376 ms | 485 ms |
-| System / transit | 816 ms¹ | 373 ms | 2 162 ms¹ |
-| **Network TTFB** | **1 616 ms** | **1 211 ms** | **2 924 ms** |
-| **Est. TTFA (+75 ms)** | **1 691 ms** | **1 286 ms** | **2 999 ms** |
+| Component                      | Avg          | P50          | P90          |
+| ------------------------------ | ------------ | ------------ | ------------ |
+| STT pipeline tail              | 0 ms         | 0 ms         | 0 ms         |
+| LLM queue + schedule           | 2 ms         | 2 ms         | 2 ms         |
+| LLM TTFT (Groq)                | 386 ms       | 412 ms       | 450 ms       |
+| LLM streaming delay            | 13 ms        | 14 ms        | 16 ms        |
+| TTS first byte (Deepgram Aura) | 400 ms       | 376 ms       | 485 ms       |
+| System / transit               | 816 ms¹      | 373 ms       | 2 162 ms¹    |
+| **Network TTFB**               | **1 616 ms** | **1 211 ms** | **2 924 ms** |
+| **Est. TTFA (+75 ms)**         | **1 691 ms** | **1 286 ms** | **2 999 ms** |
 
 ¹ Due to Groq rate limits inflating the maximums on some trials, the averages and P90s are skewed. The p50 values represent the true steady-state performance. Note: The STT pipeline tail represents the processing delay for the final confirmation from the STT provider after speech ends.
 
 ### Barge-in / interruption results (3 trials)
 
-| Metric | Avg | P50 | P90 |
-|---|---|---|---|
+| Metric                  | Avg      | P50      | P90      |
+| ----------------------- | -------- | -------- | -------- |
 | Cancel → new transcript | 1 230 ms | 1 104 ms | 2 025 ms |
-| Cancel → new audio | 1 247 ms | 1 120 ms | 2 043 ms |
+| Cancel → new audio      | 1 247 ms | 1 120 ms | 2 043 ms |
 
 The cancel-ack includes Deepgram's 300 ms endpointing silence window. Rate limit spikes during this benchmark run slightly inflated the P50 cancel-ack latency, but the delta to "Cancel → new audio" (only ~16ms at P50) highlights the massive speedup gained from keeping the TTS WebSocket alive between turns.
 
 ### Engine comparison
 
-| TTS Engine | TTS first byte | Est. TTFA (p50) | Use case |
-|---|---|---|---|
-| **Deepgram Aura** (primary) | ~311 ms | **~1 276 ms** | Production / low-latency |
-| Edge-TTS (fallback) | ~1 153 ms | ~2 976 ms | Free tier / no API key |
+| TTS Engine                  | TTS first byte | Est. TTFA (p50) | Use case                 |
+| --------------------------- | -------------- | --------------- | ------------------------ |
+| **Deepgram Aura** (primary) | ~311 ms        | **~1 276 ms**   | Production / low-latency |
+| Edge-TTS (fallback)         | ~1 153 ms      | ~2 976 ms       | Free tier / no API key   |
 
 ### Running the benchmark yourself
 

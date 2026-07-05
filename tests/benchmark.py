@@ -67,7 +67,7 @@ def print_env_info(host: str, tts: str):
     print("-" * 65)
 
 async def generate_synthetic_audio(text: str, api_key: str) -> bytes:
-    """Synthesise a fixed PCM16 utterance via Deepgram TTS for use as a test fixture."""
+    """Synthesise a PCM16 utterance via Deepgram TTS for use as a test fixture."""
     url = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=16000"
     headers = {"Authorization": f"Token {api_key}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
