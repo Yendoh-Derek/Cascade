@@ -251,7 +251,7 @@ class TestOriginValidation:
 # ─── Pre-auth buffer cap tests ────────────────────────────────────────────────
 
 class TestPreAuthBuffer:
-    """Verify the 256KB cumulative cap logic for pre-auth audio (fix 0.3)."""
+    """Verify the 256KB cumulative cap logic for pre-auth audio buffering."""
 
     def _simulate(self, chunks):
         accepted, rejected = [], []

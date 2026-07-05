@@ -312,7 +312,7 @@ async def websocket_endpoint(
                         logger.debug(f"[WS] Sender: client disconnected ({type(e).__name__})")
                         break
                     except Exception as e:
-                        # Unexpected: serialization error, bug, etc. — log at error level
+                        # Log unexpected sender errors for diagnostics.
                         logger.error(f"[WS] Sender unexpected error: {type(e).__name__}: {e}")
                     finally:
                         try:
@@ -424,8 +424,7 @@ async def websocket_endpoint(
                                     session.set_ai_speaking(False)
                                 continue
                             elif ctrl_type == "client_latency":
-                                # Browser reports perceived latency: transcript-received
-                                # → first audio buffer scheduled on speaker (P2-C).
+                                # Record the reported perceived latency for the current turn.
                                 perceived_ms = control_msg.get("first_audio_played_ms")
                                 turn_id = control_msg.get("turn_id")
                                 if isinstance(perceived_ms, (int, float)) and 0 < perceived_ms < 60000:

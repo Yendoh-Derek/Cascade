@@ -33,7 +33,7 @@ def print_summary(results: dict, elapsed: float):
     labels = {
         "stt": "Deepgram STT     ",
         "llm": "Groq LLM         ",
-        "tts": "Edge-TTS         ",  # [L2] was labelled "ElevenLabs TTS"
+        "tts": "Deepgram Aura    ",
     }
 
     for key, label in labels.items():
@@ -54,7 +54,7 @@ def print_summary(results: dict, elapsed: float):
     if all_passed:
         print("  v  All checks passed. Ready to build Phase 2.\n")
     else:
-        print("  x  Some checks failed. Fix the issues above.\n")
+        print("  x  Some checks failed. Review the items above.\n")
         print("  Tip: Copy .env.example → .env and add your API keys.\n")
 
     return all_passed
@@ -68,7 +68,7 @@ def run() -> bool:
     for key, label, fn in [
         ("stt", "STT", verify_stt),
         ("llm", "LLM", verify_llm),
-        ("tts", "Edge-TTS", verify_tts),  # [L2] fix
+        ("tts", "Deepgram Aura", verify_tts),
     ]:
         try:
             results[key] = fn()

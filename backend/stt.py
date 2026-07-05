@@ -1,8 +1,7 @@
 """
 cascade/backend/stt.py
 
-Speech-to-Text module using raw WebSocket connection to Deepgram API.
-No SDK dependency issues!
+Speech-to-Text module using a raw WebSocket connection to the Deepgram API.
 """
 
 import asyncio
