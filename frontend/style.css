@@ -1058,6 +1058,17 @@ body {
   margin-left: 4px;
 }
 
+.message-user.streaming p {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.message-user.streaming p::after {
+  content: "▋";
+  animation: cursorBlink 1s step-end infinite;
+  color: rgba(129, 140, 248, 0.7);
+  margin-left: 4px;
+}
+
 @keyframes cursorBlink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }

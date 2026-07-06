@@ -36,9 +36,10 @@ def make_pipeline_session() -> PipelineSession:
             "deepgram_model": "nova-2",
             "groq_model": "mixtral-8x7b",
             "edge_tts_voice": "en-US-AriaNeural",
-            "deepgram_tts_model": "aura-asteria-en",
+            "deepgram_tts_model": "aura-2-asteria-en",
             "stt_endpointing_ms": 300,
             "max_history_turns": 10,
+            "speculative_grace_ms": 180,
         },
         outbound_queue=asyncio.Queue(),
         tts_engine="edge",
@@ -160,7 +161,7 @@ class TestTTSLatencyTracking:
     @pytest.mark.asyncio
     async def test_deepgram_tts_yields_metadata_first(self):
         """Test that DeepgramTTSEngine yields metadata dict before audio bytes."""
-        engine = DeepgramTTSEngine(api_key="test_key", model="aura-asteria-en")
+        engine = DeepgramTTSEngine(api_key="test_key", model="aura-2-asteria-en")
         
         with patch('aiohttp.ClientSession') as mock_session_class:
             mock_session = MagicMock()
@@ -330,6 +331,33 @@ class TestInterruptionHardening:
         # Ensure task2's completion cleared the flag
         assert session.is_processing_transcript is False
         assert session.processing_task is None
+
+    @pytest.mark.asyncio
+    async def test_superseded_turn_finally_does_not_clear_newer_active_turn(self, pipeline_session):
+        """Stale turn finally must not wipe _active_turn_id for a superseding turn."""
+        session = pipeline_session
+        session.llm_generator = MagicMock()
+        session.tts_engine = MagicMock()
+        session.model_config["speculative_grace_ms"] = 500
+
+        session._on_transcript_received("Hello Cascade, I want to learn about")
+        assert session._active_turn_id == 1
+        turn1_task = session.processing_task
+
+        await asyncio.sleep(0.05)
+
+        session._on_transcript_received("the pythagoras theorem")
+        assert session._active_turn_id == 2
+
+        try:
+            await turn1_task
+        except asyncio.CancelledError:
+            pass
+
+        await asyncio.sleep(0.01)
+
+        assert session._active_turn_id == 2
+        assert session._can_send(2) is True
 
 
 class TestSTTLatencyMeasurement:

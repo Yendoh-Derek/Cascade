@@ -146,11 +146,20 @@ export class AudioInputController {
     console.log(`[AudioInput] Sent finalize signal (${reason})`);
   }
 
+  _canScheduleFinalize() {
+    if (this.client.state === STATE.LISTENING) return true;
+    if (this.client.state === STATE.PROCESSING) {
+      const out = this.client.audioOutput;
+      return !out.isPlaying && out.activeSourceNodes.length === 0;
+    }
+    return false;
+  }
+
   _scheduleFinalizeIfSilent(now = Date.now()) {
     if (
       !this._speechDetected ||
       !this.lastUtteredTime ||
-      this.client.state !== STATE.LISTENING
+      !this._canScheduleFinalize()
     ) {
       return;
     }
@@ -172,7 +181,7 @@ export class AudioInputController {
 
     this._finalizeTimeout = setTimeout(() => {
       this._finalizeTimeout = null;
-      if (this.client.state === STATE.LISTENING && this._speechDetected) {
+      if (this._canScheduleFinalize() && this._speechDetected) {
         this._sendFinalize("local_silence");
       }
     }, 60);
@@ -354,6 +363,13 @@ export class AudioInputController {
       this.client.state === STATE.PROCESSING
     ) {
       this._detectInterruption(rms);
+      if (
+        rms < threshold &&
+        this.client.state === STATE.PROCESSING &&
+        this._canScheduleFinalize()
+      ) {
+        this._scheduleFinalizeIfSilent();
+      }
     }
   }
 

@@ -218,11 +218,13 @@ class TestOriginValidation:
     def test_same_host_allowed(self):
         assert self._check("http://myapp.com", "myapp.com:8000") is True
 
-    def test_localhost_always_allowed(self):
-        assert self._check("http://localhost:3000", "myapp.com:8000") is True
+    def test_localhost_origin_allowed_when_server_is_local(self):
+        assert self._check("http://localhost:3000", "localhost:8000") is True
+        assert self._check("http://127.0.0.1:5173", "127.0.0.1:8000") is True
 
-    def test_127_allowed(self):
-        assert self._check("http://127.0.0.1:5173", "myapp.com") is True
+    def test_localhost_origin_rejected_on_public_host(self):
+        assert self._check("http://localhost:3000", "myapp.com:8000") is False
+        assert self._check("http://127.0.0.1:5173", "myapp.com") is False
 
     def test_missing_origin_allowed_on_localhost(self):
         assert self._check(None, "localhost:8000") is True

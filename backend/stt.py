@@ -320,6 +320,8 @@ class STTHandler:
                             else transcript
                         )
                         self._latest_interim = ""
+                        if self.on_transcript_update and self.transcript_buffer.strip():
+                            self.on_transcript_update(self.transcript_buffer.strip())
                         logger.debug(f"[STT] is_final: '{transcript}'")
 
                     if speech_final:

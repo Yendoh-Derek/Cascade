@@ -114,6 +114,8 @@ docker compose up --build
 
 The app is served on port `8000` and the health endpoint is available at `/health`.
 
+The Docker image pre-downloads the Silero VAD model at build time (`TORCH_HOME=/app/.cache/torch`), so cold starts do not depend on GitHub reachability at runtime.
+
 ### Environment requirements
 
 - Copy `.env.example` to `.env` and fill in your API keys.
@@ -132,7 +134,7 @@ The app is served on port `8000` and the health endpoint is available at `/healt
 
 | Control                | Mechanism                                                                   |
 | ---------------------- | --------------------------------------------------------------------------- |
-| Origin validation      | Hostname equality check via `urlsplit()` — not substring containment        |
+| Origin validation      | Hostname equality check via `urlsplit()` — not substring containment; `localhost`/`127.0.0.1` origins are only accepted when the server host is also local |
 | Pre-auth audio buffer  | 256KB cumulative cap + 10MB per-chunk cap during HMAC handshake window      |
 | HMAC authentication    | Optional `CASCADE_AUTH_SECRET`; HMAC-SHA256 challenge-response              |
 | CORS                   | Configurable via `CASCADE_CORS_ORIGINS` env var (default `*` for local dev) |
