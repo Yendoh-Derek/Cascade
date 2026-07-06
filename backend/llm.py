@@ -52,7 +52,7 @@ class LLMGenerator:
 
         Args:
             api_key: Groq API key
-            model: Model to use (default: llama-3.3-70b-versatile)
+            model: Model to use (default: llama-3.1-8b-instant)
             client: Optional existing AsyncGroq client to use (for sharing across sessions)
         """
         self.api_key = api_key

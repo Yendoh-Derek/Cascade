@@ -116,18 +116,50 @@ async def test_vad_interruption_triggers_on_speech_started():
     handler.ws = AsyncMock()
     handler.is_open = True
     handler.ws.closed = False
+    handler._vad = MagicMock()
 
     # Simulate 'speech_stopped' event - should NOT trigger interruption
     with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
         mock_to_thread.return_value = ["speech_stopped"]
         await handler.send_audio(b"dummy_audio_bytes")
+        await asyncio.sleep(0.05)
         on_speech_interrupted.assert_not_called()
 
     # Simulate 'speech_started' event - SHOULD trigger interruption
     with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
         mock_to_thread.return_value = ["speech_started"]
         await handler.send_audio(b"dummy_audio_bytes")
+        await asyncio.sleep(0.05)
         on_speech_interrupted.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_vad_speech_started_preserves_buffer():
+    """Mid-sentence pause must not wipe transcript state before pipeline confirms interrupt."""
+    on_speech_interrupted = MagicMock()
+
+    handler = STTHandler(
+        api_key="test_key",
+        on_transcript=MagicMock(),
+        on_speech_interrupted=on_speech_interrupted,
+    )
+    handler.ws = AsyncMock()
+    handler.is_open = True
+    handler.ws.closed = False
+    handler.transcript_buffer = "the capital of France"
+    handler._latest_interim = "is"
+    handler.last_stt_tail_ms = 42
+    handler._vad = MagicMock()
+
+    with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
+        mock_to_thread.return_value = ["speech_started"]
+        await handler.send_audio(b"dummy_audio_bytes")
+        await asyncio.sleep(0.05)
+
+    on_speech_interrupted.assert_called_once_with("")
+    assert handler.transcript_buffer == "the capital of France"
+    assert handler._latest_interim == "is"
+    assert handler.last_stt_tail_ms == 42
 
 
 # --- Live Verification for verify_all.py ---

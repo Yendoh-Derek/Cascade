@@ -200,10 +200,13 @@ docker compose up --build
 - `docker-compose.dev.yml` mounts the backend and frontend folders for live reloading.
 - The container exposes the FastAPI app on port `8000` and the health endpoint is available at `/health`.
 - For production, keep the `.env` file mounted and run a single Uvicorn worker so the per-process session limit behaves as expected.
-  All numbers below are **real measurements** from `tests/benchmark.py` run from
-  **Accra, Ghana → US-East cloud services** (Deepgram Nova-2 STT, Groq, Deepgram Aura TTS).
-  Ghana → US round-trip is ~150–200 ms — a deliberately challenging environment,
-  not a cherry-picked local-machine result.
+
+## Performance & Latency
+
+All numbers below are **real measurements** from `tests/benchmark.py` run from
+**Accra, Ghana → US-East cloud services** (Deepgram Nova-3 STT, Groq, Deepgram Aura TTS).
+Ghana → US round-trip is ~150–200 ms — a deliberately challenging environment,
+not a cherry-picked local-machine result.
 
 ### What is measured
 

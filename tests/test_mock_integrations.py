@@ -93,3 +93,73 @@ async def test_tts_ws_state_machine_cancellation():
             
         # Verify clear was sent or WS closed
         assert mock_ws.send_json.called or mock_ws.close.called
+
+
+@pytest.mark.asyncio
+async def test_vad_barge_in_clears_buffer_on_confirmed_interrupt():
+    """Confirmed barge-in must clear STT buffers via pipeline, not stt.py pre-wipe."""
+    from backend.pipeline import PipelineSession
+    from backend.stt import STTHandler
+
+    outbound_queue: asyncio.Queue = asyncio.Queue()
+    session = PipelineSession(
+        api_keys={"deepgram": "fake", "groq": "fake"},
+        model_config={"groq_model": "fake", "deepgram_model": "nova-3"},
+        outbound_queue=outbound_queue,
+        tts_engine="edge",
+    )
+    session.stt_handler = STTHandler(
+        api_key="fake",
+        on_transcript=MagicMock(),
+    )
+    session.stt_handler.transcript_buffer = "partial utterance"
+    session.stt_handler._latest_interim = "still speaking"
+    session._active_turn_id = 1
+    session.is_processing_transcript = True
+    session._ai_speaking = True
+
+    session._on_vad_interrupted("")
+
+    assert session.stt_handler.transcript_buffer == ""
+    assert session.stt_handler._latest_interim == ""
+    assert session._active_turn_id is None
+    assert session.is_processing_transcript is False
+
+    msg = await outbound_queue.get()
+    assert msg["type"] == "turn_cancelled"
+    assert msg["turn_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_vad_resume_during_speculative_preserves_buffer():
+    """User resuming mid-utterance after speculative trigger must not wipe STT buffer."""
+    from backend.pipeline import PipelineSession
+    from backend.stt import STTHandler
+
+    outbound_queue: asyncio.Queue = asyncio.Queue()
+    session = PipelineSession(
+        api_keys={"deepgram": "fake", "groq": "fake"},
+        model_config={"groq_model": "fake", "deepgram_model": "nova-3"},
+        outbound_queue=outbound_queue,
+        tts_engine="edge",
+    )
+    session.stt_handler = STTHandler(
+        api_key="fake",
+        on_transcript=MagicMock(),
+    )
+    session.stt_handler.transcript_buffer = "the capital of France"
+    session.stt_handler._latest_interim = "is"
+    session._active_turn_id = 1
+    session.is_processing_transcript = True
+    session._ai_speaking = False
+
+    session._on_vad_interrupted("")
+
+    assert session.stt_handler.transcript_buffer == "the capital of France"
+    assert session.stt_handler._latest_interim == "is"
+    assert session._active_turn_id is None
+    assert session.is_processing_transcript is False
+
+    msg = await outbound_queue.get()
+    assert msg["type"] == "turn_cancelled"
+    assert msg["turn_id"] == 1

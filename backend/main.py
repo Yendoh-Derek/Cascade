@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     logger.info("[App] Shared Groq client initialized")
     
     # Initialize shared VAD model to prevent event-loop blocking on first session
-    get_shared_vad_model()
+    await asyncio.to_thread(get_shared_vad_model)
     logger.info("[App] Shared VAD model initialized")
     
     yield
@@ -282,6 +282,7 @@ async def websocket_endpoint(
                     "vad_min_speech_frames": config.vad_min_speech_frames,
                     "enable_speculative_llm": config.enable_speculative_llm,
                     "speculative_stability_matches": config.speculative_stability_matches,
+                    "speculative_grace_ms": config.speculative_grace_ms,
                 },
                 outbound_queue=outbound_queue,
                 tts_engine=tts_engine,

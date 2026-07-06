@@ -21,6 +21,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
@@ -36,3 +37,6 @@ jobs:
 
       - name: Run frontend chart smoke test
         run: node tests/frontend/test_chart.js
+
+      - name: Run frontend playback state smoke test
+        run: node tests/frontend/test_playback_state.js

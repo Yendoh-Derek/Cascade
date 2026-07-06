@@ -6,10 +6,19 @@
     <title>Cascade — AI Voice Tutor</title>
     <meta name="description" content="Cascade is a premium AI voice tutor assistant. Speak naturally and get instant, intelligent responses." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
     <link rel="stylesheet" href="style.css?v=2.0.2" />
   </head>
   <body>
@@ -138,6 +147,13 @@
         <div class="stats-panel-header">
           <span class="stats-panel-title">Latency Breakdown</span>
           <button class="stats-close-btn" id="btn-close-stats">✕</button>
+        </div>
+        <div class="stats-legend stats-legend--chart" aria-hidden="false">
+          <span><span class="legend-dot" style="background:#60a5fa"></span>Endpointing</span>
+          <span><span class="legend-dot" style="background:#818cf8"></span>STT Tail</span>
+          <span><span class="legend-dot" style="background:#c084fc"></span>LLM</span>
+          <span><span class="legend-dot" style="background:#34d399"></span>TTS</span>
+          <span><span class="legend-dot" style="background:#fb923c"></span>System</span>
         </div>
         <canvas id="latency-chart" width="600" height="300"></canvas>
       </div>

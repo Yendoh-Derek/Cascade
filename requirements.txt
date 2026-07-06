@@ -7,5 +7,4 @@ edge-tts==7.2.8
 python-dotenv==1.2.2
 httpx==0.28.1
 torch==2.12.1
-torchaudio==2.11.0
 numpy==2.4.4

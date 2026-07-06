@@ -27,6 +27,33 @@ export class ChartRenderer {
     return Math.max(Math.ceil(peak / step) * step, step * 2);
   }
 
+  /** Keep bar labels below the chart ceiling; draw inside the bar when needed. */
+  _barLabelY(yTop, chartBottom) {
+    const LINE_H = 11;
+    const TOP_MARGIN = 8;
+    let labelY = yTop - 6;
+
+    if (labelY - LINE_H >= TOP_MARGIN) {
+      return { labelY, inside: false };
+    }
+
+    labelY = Math.min(yTop + 14, chartBottom - 4);
+    return { labelY, inside: true };
+  }
+
+  _drawBarLabel(ctx, text, x, y, inside) {
+    if (inside) {
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.55)";
+      ctx.shadowBlur = 3;
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillText(text, x, y);
+      ctx.restore();
+      return;
+    }
+    ctx.fillText(text, x, y);
+  }
+
   render() {
     const canvas = document.getElementById("latency-chart");
     if (!canvas) return;
@@ -47,9 +74,10 @@ export class ChartRenderer {
     const ctx = canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    const PAD = { top: 36, right: 20, bottom: 40, left: 56 };
+    const PAD = { top: 20, right: 20, bottom: 40, left: 56 };
     const chartW = W - PAD.left - PAD.right;
     const chartH = H - PAD.top - PAD.bottom;
+    const chartBottom = PAD.top + chartH;
 
     const colors = {
       endpointing: "#60a5fa", // Blue
@@ -99,30 +127,6 @@ export class ChartRenderer {
     ctx.textAlign = "center";
     ctx.fillText("Latency (ms)", 0, 0);
     ctx.restore();
-
-    // In-chart legend (top-left)
-    let legendX = PAD.left;
-    const legendY = 12;
-    ctx.font = "10px Inter, sans-serif";
-    ctx.textAlign = "left";
-
-    const legendItems = [
-      { key: "endpointing", label: "Endpointing" },
-      { key: "stt_tail", label: "STT Tail" },
-      { key: "llm", label: "LLM" },
-      { key: "tts", label: "TTS" },
-      { key: "system", label: "System" },
-    ];
-
-    legendItems.forEach(({ key, label }) => {
-      ctx.fillStyle = colors[key];
-      ctx.beginPath();
-      ctx.arc(legendX + 4, legendY + 4, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,0.45)";
-      ctx.fillText(label, legendX + 12, legendY + 8);
-      legendX += ctx.measureText(label).width + 28;
-    });
 
     // Y gridlines
     for (let v = 0; v <= maxMs; v += tickStep) {
@@ -213,17 +217,12 @@ export class ChartRenderer {
       const e2eTotal = endpointingVal + sttTailVal + (d.total || 0);
       const displayTotal =
         e2eTotal || endpointingVal + sttTailVal + llmVal + ttsVal + systemVal;
-      ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.font = "9px JetBrains Mono, monospace";
       ctx.textAlign = "center";
 
-      if (d.perceived != null) {
-        ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 16);
-        ctx.fillStyle = "rgba(52, 211, 153, 0.8)";
-        ctx.fillText(`felt ${d.perceived}ms`, scaleX(i), yTop - 4);
-      } else {
-        ctx.fillText(`${displayTotal}ms`, scaleX(i), yTop - 6);
-      }
+      const { labelY, inside } = this._barLabelY(yTop, chartBottom);
+      ctx.fillStyle = inside ? "rgba(255,255,255,0.92)" : "rgba(255,255,255,0.55)";
+      this._drawBarLabel(ctx, `${displayTotal}ms`, scaleX(i), labelY, inside);
 
       // Turn label
       ctx.fillStyle = "rgba(255,255,255,0.25)";

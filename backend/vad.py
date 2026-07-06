@@ -1,4 +1,5 @@
 import copy
+import threading
 import numpy as np
 import torch
 
@@ -50,13 +51,20 @@ class SileroVAD:
         self._silence_frame_count = 0
         self._speech_frame_count = 0
         self._buffer = np.array([], dtype=np.int16)
+        self._lock = threading.Lock()
 
     def feed(self, pcm16_bytes: bytes, require_extra_frames: bool = False) -> list[str]:
         """
         Feed raw PCM16 audio bytes. Returns a list of events that fired:
           "speech_started"  — first frame above threshold after silence
           "speech_stopped"  — silence_ms of sub-threshold audio after speech
+
+        Thread-safe: Silero's recurrent state must not be updated concurrently.
         """
+        with self._lock:
+            return self._feed_unlocked(pcm16_bytes, require_extra_frames)
+
+    def _feed_unlocked(self, pcm16_bytes: bytes, require_extra_frames: bool) -> list[str]:
         events: list[str] = []
         samples = np.frombuffer(pcm16_bytes, dtype=np.int16)
         self._buffer = np.concatenate([self._buffer, samples])
@@ -92,8 +100,9 @@ class SileroVAD:
         return events
 
     def reset(self):
-        self.model.reset_states()
-        self._speech_active = False
-        self._silence_frame_count = 0
-        self._speech_frame_count = 0
-        self._buffer = np.array([], dtype=np.int16)
+        with self._lock:
+            self.model.reset_states()
+            self._speech_active = False
+            self._silence_frame_count = 0
+            self._speech_frame_count = 0
+            self._buffer = np.array([], dtype=np.int16)
