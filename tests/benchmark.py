@@ -66,9 +66,9 @@ def print_env_info(host: str, tts: str):
     print(f"  TTS:           {tts_label}")
     print("-" * 65)
 
-async def generate_synthetic_audio(text: str, api_key: str) -> bytes:
+async def generate_synthetic_audio(text: str, api_key: str, model: str) -> bytes:
     """Synthesise a PCM16 utterance via Deepgram TTS for use as a test fixture."""
-    url = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=16000"
+    url = f"https://api.deepgram.com/v1/speak?model={model}&encoding=linear16&sample_rate=16000"
     headers = {"Authorization": f"Token {api_key}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
         response = await client.post(url, headers=headers, json={"text": text}, timeout=15.0)
@@ -91,6 +91,8 @@ async def run_steady_state_trials(uri: str, audio_bytes: bytes, num_trials: int 
 
     stt_ms_list, llm_queue_list, llm_ttft_list = [], [], []
     llm_stream_list, tts_list, ttfb_list, sys_list = [], [], [], []
+    speculative_completed = 0
+    turn_cancelled_count = 0
 
     try:
         async with websockets.connect(uri, max_size=None) as ws:
@@ -115,6 +117,7 @@ async def run_steady_state_trials(uri: str, audio_bytes: bytes, num_trials: int 
 
                 async def recv_turn():
                     nonlocal t_first_audio, turn_latency, turn_llm
+                    nonlocal speculative_completed, turn_cancelled_count
                     while True:
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=30.0)
@@ -136,6 +139,10 @@ async def run_steady_state_trials(uri: str, audio_bytes: bytes, num_trials: int 
                                 turn_llm = msg
                             elif t == "latency":
                                 turn_latency = msg
+                                if msg.get("was_speculative"):
+                                    speculative_completed += 1
+                            elif t == "turn_cancelled":
+                                turn_cancelled_count += 1
                             elif t == "response_end":
                                 break
 
@@ -199,6 +206,14 @@ async def run_steady_state_trials(uri: str, audio_bytes: bytes, num_trials: int 
     print("* TTFB = time from finalize→first audio byte at the script.")
     print("  True browser TTFA adds ~75ms (decode + hardware output buffer).")
     print("  Report both; let the reader add them.")
+    if speculative_completed or turn_cancelled_count:
+        print(f"  Speculative turns completed: {speculative_completed}/{n}")
+        print(f"  Turn cancellations observed: {turn_cancelled_count}")
+        if speculative_completed:
+            print(
+                "  False-start proxy: turn_cancelled / speculative_completed "
+                f"= {turn_cancelled_count}/{speculative_completed}"
+            )
 
 
 # ─── Barge-In / Interruption Trials ───────────────────────────────────────────
@@ -337,16 +352,17 @@ async def main():
     print("═" * 65)
     print_env_info(args.host, args.tts)
 
+    cfg = get_model_config()
     print("  Generating test audio fixtures via Deepgram TTS...", end="", flush=True)
     # Keep utterances very short (1 sentence) so Edge-TTS responses
     # finish in a few seconds and don't stall the benchmark.
     audio_short = await generate_synthetic_audio(
-        "Hi, what time is it?", api_keys.deepgram
+        "Hi, what time is it?", api_keys.deepgram, cfg.deepgram_tts_model
     )
     # audio_long: use a simple, short question so the LLM gives a brief but
     # audible response (avoids Groq rate-limiting on long counting responses).
     audio_long = await generate_synthetic_audio(
-        "What is your name?", api_keys.deepgram
+        "What is your name?", api_keys.deepgram, cfg.deepgram_tts_model
     )
     print(f" done ({len(audio_short)//2000:.1f}s + {len(audio_long)//2000:.1f}s PCM)")
 

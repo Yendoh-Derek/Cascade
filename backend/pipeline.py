@@ -99,6 +99,8 @@ class TurnMetrics:
     llm_retry_ms: int = 0
     tts_first_chunk_latency_ms: int = 0
     tts_metrics_sent: bool = False
+    was_speculative: bool = False
+    superseded_during_grace: bool = False
 
 
 class PipelineSession:
@@ -167,7 +169,7 @@ class PipelineSession:
             on_transcript_update=self._on_stt_update,
             on_speculative_transcript=self._on_speculative_transcript,
             is_ai_speaking=self.is_ai_speaking,
-            model=self.model_config.get("deepgram_model", "nova-2"),
+            model=self.model_config.get("deepgram_model", "nova-3"),
             language=self.model_config.get("deepgram_language", "en-US"),
             endpointing_ms=self.model_config.get("stt_endpointing_ms", 300),
             vad_threshold=self.model_config.get("vad_threshold", 0.5),
@@ -176,6 +178,7 @@ class PipelineSession:
             enable_speculative_llm=self.model_config.get("enable_speculative_llm", False),
             speculative_stability_matches=self.model_config.get("speculative_stability_matches", 2),
         )
+        await self.stt_handler.prepare_vad()
         self.llm_generator = LLMGenerator(
             api_key=self.api_keys["groq"],
             model=self.model_config["groq_model"],
@@ -271,10 +274,23 @@ class PipelineSession:
         Called when Silero VAD detects the user is speaking (local silence ended).
         Immediately cancels any in-progress AI response so the user is not talking
         over the AI. Does NOT trigger the LLM - that waits for Deepgram speech_final.
+        STT buffer is cleared only on confirmed barge-in (AI actively playing back).
         """
         if self._active_turn_id is None and not self.is_processing_transcript:
             return
-        logger.info("[Pipeline] VAD speech detected - interrupting AI response")
+
+        is_barge_in = self.is_ai_speaking()
+        if is_barge_in:
+            logger.info("[Pipeline] VAD barge-in - interrupting AI playback")
+            if self.stt_handler:
+                self.stt_handler.clear_buffer()
+                self.stt_handler.last_stt_tail_ms = 0
+        else:
+            logger.info(
+                "[Pipeline] VAD speech during turn processing - "
+                "cancelling without clearing STT buffer"
+            )
+
         old_turn = self._active_turn_id
         self._cancel_active_turn_tasks()
         if old_turn is not None:
@@ -291,7 +307,7 @@ class PipelineSession:
         it supersedes this turn cleanly via the existing 'newest wins' logic.
         """
         logger.info(f"[Pipeline] Speculative trigger (VAD+stable): '{transcript[:60]}'")
-        self._on_transcript_received(transcript)
+        self._on_transcript_received(transcript, was_speculative=True)
 
     def set_ai_speaking(self, is_speaking: bool):
         """Update AI speaking state based on frontend playback signals."""
@@ -308,7 +324,7 @@ class PipelineSession:
             return True
         return False
 
-    def _on_transcript_received(self, transcript: str):
+    def _on_transcript_received(self, transcript: str, was_speculative: bool = False):
         """
         Called by STT when a complete utterance is confirmed.
         Schedules the pipeline processing on the event loop.
@@ -340,6 +356,7 @@ class PipelineSession:
 
         # Reset metrics for new turn
         self._metrics = TurnMetrics()
+        self._metrics.was_speculative = was_speculative
 
         self._metrics.utterance_end_time = time.perf_counter()
         if self.stt_handler:
@@ -357,7 +374,9 @@ class PipelineSession:
 
         try:
             loop = asyncio.get_running_loop()
-            task = loop.create_task(self._process_transcript(transcript, current_turn_id))
+            task = loop.create_task(
+                self._process_transcript(transcript, current_turn_id, was_speculative)
+            )
             self.processing_task = task
 
             _captured_task = task
@@ -378,7 +397,9 @@ class PipelineSession:
             logger.error("[Pipeline] No running event loop")
             self.is_processing_transcript = False
 
-    async def _process_transcript(self, transcript: str, turn_id: int):
+    async def _process_transcript(
+        self, transcript: str, turn_id: int, was_speculative: bool = False
+    ):
         """Core pipeline: transcript → LLM streaming → TTS turn-batch → WebSocket."""
         full_response = ""
         first_token_received = False
@@ -391,7 +412,7 @@ class PipelineSession:
 
             self._send_for_turn(turn_id, {"type": "transcript", "text": transcript})
 
-            grace_ms = self.model_config.get("speculative_grace_ms", 180)
+            grace_ms = 0 if was_speculative else self.model_config.get("speculative_grace_ms", 180)
             if grace_ms > 0:
                 try:
                     await asyncio.wait_for(
@@ -399,6 +420,7 @@ class PipelineSession:
                         timeout=grace_ms / 1000,
                     )
                     # Cancel event fired during grace window — newer transcript incoming
+                    self._metrics.superseded_during_grace = True
                     logger.info(f"[Pipeline] Turn {turn_id} superseded during grace window")
                     return
                 except asyncio.TimeoutError:
@@ -613,6 +635,7 @@ class PipelineSession:
                                             "stt_tail_ms": stt_tail_ms,
                                             "endpointing_ms": stt_endpointing_ms,
                                             "ms": total_ms,
+                                            "was_speculative": self._metrics.was_speculative,
                                         })
                                 elif len(audio_buffer) >= AUDIO_CHUNK_MIN_SIZE:
                                     flush_audio_buffer()

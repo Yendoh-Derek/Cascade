@@ -58,7 +58,6 @@ def mock_pipeline_dependencies():
                 vad_silence_ms=200,
                 vad_min_speech_frames=3,
                 speculative_grace_ms=180,
-                interim_trigger_words=6,
                 speculative_stability_matches=2,
                 enable_speculative_llm=False,
                 groq_model="llama-3.1-8b-instant",

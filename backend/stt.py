@@ -63,7 +63,10 @@ class STTHandler:
         self.enable_speculative_llm = enable_speculative_llm
         self.speculative_stability_matches = speculative_stability_matches
 
-        self._vad = SileroVAD(threshold=vad_threshold, silence_ms=vad_silence_ms, min_speech_frames=vad_min_speech_frames)
+        self._vad: Optional[SileroVAD] = None
+        self._vad_threshold = vad_threshold
+        self._vad_silence_ms = vad_silence_ms
+        self._vad_min_speech_frames = vad_min_speech_frames
         self._latest_interim: str = ""
         self._recent_interims: list[str] = []
         self.session: Optional[aiohttp.ClientSession] = None
@@ -74,6 +77,8 @@ class STTHandler:
         self._keepalive_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing_intentionally = False
+        self._vad_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._vad_worker_task: Optional[asyncio.Task] = None
 
         self._last_audio_sent_time: Optional[float] = None
         self._utterance_start_time: Optional[float] = None
@@ -82,6 +87,16 @@ class STTHandler:
         # rather than speaking duration. Typically ≈ 300ms (the endpointing window).
         self._last_speech_time: Optional[float] = None
         self.last_stt_tail_ms: int = 0
+
+    async def prepare_vad(self):
+        """Load per-session Silero state off the event loop (deepcopy is sync)."""
+        if self._vad is None:
+            self._vad = await asyncio.to_thread(
+                SileroVAD,
+                self._vad_threshold,
+                self._vad_silence_ms,
+                self._vad_min_speech_frames,
+            )
 
     def _build_ws_url(self) -> str:
         base_url = "wss://api.deepgram.com/v1/listen"
@@ -332,13 +347,11 @@ class STTHandler:
         try:
             self._last_audio_sent_time = time.perf_counter()
             await self.ws.send_bytes(audio_bytes)
-            
-            # Feed to local VAD alongside Deepgram stream using to_thread
-            events = await asyncio.to_thread(self._vad.feed, audio_bytes, self.is_ai_speaking())
-            if "speech_started" in events:
-                self._on_vad_speech_started()
-            if "speech_stopped" in events and self.enable_speculative_llm:
-                self._on_vad_speech_stopped_speculative()
+
+            # VAD inference is CPU-bound — queue chunks for a single worker so
+            # Silero's mutable recurrent state is never touched concurrently.
+            self._ensure_vad_worker()
+            self._vad_queue.put_nowait(audio_bytes)
         except RuntimeError as e:
             self.is_open = False
             logger.warning(f"[STT] Transport closing mid-send (expected during shutdown): {e}")
@@ -355,19 +368,67 @@ class STTHandler:
             else:
                 self.on_error(str(e))
 
+    def _ensure_vad_worker(self):
+        if self._vad_worker_task is None or self._vad_worker_task.done():
+            self._vad_worker_task = asyncio.create_task(self._vad_worker())
+
+    async def _vad_worker(self):
+        """Serialize VAD inference off-thread; one chunk at a time per session."""
+        while True:
+            audio_bytes = await self._vad_queue.get()
+            try:
+                if audio_bytes is None:
+                    break
+                if not self.is_open or self._closing_intentionally:
+                    continue
+                if self._vad is None:
+                    continue
+                events = await asyncio.to_thread(
+                    self._vad.feed, audio_bytes, self.is_ai_speaking()
+                )
+                if not self.is_open or self._closing_intentionally:
+                    continue
+                if "speech_started" in events:
+                    self._on_vad_speech_started()
+                if "speech_stopped" in events and self.enable_speculative_llm:
+                    self._on_vad_speech_stopped_speculative()
+            except Exception as e:
+                logger.debug(f"[STT] VAD processing error: {e}")
+            finally:
+                self._vad_queue.task_done()
+
+    async def _stop_vad_worker(self):
+        worker = self._vad_worker_task
+        if worker is None or worker.done():
+            self._vad_worker_task = None
+            return
+        try:
+            await self._vad_queue.put(None)
+            try:
+                await asyncio.wait_for(worker, timeout=2.0)
+            except asyncio.TimeoutError:
+                worker.cancel()
+                try:
+                    await worker
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.debug(f"[STT] VAD worker error during cancel: {e}")
+        except Exception as e:
+            logger.debug(f"[STT] VAD worker shutdown error: {e}")
+        finally:
+            self._vad_worker_task = None
+
     def _on_vad_speech_started(self):
         """
         Fires the instant Silero detects the user has started speaking.
         Signals the pipeline to cancel any in-progress AI response immediately
         (barge-in). Does NOT trigger the LLM - Deepgram speech_final handles that.
+        Buffer mutation is deferred to the pipeline once it confirms a real interrupt.
         """
         if not self.on_speech_interrupted:
             return
-        speculative_text = (self.transcript_buffer + " " + self._latest_interim).strip()
-        self.transcript_buffer = ""   # prevent _flush_buffer from double-flushing buffered text
-        self._latest_interim = ""     # prevent _flush_buffer from double-counting this text
-        self.last_stt_tail_ms = 0
-        self.on_speech_interrupted(speculative_text)
+        self.on_speech_interrupted("")
 
     def _on_vad_speech_stopped_speculative(self):
         """
@@ -396,7 +457,7 @@ class STTHandler:
         self._latest_interim = ""
         self._recent_interims.clear()
         self._utterance_start_time = None
-        if hasattr(self, '_vad'):
+        if self._vad is not None:
             self._vad.reset()
 
     async def finalize(self):
@@ -411,6 +472,8 @@ class STTHandler:
     async def close(self):
         """Close the WebSocket connection cleanly."""
         self._closing_intentionally = True
+
+        await self._stop_vad_worker()
 
         if self._reconnect_task:
             self._reconnect_task.cancel()

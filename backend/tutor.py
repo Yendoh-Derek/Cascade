@@ -148,7 +148,7 @@ class TutorSession:
         # Second pass: estimate token count and trim if needed
         # Rough estimate: 1 token ≈ 4 characters for English text
         total_tokens = self._estimate_tokens()
-        max_tokens = 16000  # Increased limit for Groq Llama 3.3 70B
+        max_tokens = 16000  # Context budget for default Groq llama-3.1-8b-instant
 
         if total_tokens > max_tokens:
             # Remove oldest message pair (user + assistant) together to maintain

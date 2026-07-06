@@ -58,57 +58,42 @@ sequenceDiagram
 
 ## WebSocket Protocol
 
-Cascade uses a single WebSocket endpoint at `/ws` for the full-duplex voice pipeline.
+See [WEBSOCKET_PROTOCOL.md](WEBSOCKET_PROTOCOL.md) for the full message catalog
+(client ↔ server types, fields, and turn-gating rules).
 
-### Connection
+---
 
-- Endpoint: `/ws`
-- Query parameter: `tts_engine=deepgram|edge`
-- The server accepts binary PCM16 audio frames from the client and emits both binary audio frames and JSON control messages.
+## Three-Layer VAD Stack
 
-### Authentication handshake
+End-of-utterance detection and barge-in span three cooperating layers:
 
-If `CASCADE_AUTH_SECRET` is set, the server sends a `challenge` message with a nonce before any pipeline work begins. The client must reply with a JSON message shaped like:
-
-```json
-{ "type": "auth", "response": "<hmac-sha256>" }
+```mermaid
+flowchart LR
+    ClientRMS["Client RMS VAD\nfrontend/audio-input.js\n~190ms early finalize"]
+    ServerSilero["Server Silero VAD\nbackend/vad.py\nbarge-in + speculative trigger"]
+    DeepgramEP["Deepgram endpointing\nCASCADE_STT_ENDPOINTING ms\ndefault 300ms speech_final"]
+    ClientRMS --> ServerSilero --> DeepgramEP
 ```
 
-On success, the server replies with `auth_ok`. If authentication fails or times out, the server closes the connection with an error message.
+### Client RMS VAD (`frontend/audio-input.js`)
 
-### Client → server messages
+The browser applies a lightweight RMS-based voice-activity layer before audio
+reaches the server:
 
-#### Binary audio
+- **Early finalize:** After 130 ms of local silence (`localFinalizeSilenceMs`)
+  plus a 60 ms debounce timer, the client sends `{type: "finalize"}` — often
+  beating Deepgram's 300 ms endpointing window.
+- **Interruption detection:** During AI playback, RMS thresholds
+  (`rmsInterruptionSpeakingMultiplier`, `rmsInterruptionProcessingMultiplier`)
+  detect user speech and trigger client-side `cancel`.
+- **Felt-latency anchor:** When silence is detected, `_speechEndMs` is stamped
+  for the latency dashboard (perceived latency measurement).
 
-- Raw PCM16 audio bytes captured from the browser microphone.
-- The server forwards these bytes to the STT pipeline.
+Server-side Silero VAD handles barge-in cancellation when the user resumes
+speaking during AI playback, and optionally triggers speculative LLM starts.
+Deepgram's cloud endpointing remains the authoritative source for `speech_final`.
 
-#### Text/JSON control messages
-
-- `cancel` — interrupt the active turn and start a new one.
-- `finalize` — flush any pending STT audio to the current utterance.
-- `auth` — respond to the challenge when auth is enabled.
-- `pong` — reply to a server-side ping.
-- `client_latency` — report client-perceived latency data.
-- `playback_finished` — notify the server that playback of the current turn has finished.
-
-### Server → client messages
-
-- `challenge` — issued at the start of auth when the secret is configured.
-- `auth_ok` — authentication successful.
-- `busy` — server capacity limit reached.
-- `ping` — periodic keepalive message.
-- `transcript` — finalized transcript for the current turn.
-- `response_chunk` — incremental streaming text chunk.
-- `response_end` — end of the current assistant response.
-- `latency` — latency snapshot for the turn.
-- `turn_cancelled` — an in-progress turn was interrupted.
-- Binary audio — synthesized audio chunks emitted to the client.
-
-### Protocol notes
-
-- The server uses a turn-id gate so outdated frames and stale audio are dropped after a turn is cancelled or replaced.
-- For local development, the auth secret can be left unset and the handshake is skipped.
+See [LATENCY.md](LATENCY.md) for tuning knobs affecting each layer.
 
 ---
 
@@ -152,4 +137,4 @@ The app is served on port `8000` and the health endpoint is available at `/healt
 | HMAC authentication    | Optional `CASCADE_AUTH_SECRET`; HMAC-SHA256 challenge-response              |
 | CORS                   | Configurable via `CASCADE_CORS_ORIGINS` env var (default `*` for local dev) |
 | Concurrency cap        | `CASCADE_MAX_CONCURRENT_SESSIONS` process-level semaphore                   |
-| Per-session audio rate | Token-bucket: 32KB/s with 2s burst allowance                                |
+| Per-session audio rate | Token-bucket: 32KB/s with 5s burst allowance                                |

@@ -44,7 +44,6 @@ class ModelConfig:
     vad_silence_ms: int = int(os.getenv("CASCADE_VAD_SILENCE_MS", "200"))
     vad_min_speech_frames: int = int(os.getenv("CASCADE_VAD_MIN_SPEECH_FRAMES", "3"))
     speculative_grace_ms: int = int(os.getenv("CASCADE_SPECULATIVE_GRACE_MS", "180"))
-    interim_trigger_words: int = int(os.getenv("CASCADE_INTERIM_TRIGGER_WORDS", "6"))
     speculative_stability_matches: int = int(os.getenv("CASCADE_SPECULATIVE_STABILITY_MATCHES", "2"))
     enable_speculative_llm: bool = os.getenv("CASCADE_ENABLE_SPECULATIVE_LLM", "false").lower() == "true"
 
