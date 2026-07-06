@@ -4,15 +4,18 @@ import numpy as np
 import torch
 
 _shared_model = None
+_init_lock = threading.Lock()
 
 def get_shared_vad_model():
     global _shared_model
     if _shared_model is None:
-        _shared_model, _ = torch.hub.load(
-            "snakers4/silero-vad", "silero_vad",
-            trust_repo=True, skip_validation=True,
-        )
-        _shared_model.eval()
+        with _init_lock:
+            if _shared_model is None:
+                _shared_model, _ = torch.hub.load(
+                    "snakers4/silero-vad", "silero_vad",
+                    trust_repo=True, skip_validation=True,
+                )
+                _shared_model.eval()
     return _shared_model
 
 class SileroVAD:

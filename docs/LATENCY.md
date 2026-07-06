@@ -96,6 +96,20 @@ When enabling speculative LLM, measure both:
 default) can fire `speech_stopped` and trigger speculative LLM on a partial
 sentence if the interim transcript is stable. This is the main false-start vector.
 
+### Mid-utterance splits (speech cut into multiple transcripts)
+
+The client RMS layer sends `finalize` after roughly **130 ms** of local silence
+(`localFinalizeSilenceMs` in `frontend/audio-input.js`), plus a 60 ms debounce.
+A brief pause mid-sentence can therefore flush the first fragment before you
+finish speaking. Cascade merges consecutive fragments within
+`CASCADE_UTTERANCE_MERGE_SEC` (default **3 s**) on the server.
+
+To reduce false splits (at the cost of slightly higher end-of-utterance latency):
+
+- Raise `localFinalizeSilenceMs` in `frontend/audio-input.js` (e.g. 200–250 ms).
+- Raise `CASCADE_STT_ENDPOINTING` (default 300 ms) so Deepgram waits longer
+  before emitting `speech_final`.
+
 ## Edge-TTS fallback
 
 Use only when Deepgram TTS is unavailable. Expect **~1s+ higher TTFA** vs Aura.

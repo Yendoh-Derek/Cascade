@@ -219,7 +219,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
     queued rather than interleaved on the same connection.
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "aura-asteria-en"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "aura-2-asteria-en"):
         self.api_key = api_key or os.environ.get("DEEPGRAM_API_KEY")
         self.model = model
         self._session: Optional[aiohttp.ClientSession] = None
@@ -299,6 +299,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
         first_sentence_text = ""
         ws = None
         ws_completed_cleanly = False
+        cancelled_intentionally = False
         feeder_task: Optional[asyncio.Task] = None
         needs_reconnect = False
 
@@ -310,14 +311,15 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
                 async def feeder():
                     """Drain chunk_queue, sending Speak per chunk, Flush at end."""
-                    nonlocal first_sentence_text
+                    nonlocal first_sentence_text, cancelled_intentionally
                     while True:
                         chunk = await chunk_queue.get()
                         if chunk is None:   # sentinel
                             await ws.send_json({"type": "Flush"})
                             break
                         if cancel_event and cancel_event.is_set():
-                            await ws.send_json({"type": "Flush"})
+                            cancelled_intentionally = True
+                            await ws.send_json({"type": "Clear"})
                             break
                         if not chunk:
                             continue
@@ -333,6 +335,12 @@ class DeepgramTTSEngine(BaseTTSEngine):
                 async with asyncio.timeout(timeout_sec):
                     async for msg in ws:
                         if cancel_event and cancel_event.is_set():
+                            cancelled_intentionally = True
+                            if ws is not None and not ws.closed:
+                                try:
+                                    await ws.send_json({"type": "Clear"})
+                                except Exception:
+                                    pass
                             break
 
                         if msg.type == aiohttp.WSMsgType.BINARY:
@@ -378,7 +386,9 @@ class DeepgramTTSEngine(BaseTTSEngine):
                             needs_reconnect = True
                             break
 
-                if not ws_completed_cleanly:
+                if cancelled_intentionally:
+                    needs_reconnect = False
+                elif not ws_completed_cleanly:
                     logger.warning("[TTS] Streaming synthesis ended without Flushed — reconnecting")
                     needs_reconnect = True
 
@@ -413,7 +423,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
 
         # Do slow WS cleanup outside the lock so new turns can proceed immediately.
         # Skip the reconnect path if we already handled the condition above (e.g. clean cancel).
-        if needs_reconnect or (not ws_completed_cleanly and pending_exc is None):
+        if needs_reconnect or (not ws_completed_cleanly and pending_exc is None and not cancelled_intentionally):
             await self._clear_and_close_ws()
 
         if pending_exc is not None:
@@ -453,7 +463,7 @@ class TTSEngine:
         engine: str = "edge",
         edge_voice: str = "en-US-AriaNeural",
         deepgram_api_key: Optional[str] = None,
-        deepgram_model: str = "aura-asteria-en"
+        deepgram_model: str = "aura-2-asteria-en"
     ):
         self._engine: BaseTTSEngine
         valid_engines = {"deepgram", "edge"}

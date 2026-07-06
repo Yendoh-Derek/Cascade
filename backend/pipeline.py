@@ -9,6 +9,7 @@ connection to the browser. Measure latency at each stage.
 
 import asyncio
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from backend.tts import TTSEngine
 from backend.tutor import TutorSession
 
 logger = logging.getLogger(__name__)
+
+MERGE_WINDOW_SEC = float(os.getenv("CASCADE_UTTERANCE_MERGE_SEC", "3.0"))
 
 ChunkQueueItem: TypeAlias = bytes | Exception | None
 ResponseQueueItem: TypeAlias = tuple[str, asyncio.Queue[ChunkQueueItem]] | Exception | None
@@ -51,6 +54,50 @@ def strip_markdown(text: str) -> str:
     # Clean up whitespace
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
+
+
+def _has_unclosed_markdown(text: str) -> bool:
+    """True when text ends with a markdown construct that spans chunk boundaries."""
+    temp = text
+    while "**" in temp:
+        start = temp.find("**")
+        end = temp.find("**", start + 2)
+        if end == -1:
+            return True
+        temp = temp[:start] + temp[end + 2:]
+
+    if text.count("`") % 2 == 1:
+        return True
+
+    if re.search(r"\[[^\]]*$", text):
+        return True
+    if re.search(r"\[[^\]]+\]\([^)]*$", text):
+        return True
+
+    if text.count("~~") % 2 == 1:
+        return True
+
+    return False
+
+
+class MarkdownStripper:
+    """Stateful markdown stripper safe across streaming LLM chunk boundaries."""
+
+    def __init__(self) -> None:
+        self._buffer = ""
+
+    def feed(self, chunk: str) -> str:
+        self._buffer += chunk
+        if _has_unclosed_markdown(self._buffer):
+            return ""
+        result = strip_markdown(self._buffer)
+        self._buffer = ""
+        return result
+
+    def flush(self) -> str:
+        result = strip_markdown(self._buffer)
+        self._buffer = ""
+        return result
 
 
 # PCM16 mono @ 16 kHz — one 10 ms worklet frame is 320 bytes.
@@ -149,6 +196,12 @@ class PipelineSession:
         self.processing_task: Optional[asyncio.Task] = None
         self._cancel_event = asyncio.Event()
 
+        # Utterance merge: combine split speech_final fragments into one turn
+        self._inflight_transcript: Optional[str] = None
+        self._pending_merge_text: Optional[str] = None
+        self._pending_merge_at: Optional[float] = None
+        self._pending_merge_turn_id: Optional[int] = None
+
         # Per-session audio rate limiter
         self._rate_limiter = RateLimiter()
         # Bypass rate limiting briefly after init while draining WS/mic backlog.
@@ -188,7 +241,7 @@ class PipelineSession:
             engine=self.tts_engine_choice,
             edge_voice=self.model_config.get("edge_tts_voice", "en-US-AriaNeural"),
             deepgram_api_key=self.api_keys["deepgram"],
-            deepgram_model=self.model_config.get("deepgram_tts_model", "aura-asteria-en")
+            deepgram_model=self.model_config.get("deepgram_tts_model", "aura-2-asteria-en")
         )
 
         # Send TTS config to frontend
@@ -262,6 +315,31 @@ class PipelineSession:
         payload = {**msg, "turn_id": turn_id}
         self.send_message(payload)
 
+    def _stash_pending_merge(self, text: Optional[str], from_turn_id: Optional[int] = None) -> None:
+        if text and text.strip():
+            self._pending_merge_text = text.strip()
+            self._pending_merge_at = time.perf_counter()
+            if from_turn_id is not None:
+                self._pending_merge_turn_id = from_turn_id
+
+    def _clear_pending_merge(self) -> None:
+        self._pending_merge_text = None
+        self._pending_merge_at = None
+        self._pending_merge_turn_id = None
+
+    def _maybe_merge_with_pending(self, new_text: str) -> str:
+        if (
+            self._pending_merge_text
+            and self._pending_merge_at is not None
+            and (time.perf_counter() - self._pending_merge_at) < MERGE_WINDOW_SEC
+        ):
+            merged = f"{self._pending_merge_text} {new_text}".strip()
+            self._clear_pending_merge()
+            logger.info(f"[Pipeline] Merged split utterance: '{merged[:80]}'")
+            return merged
+        self._clear_pending_merge()
+        return new_text
+
     def _on_stt_update(self, transcript: str):
         """
         Live word-by-word streaming of the user's speech to the UI.
@@ -290,6 +368,12 @@ class PipelineSession:
                 "[Pipeline] VAD speech during turn processing - "
                 "cancelling without clearing STT buffer"
             )
+            self._stash_pending_merge(
+                self._inflight_transcript, from_turn_id=self._active_turn_id
+            )
+
+        if is_barge_in:
+            self._clear_pending_merge()
 
         old_turn = self._active_turn_id
         self._cancel_active_turn_tasks()
@@ -338,7 +422,12 @@ class PipelineSession:
                 self.send_message({"type": "response_end"})
             return
 
+        stripped = transcript.strip()
+
         if self.is_processing_transcript or self._active_turn_id is not None:
+            self._stash_pending_merge(
+                self._inflight_transcript, from_turn_id=self._active_turn_id
+            )
             old_turn = self._active_turn_id
             logger.info(f"[Pipeline] Turn {old_turn} cancelled by new transcript")
             self._final_turn_cutoff_time = time.perf_counter()
@@ -347,6 +436,13 @@ class PipelineSession:
                 self.send_message({"type": "turn_cancelled", "turn_id": old_turn})
             self.is_processing_transcript = False
             self.processing_task = None
+
+        transcript = self._maybe_merge_with_pending(stripped)
+        if not transcript:
+            logger.info("[Pipeline] Empty transcript after merge — resetting client")
+            if not self.is_processing_transcript:
+                self.send_message({"type": "response_end"})
+            return
 
         self.turn_id += 1
         self._active_turn_id = self.turn_id
@@ -367,6 +463,7 @@ class PipelineSession:
             self._metrics.stt_endpointing_ms = 0
 
         self.is_processing_transcript = True
+        self._inflight_transcript = transcript
         logger.info(
             f"[Pipeline] Turn {current_turn_id} transcript: '{transcript[:60]}' "
             f"(STT tail: {self._metrics.last_stt_tail_ms}ms, endpointing: {self._metrics.stt_endpointing_ms}ms)"
@@ -422,6 +519,7 @@ class PipelineSession:
                     # Cancel event fired during grace window — newer transcript incoming
                     self._metrics.superseded_during_grace = True
                     logger.info(f"[Pipeline] Turn {turn_id} superseded during grace window")
+                    self._stash_pending_merge(transcript, from_turn_id=turn_id)
                     return
                 except asyncio.TimeoutError:
                     pass   # Grace window elapsed with no interruption — proceed normally
@@ -461,6 +559,7 @@ class PipelineSession:
 
             async def produce_chunks() -> None:
                 nonlocal first_token_received, batch_timer_task
+                markdown_stripper = MarkdownStripper()
                 gen = llm_generator.generate(
                     messages=messages,
                     timeout_sec=30,
@@ -539,10 +638,14 @@ class PipelineSession:
 
                         # Feed the clean chunk into the queue immediately so TTS
                         # can start synthesising it without waiting for the full LLM response.
-                        clean_chunk = strip_markdown(chunk)
-                        await chunk_queue.put(clean_chunk)
+                        clean_chunk = markdown_stripper.feed(chunk)
+                        if clean_chunk:
+                            await chunk_queue.put(clean_chunk)
                         full_response_parts.append(chunk)
 
+                    remaining = markdown_stripper.flush()
+                    if remaining:
+                        await chunk_queue.put(remaining)
                     # Flush any remaining response chunks
                     await flush_response_chunks()
                     # Signal end-of-stream to consume_audio
@@ -687,7 +790,12 @@ class PipelineSession:
         finally:
             if self._can_send(turn_id):
                 self._send_for_turn(turn_id, {"type": "response_end"})
-            self._active_turn_id = None
+                self._clear_pending_merge()
+            elif self._pending_merge_turn_id != turn_id:
+                self._clear_pending_merge()
+            if self._active_turn_id == turn_id:
+                self._active_turn_id = None
+                self._inflight_transcript = None
 
     def _cancel_active_turn_tasks(self):
         """Synchronously cancels all running tasks of the active turn.

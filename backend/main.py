@@ -39,9 +39,11 @@ def is_websocket_origin_allowed(origin: Optional[str], host_header: str) -> bool
     clients still work on localhost.
     """
     server_host = (host_header or "").split(":")[0]
+    allowed_hosts = {server_host}
+    if server_host in LOCAL_WS_HOSTS:
+        allowed_hosts |= LOCAL_WS_HOSTS
     if origin:
         origin_host = urlsplit(origin).hostname or ""
-        allowed_hosts = {server_host, *LOCAL_WS_HOSTS}
         return origin_host in allowed_hosts
     return server_host in LOCAL_WS_HOSTS
 
@@ -158,9 +160,6 @@ async def websocket_endpoint(
         return
 
     try:
-        # Subject sanitization is delegated entirely to TutorSession.__init__
-        # (regex + 100-char trim). No pre-trim here — single source of truth.
-
         session: Optional[PipelineSession] = None
         sender_task: Optional[asyncio.Task] = None
         ping_task: Optional[asyncio.Task] = None

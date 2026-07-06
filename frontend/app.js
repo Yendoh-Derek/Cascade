@@ -202,6 +202,54 @@ class CascadeClient {
     );
   }
 
+  _renderStreamingBubble() {
+    if (!this.currentStreamingBubble || !this.currentResponse) return;
+    const p = this.currentStreamingBubble.querySelector("p");
+    if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
+    if (this.ui.transcriptPanel)
+      this.ui.transcriptPanel.scrollTop =
+        this.ui.transcriptPanel.scrollHeight;
+  }
+
+  _scheduleSubtitleUpdate() {
+    if (this._subtitleTimer) clearTimeout(this._subtitleTimer);
+    this.pendingSubtitleUpdate = true;
+    this._subtitleTimer = setTimeout(() => {
+      this._subtitleTimer = null;
+      this.pendingSubtitleUpdate = false;
+      this._renderStreamingBubble();
+    }, this.subtitleThrottleMs);
+  }
+
+  _finalizeTutorBubble() {
+    if (!this.currentStreamingBubble) return;
+    if (this._subtitleTimer) {
+      clearTimeout(this._subtitleTimer);
+      this._subtitleTimer = null;
+    }
+    this.pendingSubtitleUpdate = false;
+    if (this.currentResponse) this._renderStreamingBubble();
+    this.currentStreamingBubble.classList.remove("streaming");
+    this.currentStreamingBubble = null;
+    this.currentResponse = "";
+  }
+
+  _updateStudentTranscript(text, { final = false } = {}) {
+    if (!this.currentStudentBubble) {
+      this.currentStudentBubble = this.ui.addTranscriptItem("student", text);
+      if (!final && this.currentStudentBubble)
+        this.currentStudentBubble.classList.add("streaming");
+    } else {
+      const p = this.currentStudentBubble.querySelector("p");
+      if (p) p.textContent = text;
+      if (final) {
+        this.currentStudentBubble.classList.remove("streaming");
+      } else {
+        this.currentStudentBubble.classList.add("streaming");
+      }
+    }
+  }
+
   _triggerInterruption() {
     if (this.state !== STATE.SPEAKING && this.state !== STATE.PROCESSING)
       return;
@@ -236,11 +284,7 @@ class CascadeClient {
       this.transport.send(JSON.stringify({ type: "cancel" }));
     }
 
-    this.currentResponse = "";
-    if (this.currentStreamingBubble) {
-      this.currentStreamingBubble.remove();
-      this.currentStreamingBubble = null;
-    }
+    this._finalizeTutorBubble();
     this.setState(STATE.LISTENING);
     this._resetPlaybackOnly();
 
@@ -282,15 +326,11 @@ class CascadeClient {
           }
           if (!this.currentStudentBubble) {
             this._resetTurnState();
-            this.currentStudentBubble = this.ui.addTranscriptItem("student", msg.text);
+            this._finalizeTutorBubble();
+            this._updateStudentTranscript(msg.text);
             this.currentResponse = "";
-            if (this.currentStreamingBubble) {
-              this.currentStreamingBubble.classList.remove("streaming");
-              this.currentStreamingBubble = null;
-            }
           } else {
-            const p = this.currentStudentBubble.querySelector("p");
-            if (p) p.textContent = msg.text;
+            this._updateStudentTranscript(msg.text);
           }
         }
         break;
@@ -328,28 +368,19 @@ class CascadeClient {
           
           if (!is_update && !this.currentStudentBubble) {
             this._resetTurnState();
-            this.currentStudentBubble = this.ui.addTranscriptItem("student", msg.text);
+            this._finalizeTutorBubble();
+            this._updateStudentTranscript(msg.text, { final: true });
             this.currentResponse = "";
-            if (this.currentStreamingBubble) {
-              this.currentStreamingBubble.classList.remove("streaming");
-              this.currentStreamingBubble = null;
-            }
             this.totalTurns++;
             this.ui._updateStatsBar();
           } else {
-             if (this.currentStudentBubble) {
-                 const p = this.currentStudentBubble.querySelector("p");
-                 if (p) p.textContent = msg.text;
-             }
-             this.currentResponse = "";
-             if (this.currentStreamingBubble) {
-                 this.currentStreamingBubble.classList.remove("streaming");
-                 this.currentStreamingBubble = null;
-             }
-             if (!is_update) {
-                 this.totalTurns++;
-                 this.ui._updateStatsBar();
-             }
+            this._updateStudentTranscript(msg.text, { final: true });
+            this.currentResponse = "";
+            this._finalizeTutorBubble();
+            if (!is_update) {
+              this.totalTurns++;
+              this.ui._updateStatsBar();
+            }
           }
           this.setState(STATE.PROCESSING);
         }
@@ -369,34 +400,19 @@ class CascadeClient {
             this.currentStudentBubble = null;
             if (this.currentStreamingBubble)
               this.currentStreamingBubble.classList.add("streaming");
-          } else if (!this.pendingSubtitleUpdate) {
-            this.pendingSubtitleUpdate = true;
-            const bubble = this.currentStreamingBubble;
-            const response = this.currentResponse;
-            this._subtitleTimer = setTimeout(() => {
-              this._subtitleTimer = null;
-              this.pendingSubtitleUpdate = false;
-              if (!bubble) return;
-              const p = bubble.querySelector("p");
-              if (p) p.innerHTML = this.ui._escapeHTML(response);
-              if (this.ui.transcriptPanel)
-                this.ui.transcriptPanel.scrollTop =
-                  this.ui.transcriptPanel.scrollHeight;
-            }, this.subtitleThrottleMs);
+          } else {
+            this._scheduleSubtitleUpdate();
           }
         }
         break;
       case "response_end":
         if (msg.turn_id != null && !this._isTurnActive(msg.turn_id)) break;
-        // Flush pending subtitle update immediately
-        if (this.pendingSubtitleUpdate && this.currentStreamingBubble) {
-          this.pendingSubtitleUpdate = false;
-          const p = this.currentStreamingBubble.querySelector("p");
-          if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
-          if (this.ui.transcriptPanel)
-            this.ui.transcriptPanel.scrollTop =
-              this.ui.transcriptPanel.scrollHeight;
+        if (this._subtitleTimer) {
+          clearTimeout(this._subtitleTimer);
+          this._subtitleTimer = null;
         }
+        this.pendingSubtitleUpdate = false;
+        this._renderStreamingBubble();
         if (this.currentStreamingBubble) {
           const completedBubble = this.currentStreamingBubble;
           completedBubble.classList.remove("streaming");
@@ -447,6 +463,7 @@ class CascadeClient {
             this.currentStreamingBubble.remove();
             this.currentStreamingBubble = null;
           }
+          this.setState(STATE.LISTENING);
         }
         if (msg.turn_id != null && msg.turn_id === this._pendingCancelTurnId) {
           this._pendingCancelTurnId = null;
