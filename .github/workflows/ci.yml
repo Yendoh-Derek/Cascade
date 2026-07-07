@@ -34,7 +34,7 @@ jobs:
 
       - name: Run isolated/mockable tests
         # Runs all pytest unit/integration tests that do not require live API keys
-        run: pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py tests/test_mock_integrations.py -v
+        run: pytest tests/ -v
 
       - name: Run frontend chart smoke test
         run: node tests/frontend/test_chart.js

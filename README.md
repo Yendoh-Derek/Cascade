@@ -45,7 +45,7 @@ Conversation history is kept purely in-memory for the lifetime of a WebSocket se
 
 - Avoids adding infrastructure dependencies (SQLite, Redis) that would complicate local development and deployment.
 - Aligns with the project's focus on **pipeline latency** rather than long-term session management.
-- Conversation context resets on page refresh or disconnect, which is acceptable for a demo/prototype workload.
+- Conversation context survives a WebSocket disconnect (Stop → Continue) but resets on a hard page reload or explicit Reset, which is acceptable for a demo/prototype workload.
 
 _If you need multi-session persistence in a production fork, key `TutorSession.history` by a session UUID in Redis or SQLite._
 

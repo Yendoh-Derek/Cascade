@@ -17,6 +17,7 @@ def _convert_expression(expr: str) -> str:
         expr = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"\1 over \2", expr)
 
     # Common operator and symbol conversions.
+    expr = re.sub(r"([A-Za-z0-9_]+)\^\{([^{}]+)\}", r"\1 to the power of \2", expr)
     expr = re.sub(r"([A-Za-z0-9_]+)\^2\b", r"\1 squared", expr)
     expr = re.sub(r"([A-Za-z0-9_]+)\^3\b", r"\1 cubed", expr)
     expr = re.sub(r"([A-Za-z0-9_]+)\^([A-Za-z0-9_]+)", r"\1 to the power of \2", expr)

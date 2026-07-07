@@ -133,8 +133,8 @@ class LLMGenerator:
                         )
                         break
                     except Exception as e:
-                        if getattr(e, "status_code", None) == 503 and attempt < retries - 1:
-                            logger.warning(f"[LLM] Groq 503 error, retrying in 300ms... ({attempt + 1}/{retries})")
+                        if getattr(e, "status_code", None) in {429, 503} and attempt < retries - 1:
+                            logger.warning(f"[LLM] Groq {getattr(e, 'status_code', 'error')} error, retrying in 300ms... ({attempt + 1}/{retries})")
                             t_sleep_start = time.perf_counter()
                             await asyncio.sleep(0.3)
                             t_sleep_end = time.perf_counter()
@@ -165,37 +165,47 @@ class LLMGenerator:
 
                     # If we have content in buffer, race between next token and time-based flush
                     chunk = None
+                    timeout_hit = False
                     if sentence_buffer and t_buffer_start:
                         remaining_time = max(0, TIME_BASED_FLUSH_SEC - (time.perf_counter() - t_buffer_start))
                         try:
                             chunk = await asyncio.wait_for(asyncio.shield(pending_task), timeout=remaining_time)
                             pending_task = None
                         except asyncio.TimeoutError:
-                            pass  # Buffer flushes; pending_task remains alive and untouched
+                            timeout_hit = True  # Buffer flushes; pending_task remains alive and untouched
                     else:
                         # No buffer, just wait for next chunk
                         chunk = await pending_task
                         pending_task = None
 
-                    if chunk is None:
+                    if chunk is None and not timeout_hit:
                         stream_exhausted = True
-                    else:
-                        delta = chunk.choices[0].delta
-                        if delta.content:
-                            # Record the time of first token received (marks TTFT start point)
-                            if not first_token_received:
-                                first_token_received = True
-                                self.t_first_token = time.perf_counter()
+                        continue
 
-                            token = delta.content
-                            token_count += 1
+                    if chunk is None:
+                        continue
 
-                            # Start the per-buffer timer on the first token of each new chunk.
-                            if t_buffer_start is None:
-                                t_buffer_start = time.perf_counter()
+                    choices = getattr(chunk, "choices", None)
+                    if not choices:
+                        continue
 
-                            sentence_buffer += token
-                            token_count_in_buffer += 1
+                    delta = choices[0].delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        # Record the time of first token received (marks TTFT start point)
+                        if not first_token_received:
+                            first_token_received = True
+                            self.t_first_token = time.perf_counter()
+
+                        token = content
+                        token_count += 1
+
+                        # Start the per-buffer timer on the first token of each new chunk.
+                        if t_buffer_start is None:
+                            t_buffer_start = time.perf_counter()
+
+                        sentence_buffer += token
+                        token_count_in_buffer += 1
 
                     # Check flush conditions (either we got a token or timed out)
                     if sentence_buffer:
@@ -255,6 +265,9 @@ class LLMGenerator:
                 except (asyncio.CancelledError, Exception):
                     pass
             if sentence_buffer:
+                # Yielding here after catching CancelledError is a subtle async-generator
+                # trick that safely flushes the partial LLM response up the pipeline 
+                # (saving it into history) before re-raising the cancellation.
                 if self.t_first_sentence_emitted is None:
                     self.t_first_sentence_emitted = time.perf_counter()
                 yield sentence_buffer

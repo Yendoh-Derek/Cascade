@@ -48,6 +48,28 @@ async def test_llm_chunking_and_cancellation():
     assert len(chunks[0]) > len(chunks[1]) or len(chunks[1]) > 0
 
 @pytest.mark.asyncio
+async def test_llm_skips_malformed_stream_chunk():
+    """Malformed stream chunks should be ignored rather than crashing generation."""
+    gen = LLMGenerator(api_key="fake", model="fake")
+
+    async def mock_stream():
+        yield SimpleNamespace(choices=None)
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Hello"))])
+
+    client = AsyncMock()
+    stream_mock = MagicMock()
+    stream_mock.__aiter__.side_effect = lambda: mock_stream()
+    client.chat.completions.create = AsyncMock(return_value=stream_mock)
+    gen.client = client
+
+    chunks = []
+    async for chunk in gen.generate([{"role": "user", "content": "test"}]):
+        chunks.append(chunk)
+
+    assert chunks == ["Hello"]
+
+
+@pytest.mark.asyncio
 async def test_tts_ws_state_machine_cancellation():
     """Verify TTS WS state machine cleans up on cancellation without live API keys."""
     engine = DeepgramTTSEngine(api_key="fake", model="fake")

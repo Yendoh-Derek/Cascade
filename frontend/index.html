@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cascade - AI Voice Tutor</title>
+    <title>Cascade — AI Voice Tutor</title>
     <meta name="description" content="Cascade is a premium AI voice tutor assistant. Speak naturally and get instant, intelligent responses." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -22,8 +22,10 @@
     <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css"
+      integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV"
+      crossorigin="anonymous"
     />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
     <link rel="stylesheet" href="style.css?v=2.1.1" />
   </head>
   <body>
@@ -118,10 +120,10 @@
         <div class="menu-bar-left">
           <span class="tts-label">Voice</span>
           <div class="tts-toggle-group">
-            <button class="tts-toggle-btn active" id="tts-btn-deepgram" data-engine="deepgram" aria-pressed="true" title="Deepgram Aura 2 - low latency (recommended)">
+            <button class="tts-toggle-btn active" id="tts-btn-deepgram" data-engine="deepgram" aria-pressed="true" title="Deepgram Aura 2 — low latency (recommended)">
               Aura 2
             </button>
-            <button class="tts-toggle-btn" id="tts-btn-edge" data-engine="edge" aria-pressed="false" title="Edge TTS - free fallback (higher latency)">Edge (fallback)</button>
+            <button class="tts-toggle-btn" id="tts-btn-edge" data-engine="edge" aria-pressed="false" title="Edge TTS — free fallback (higher latency)">Edge (fallback)</button>
           </div>
         </div>
 
@@ -151,7 +153,7 @@
       <div class="stats-panel glass" id="stats-panel" aria-hidden="true">
         <div class="stats-panel-header">
           <span class="stats-panel-title">Latency Breakdown</span>
-          <button class="stats-close-btn" id="btn-close-stats">x</button>
+          <button class="stats-close-btn" id="btn-close-stats">✕</button>
         </div>
         <div class="stats-legend stats-legend--chart" aria-hidden="false">
           <span><span class="legend-dot" style="background:#60a5fa"></span>Endpointing</span>

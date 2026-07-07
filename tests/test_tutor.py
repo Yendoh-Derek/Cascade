@@ -121,6 +121,27 @@ def test_session_summary():
     print("✓")
 
 
+def test_load_history_validation():
+    """Test load_history caps length, truncates, and drops invalid entries."""
+    print("  [8/8] Load history validation...", end=" ")
+    session = TutorSession()
+    
+    raw_history = []
+    for i in range(45):
+        raw_history.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"})
+    
+    raw_history.append({"role": "user", "content": "A" * 15000})
+    raw_history.append({"role": "invalid", "content": "ignored"})
+    raw_history.append({"role": "user"})
+    raw_history.append("not a dict")
+    
+    session.load_history(raw_history)
+    
+    assert len(session.history) == 40
+    assert len(session.history[-1]["content"]) == 10000
+    print("✓")
+
+
 def main():
     print("\n" + "=" * 56)
     print("  CASCADE — Phase 3 TutorSession Integration Tests")
@@ -135,6 +156,7 @@ def main():
         test_multi_turn_coherence()
         test_history_trimming()
         test_session_summary()
+        test_load_history_validation()
 
         print()
         print("=" * 56)

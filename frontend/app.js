@@ -2,13 +2,13 @@
  * Cascade — AI Voice Tutor Frontend
  */
 
-import { UIController } from "./ui.js?v=2.1.0";
-import { AudioInputController } from "./audio-input.js?v=2.1.0";
-import { AudioOutputController } from "./audio-output.js?v=2.1.0";
-import { WebSocketTransport } from "./transport.js?v=2.1.0";
-import { ChartRenderer } from "./chart.js?v=2.1.0";
+import { UIController } from "./ui.js?v=2.1.1";
+import { AudioInputController } from "./audio-input.js?v=2.1.1";
+import { AudioOutputController } from "./audio-output.js?v=2.1.1";
+import { WebSocketTransport } from "./transport.js?v=2.1.1";
+import { ChartRenderer } from "./chart.js?v=2.1.1";
 
-import { STATE } from "./state.js?v=2.1.0";
+import { STATE } from "./state.js?v=2.1.1";
 
 class CascadeClient {
   constructor() {

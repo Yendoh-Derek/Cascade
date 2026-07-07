@@ -138,15 +138,16 @@ class TutorSession:
             history: List of {"role": "user"|"assistant", "content": str} dicts
         """
         valid = [
-            msg for msg in history
+            {**msg, "content": msg["content"].strip()[:10000]}
+            for msg in history
             if isinstance(msg, dict)
             and msg.get("role") in {"user", "assistant"}
             and isinstance(msg.get("content"), str)
             and msg["content"].strip()
         ]
-        self.history = valid
+        self.history = valid[-40:]
         logger.info(
-            f"[TutorSession] History loaded from client resume: {len(valid)} messages "
+            f"[TutorSession] History loaded from client resume: {len(self.history)} messages "
             f"({len(history) - len(valid)} entries dropped as invalid)"
         )
 
