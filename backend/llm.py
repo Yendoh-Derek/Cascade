@@ -180,23 +180,32 @@ class LLMGenerator:
 
                     if chunk is None and not timeout_hit:
                         stream_exhausted = True
-                    else:
-                        delta = chunk.choices[0].delta
-                        if delta.content:
-                            # Record the time of first token received (marks TTFT start point)
-                            if not first_token_received:
-                                first_token_received = True
-                                self.t_first_token = time.perf_counter()
+                        continue
 
-                            token = delta.content
-                            token_count += 1
+                    if chunk is None:
+                        continue
 
-                            # Start the per-buffer timer on the first token of each new chunk.
-                            if t_buffer_start is None:
-                                t_buffer_start = time.perf_counter()
+                    choices = getattr(chunk, "choices", None)
+                    if not choices:
+                        continue
 
-                            sentence_buffer += token
-                            token_count_in_buffer += 1
+                    delta = choices[0].delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        # Record the time of first token received (marks TTFT start point)
+                        if not first_token_received:
+                            first_token_received = True
+                            self.t_first_token = time.perf_counter()
+
+                        token = content
+                        token_count += 1
+
+                        # Start the per-buffer timer on the first token of each new chunk.
+                        if t_buffer_start is None:
+                            t_buffer_start = time.perf_counter()
+
+                        sentence_buffer += token
+                        token_count_in_buffer += 1
 
                     # Check flush conditions (either we got a token or timed out)
                     if sentence_buffer:
