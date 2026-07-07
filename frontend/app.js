@@ -255,7 +255,7 @@ class CascadeClient {
   _renderStreamingBubble() {
     if (!this.currentStreamingBubble || !this.currentResponse) return;
     const p = this.currentStreamingBubble.querySelector("p");
-    if (p) p.innerHTML = this.ui._escapeHTML(this.currentResponse);
+    if (p) p.innerHTML = this.ui.renderTutorHTML(this.currentResponse);
     if (this.ui.transcriptPanel)
       this.ui.transcriptPanel.scrollTop =
         this.ui.transcriptPanel.scrollHeight;

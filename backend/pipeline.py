@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, TypeAlias, cast
 
 from groq import AsyncGroq
 from groq.types.chat import ChatCompletionMessageParam
+from backend.math_speech import math_to_speech
 from backend.stt import STTHandler
 from backend.llm import LLMGenerator
 from backend.tts import TTSEngine
@@ -111,6 +112,43 @@ class MarkdownStripper:
         result = strip_markdown(self._buffer)
         self._buffer = ""
         return result
+
+
+def _count_unescaped_dollars(text: str) -> int:
+    count = 0
+    escaped = False
+    for ch in text:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "$":
+            count += 1
+    return count
+
+
+class MathAwareChunkBuffer:
+    """Buffers LLM chunks until math delimiters are balanced for safe conversion."""
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, chunk: str) -> str:
+        self._pending += chunk
+        if _count_unescaped_dollars(self._pending) % 2 == 1:
+            return ""
+        ready, self._pending = self._pending, ""
+        return math_to_speech(ready)
+
+    def flush(self) -> str:
+        if not self._pending:
+            return ""
+        leftover, self._pending = self._pending, ""
+        if _count_unescaped_dollars(leftover) % 2 == 0:
+            return math_to_speech(leftover)
+        return leftover.replace("$", "")
 
 
 # PCM16 mono @ 16 kHz — one 10 ms worklet frame is 320 bytes.
@@ -577,6 +615,7 @@ class PipelineSession:
             async def produce_chunks() -> None:
                 nonlocal first_token_received, batch_timer_task
                 markdown_stripper = MarkdownStripper()
+                math_buffer = MathAwareChunkBuffer()
                 gen = llm_generator.generate(
                     messages=messages,
                     timeout_sec=30,
@@ -657,12 +696,19 @@ class PipelineSession:
                         # can start synthesising it without waiting for the full LLM response.
                         clean_chunk = markdown_stripper.feed(chunk)
                         if clean_chunk:
-                            await chunk_queue.put(clean_chunk)
+                            speakable = math_buffer.feed(clean_chunk)
+                            if speakable:
+                                await chunk_queue.put(speakable)
                         full_response_parts.append(chunk)
 
                     remaining = markdown_stripper.flush()
                     if remaining:
-                        await chunk_queue.put(remaining)
+                        speakable = math_buffer.feed(remaining)
+                        if speakable:
+                            await chunk_queue.put(speakable)
+                    final_speakable = math_buffer.flush()
+                    if final_speakable:
+                        await chunk_queue.put(final_speakable)
                     # Flush any remaining response chunks
                     await flush_response_chunks()
                     # Signal end-of-stream to consume_audio
