@@ -1,4 +1,4 @@
-import { STATE } from "./state.js?v=2.1.0";
+import { STATE } from "./state.js?v=2.1.1";
 
 function renderMathSpans(escapedText) {
   if (typeof escapedText !== "string" || escapedText.length === 0) {

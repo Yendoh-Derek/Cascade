@@ -138,7 +138,8 @@ class TutorSession:
             history: List of {"role": "user"|"assistant", "content": str} dicts
         """
         valid = [
-            msg for msg in history
+            {**msg, "content": msg["content"].strip()[:10000]}
+            for msg in history[-40:]
             if isinstance(msg, dict)
             and msg.get("role") in {"user", "assistant"}
             and isinstance(msg.get("content"), str)

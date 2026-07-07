@@ -844,8 +844,13 @@ class PipelineSession:
         except asyncio.CancelledError:
             logger.info("[Pipeline] Processing cancelled")
             # Save partial response even on interruption
+            full_response = "".join(full_response_parts).strip()
             if full_response:
                 self.tutor.add_assistant_message(full_response)
+            else:
+                # Remove orphaned user message to prevent back-to-back user turns
+                if self.tutor.history and self.tutor.history[-1].get("role") == "user":
+                    self.tutor.history.pop()
         except Exception as e:
             logger.error(f"[Pipeline] Unexpected error: {e}")
             if self._can_send(turn_id):

@@ -174,11 +174,7 @@ async def websocket_endpoint(
             # bypass via origins like "https://evila.com" when host="a.com".
             # Missing Origin is allowed only on localhost (dev/test clients).
             origin = websocket.headers.get("origin")
-            host_header = (
-                websocket.headers.get("x-forwarded-host")
-                or websocket.headers.get("host")
-                or ""
-            )
+            host_header = websocket.headers.get("host") or ""
             if not is_websocket_origin_allowed(origin, host_header):
                 logger.warning(
                     f"[WS] Rejecting connection from origin {origin!r} "

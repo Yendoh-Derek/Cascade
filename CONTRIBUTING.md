@@ -20,7 +20,7 @@ Welcome to Cascade! We are building a low-latency streaming voice tutor and welc
 Run the core regression suite before opening a PR:
 
 ```bash
-pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py tests/test_mock_integrations.py -v
+pytest tests/ -v
 ruff check .
 mypy backend/ --ignore-missing-imports
 node tests/frontend/test_chart.js

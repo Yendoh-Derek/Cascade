@@ -331,3 +331,23 @@ class TestHistoryTrimming:
             assert tutor.history[i]["role"] == "user"
             assert tutor.history[i + 1]["role"] == "assistant"
 
+
+@pytest.mark.usefixtures("mock_pipeline_dependencies")
+def test_websocket_load_history():
+    """Verify WebSocket connection handles load_history."""
+    client = TestClient(app)
+    with patch("backend.tutor.TutorSession.load_history") as mock_load_history:
+        with client.websocket_connect("/ws", headers=WS_TEST_HEADERS) as websocket:
+            _authenticate_websocket(websocket)
+            assert websocket.receive_json()["type"] == "auth_ok"
+            
+            history = [{"role": "user", "content": "hello"}]
+            websocket.send_json({"type": "load_history", "history": history})
+            
+            # Allow time for async message processing
+            import time
+            time.sleep(0.1)
+            websocket.send_text("stop")
+            
+        mock_load_history.assert_called_once_with(history)
+
