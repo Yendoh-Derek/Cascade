@@ -554,6 +554,7 @@ class PipelineSession:
     ):
         """Core pipeline: transcript → LLM streaming → TTS turn-batch → WebSocket."""
         full_response = ""
+        full_response_parts: List[str] = []
         first_token_received = False
         llm_generator = self.llm_generator
         tts_engine = self.tts_engine
@@ -593,7 +594,6 @@ class PipelineSession:
 
             # Hoisted above produce_chunks so the closure reference is valid
             # at definition time, not just at call time.
-            full_response_parts: List[str] = []
             response_chunk_buffer: List[str] = []
             BATCH_THRESHOLD = 5
             BATCH_TIMEOUT = 0.08  # 80ms
