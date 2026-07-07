@@ -356,7 +356,9 @@ class STTHandler:
             self._vad_queue.put_nowait(audio_bytes)
         except RuntimeError as e:
             self.is_open = False
-            logger.warning(f"[STT] Transport closing mid-send (expected during shutdown): {e}")
+            logger.warning(f"[STT] Transport closing mid-send: {e}")
+            if not self._closing_intentionally:
+                await self._schedule_reconnect()
         except ConnectionResetError:
             self.is_open = False
             logger.warning("[STT] Connection reset by peer")

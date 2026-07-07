@@ -1,4 +1,4 @@
-import { STATE } from "./state.js?v=2.0.2";
+import { STATE } from "./state.js?v=2.1.1";
 
 /**
  * Decide the next UI action once all scheduled audio sources have ended.

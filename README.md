@@ -293,6 +293,7 @@ starts a new session. This is intentional for the current scope.
 ## Known Limitations
 
 - **Single-Process Session Cap**: The `CASCADE_MAX_CONCURRENT_SESSIONS` semaphore is process-local. Under multi-worker `uvicorn` deployments the effective cap is `N × MAX`, not `MAX`. Single-process deployment is recommended.
+- **Load Balancing (Sticky Sessions)**: Because session state and conversation history are kept strictly in-memory, deploying Cascade behind a load balancer (e.g., AWS ALB, Nginx) with multiple instances **requires** configuring sticky sessions (session affinity). Otherwise, WebSocket reconnects may land on a different worker and lose their context.
 - **Built-in Authentication**: `CASCADE_AUTH_SECRET` uses an HMAC challenge-response for basic private setups. This does not replace production-grade gateway controls (OAuth, mTLS, etc.).
 - **CORS Wide-Open by Default**: `allow_origins=["*"]` is the default for local development. Before any public or production deployment, restrict this by setting `CASCADE_CORS_ORIGINS=https://yourdomain.com` in your environment.
 - **Echo Cancellation Dependency**: The barge-in (interruption) system relies on the browser's built-in acoustic echo cancellation (AEC) to prevent the tutor's own voice from triggering false interruptions. **Using headphones is strongly recommended.** On speakers without good AEC, the tutor's voice may bleed into the microphone and trigger false self-interruptions.

@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 # and reloads, which otherwise can cause valid project credentials to be
 # shadowed by an outdated shell variable.
 env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(dotenv_path=env_path, override=True)
+load_dotenv(dotenv_path=env_path, override=False)
 
 
 @dataclass(frozen=True)

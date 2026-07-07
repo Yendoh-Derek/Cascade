@@ -1,4 +1,4 @@
-import { STATE } from "./state.js?v=2.0.2";
+import { STATE } from "./state.js?v=2.1.1";
 
 export class AudioInputController {
   constructor(client) {
@@ -168,7 +168,7 @@ export class AudioInputController {
 
     // Stamp the felt-latency start once the silence window has passed.
     // _lastSpeechPerfNow is performance.now() of the last audio frame that
-    // contained detectable speech — the best client-side proxy for
+    // contained detectable speech - the best client-side proxy for
     // "user stopped talking". This gives felt_ms a start anchor that
     // pre-dates the transcript message by ~endpointing_ms, making felt_ms
     // correctly larger than pipeline total_ms.
@@ -211,10 +211,10 @@ export class AudioInputController {
       source.connect(this.processor);
       this.processor.connect(sink);
       sink.connect(audioContext.destination);
-      console.log("✓ AudioWorklet ready");
+      console.log("[ok] AudioWorklet ready");
     } catch (_) {
       console.warn(
-        "AudioWorklet unavailable — falling back to ScriptProcessor",
+        "AudioWorklet unavailable - falling back to ScriptProcessor",
       );
       this.processor = audioContext.createScriptProcessor(4096, 1, 1);
       this.processor.onaudioprocess = (evt) => {

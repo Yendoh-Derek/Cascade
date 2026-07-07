@@ -119,6 +119,29 @@ class TutorSession:
         self.history.append({"role": "assistant", "content": content.strip()})
         logger.debug(f"[TutorSession] Assistant: {content[:60]}...")
 
+    def load_history(self, history: list) -> None:
+        """Pre-populate history from a client-supplied resume payload.
+
+        Called at the start of a resumed session to restore conversational
+        context. Only well-formed user/assistant message dicts are accepted;
+        malformed or injected entries are silently dropped.
+
+        Args:
+            history: List of {"role": "user"|"assistant", "content": str} dicts
+        """
+        valid = [
+            msg for msg in history
+            if isinstance(msg, dict)
+            and msg.get("role") in {"user", "assistant"}
+            and isinstance(msg.get("content"), str)
+            and msg["content"].strip()
+        ]
+        self.history = valid
+        logger.info(
+            f"[TutorSession] History loaded from client resume: {len(valid)} messages "
+            f"({len(history) - len(valid)} entries dropped as invalid)"
+        )
+
     def get_messages(self) -> List[Dict[str, str]]:
         """Get the complete messages array for an LLM request."""
         return build_messages(self.history)

@@ -1,4 +1,4 @@
-import { STATE } from "./state.js?v=2.0.2";
+import { STATE } from "./state.js?v=2.1.0";
 
 export class UIController {
   constructor(client) {
@@ -141,11 +141,7 @@ export class UIController {
           btn.addEventListener("click", () => this.client.toggleSession());
         } else if (btn.id === "btn-clear-transcript") {
           btn.addEventListener("click", async () => {
-            if (this.client.state !== STATE.IDLE) {
-              await this.client.stopSession();
-            }
-            this.clearTranscript();
-            this.client._resetTurnState();
+            await this.client.resetConversation();
           });
         } else if (btn.id === "btn-stats") {
           btn.addEventListener("click", () => this._openStatsPanel());
@@ -301,8 +297,9 @@ export class UIController {
       }
       if (newState === STATE.IDLE) {
         this.btnToggleSession.classList.remove("active");
-        if (label) label.textContent = "Begin";
-        // Restore play icon
+        const hasHistory = !!(this.client.conversationHistory && this.client.conversationHistory.length > 0);
+        if (label) label.textContent = hasHistory ? "Continue" : "Begin";
+        // Restore play icon (same for both Begin and Continue)
         if (icon) {
           icon.innerHTML = `<polygon points="5 3 19 12 5 21 5 3"/>`;
           icon.setAttribute("fill", "currentColor");

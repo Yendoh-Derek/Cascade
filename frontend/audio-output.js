@@ -1,8 +1,8 @@
-import { STATE } from "./state.js?v=2.0.2";
+import { STATE } from "./state.js?v=2.1.1";
 import {
   canScheduleAudioChunk,
   resolvePlaybackCompletion,
-} from "./playback-state.js?v=2.0.2";
+} from "./playback-state.js?v=2.1.1";
 
 const PLAYBACK_TAIL_TIMEOUT_MS = 3000;
 
@@ -38,7 +38,7 @@ export class AudioOutputController {
       this.analyser.fftSize = 256;
       this.analyser.connect(this.playbackGain);
       this.playbackGain.connect(this.audioContext.destination);
-      console.log("✓ AudioContext and gain graph initialized");
+      console.log("[ok] AudioContext and gain graph initialized");
       return true;
     } catch (err) {
       console.error("AudioContext not available:", err);
@@ -81,7 +81,7 @@ export class AudioOutputController {
           this.client.state === STATE.SPEAKING)
       ) {
         console.warn(
-          "[AudioOutput] Playback tail timeout — forcing LISTENING recovery",
+          "[AudioOutput] Playback tail timeout - forcing LISTENING recovery",
         );
         this.isAudioSourceEnded = true;
         this._checkPlaybackFinished();
