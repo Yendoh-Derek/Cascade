@@ -65,6 +65,19 @@ def _has_unclosed_markdown(text: str) -> bool:
         if end == -1:
             return True
         temp = temp[:start] + temp[end + 2:]
+        
+    while "__" in temp:
+        start = temp.find("__")
+        end = temp.find("__", start + 2)
+        if end == -1:
+            return True
+        temp = temp[:start] + temp[end + 2:]
+
+    if temp.count("*") % 2 == 1:
+        return True
+    
+    if temp.count("_") % 2 == 1:
+        return True
 
     if text.count("`") % 2 == 1:
         return True
@@ -425,6 +438,10 @@ class PipelineSession:
         stripped = transcript.strip()
 
         if self.is_processing_transcript or self._active_turn_id is not None:
+            if getattr(self._metrics, "was_speculative", False) and stripped and stripped == (self._inflight_transcript or "").strip():
+                logger.info(f"[Pipeline] Final transcript matches speculative precisely. Continuing turn {self._active_turn_id}.")
+                return
+
             self._stash_pending_merge(
                 self._inflight_transcript, from_turn_id=self._active_turn_id
             )

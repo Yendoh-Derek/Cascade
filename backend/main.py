@@ -440,6 +440,19 @@ async def websocket_endpoint(
                                             "turn_id": turn_id,
                                         })
                                 continue
+                            elif ctrl_type == "load_history":
+                                # Restore conversation history on session resume.
+                                # Validation is delegated to TutorSession.load_history(),
+                                # which drops any malformed or injected entries.
+                                if session:
+                                    raw_history = control_msg.get("history", [])
+                                    if isinstance(raw_history, list):
+                                        session.tutor.load_history(raw_history)
+                                        logger.info(
+                                            f"[WS] Conversation history restored: "
+                                            f"{len(raw_history)} entries from client"
+                                        )
+                                continue
                     except json.JSONDecodeError:
                         pass
 

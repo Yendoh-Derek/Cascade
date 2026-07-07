@@ -319,7 +319,6 @@ class DeepgramTTSEngine(BaseTTSEngine):
                             break
                         if cancel_event and cancel_event.is_set():
                             cancelled_intentionally = True
-                            await ws.send_json({"type": "Clear"})
                             break
                         if not chunk:
                             continue

@@ -2,13 +2,13 @@
  * Cascade — AI Voice Tutor Frontend
  */
 
-import { UIController } from "./ui.js?v=2.0.2";
-import { AudioInputController } from "./audio-input.js?v=2.0.2";
-import { AudioOutputController } from "./audio-output.js?v=2.0.2";
-import { WebSocketTransport } from "./transport.js?v=2.0.2";
-import { ChartRenderer } from "./chart.js?v=2.0.2";
+import { UIController } from "./ui.js?v=2.1.0";
+import { AudioInputController } from "./audio-input.js?v=2.1.0";
+import { AudioOutputController } from "./audio-output.js?v=2.1.0";
+import { WebSocketTransport } from "./transport.js?v=2.1.0";
+import { ChartRenderer } from "./chart.js?v=2.1.0";
 
-import { STATE } from "./state.js?v=2.0.2";
+import { STATE } from "./state.js?v=2.1.0";
 
 class CascadeClient {
   constructor() {
@@ -32,6 +32,12 @@ class CascadeClient {
     this._turnStartMs = null; // stamped at transcript receipt (fallback anchor)
     this._speechEndMs = null; // stamped by VAD at speech end (primary anchor)
     this._firstAudioPlayed = false;
+
+    // Conversation history — persists across pause/resume cycles.
+    // Each entry: {role: "user"|"assistant", content: string}.
+    // Sent to the server on resume via load_history message.
+    this.conversationHistory = [];
+    this._pendingUserMessage = null; // user utterance awaiting a completed AI response
 
     this.currentResponse = "";
     this.currentStreamingBubble = null;
@@ -92,17 +98,36 @@ class CascadeClient {
         );
       }
       await this.audioOutput.resumeContext();
-      await this.audioInput.start();
 
       this.setState(STATE.CONNECTING);
       await this.transport.connect();
+
+      // Resume: send saved history to the server before any audio arrives.
+      // This must happen right after connection so the server can pre-populate
+      // TutorSession.history before the first speech_final event is processed.
+      if (this.conversationHistory.length > 0) {
+        this.transport.send(
+          JSON.stringify({ type: "load_history", history: this.conversationHistory })
+        );
+        console.log(
+          `[Client] Resuming session — sent ${this.conversationHistory.length} history messages to server`
+        );
+      }
+
+      // Start microphone capture only after the websocket is connected and any
+      // resume history has been sent, so the backend can restore context before
+      // processing new user audio.
+      await this.audioInput.start();
 
       this.setState(STATE.LISTENING);
       this.currentStreamingBubble = null;
       this.currentStudentBubble = null;
       this.sessionStartTime = Date.now();
 
-      this.ui.clearTranscript();
+      // Only clear the transcript on a fresh session, not on resume.
+      if (this.conversationHistory.length === 0) {
+        this.ui.clearTranscript();
+      }
       this.ui.maybeShowFirstRunHint();
     } catch (err) {
       console.error("startSession failed:", err);
@@ -153,14 +178,21 @@ class CascadeClient {
     this.audioInput.stop();
     this.audioOutput.stopAllPlayback();
 
+    // Discard any in-flight (incomplete) turn — it won't have an assistant
+    // response so it shouldn't be saved to history.
+    this._pendingUserMessage = null;
+
     this.currentResponse = "";
     if (this.currentStreamingBubble) {
+      // Remove the streaming bubble — an interrupted partial response
+      // should not be left dangling in the transcript on pause.
       this.currentStreamingBubble.remove();
       this.currentStreamingBubble = null;
     }
     this.resetTurnAndEpochState();
     this.sessionStartTime = null;
 
+    // Keep transcript and conversationHistory intact — the user can resume.
     this.setState(STATE.IDLE);
   }
 
@@ -172,6 +204,7 @@ class CascadeClient {
     this.decodeGeneration += 1;
     this._interrupting = false;
     this._pendingCancelTurnId = null;
+    this._pendingUserMessage = null;
 
     if (this._interruptTimeout) {
       clearTimeout(this._interruptTimeout);
@@ -181,6 +214,23 @@ class CascadeClient {
     // Clear felt-latency anchors so a new session always starts clean.
     this._speechEndMs = null;
     this._turnStartMs = null;
+  }
+
+  /**
+   * Hard reset — clears the conversation transcript, wipes all saved history,
+   * and returns to a completely fresh state. Bound to the Reset button.
+   */
+  async resetConversation() {
+    if (this.state !== STATE.IDLE) {
+      await this.stopSession();
+    }
+    this.conversationHistory = [];
+    this._pendingUserMessage = null;
+    this.ui.clearTranscript();
+    this._resetTurnState();
+    // Refresh button label — no history means "Begin" rather than "Continue".
+    this.ui.setState(STATE.IDLE, STATE.IDLE);
+    console.log("[Client] Conversation reset — history cleared");
   }
 
   _resetTurnState() {
@@ -358,7 +408,11 @@ class CascadeClient {
             this.activeTurnId = msg.turn_id;
             this.playbackTurnId = msg.turn_id;
           }
-          
+
+          // Save the user's utterance — it will be committed to conversationHistory
+          // once the AI response completes successfully (at response_end).
+          this._pendingUserMessage = msg.text;
+
           if (this._speechEndMs == null) {
             this._speechEndMs = performance.now() - 300;
           }
@@ -434,6 +488,16 @@ class CascadeClient {
             }, 1200);
           }
         }
+
+        // Commit the completed turn to conversation history so it can be
+        // replayed to the server on a future resume.
+        if (this._pendingUserMessage && this.currentResponse && this.currentResponse.trim()) {
+          this.conversationHistory.push({ role: "user", content: this._pendingUserMessage });
+          this.conversationHistory.push({ role: "assistant", content: this.currentResponse.trim() });
+          console.log(`[Client] Turn saved to history (${this.conversationHistory.length / 2} turns total)`);
+        }
+        this._pendingUserMessage = null;
+
         this.currentResponse = "";
         this.currentStreamingBubble = null;
         // Mark the audio source as ended so _checkPlaybackFinished() can
@@ -451,6 +515,8 @@ class CascadeClient {
         }
         break;
       case "turn_cancelled":
+        // Discard the pending user message — the turn never produced an AI response.
+        this._pendingUserMessage = null;
         if (msg.turn_id != null && this.activeTurnId === msg.turn_id) {
           this.activeTurnId = null;
           this.playbackTurnId = null;

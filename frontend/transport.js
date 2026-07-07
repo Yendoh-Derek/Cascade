@@ -1,4 +1,4 @@
-import { STATE } from "./state.js?v=2.0.2";
+import { STATE } from "./state.js?v=2.1.1";
 
 export class WebSocketTransport {
   constructor(client) {
@@ -82,7 +82,7 @@ export class WebSocketTransport {
         }
         clearTimeout(connectTimeout);
         this.reconnectAttempts = 0;
-        console.log("✓ [Transport] WebSocket connected");
+        console.log("[ok] [Transport] WebSocket connected");
         scheduleAuthGrace();
       };
 
