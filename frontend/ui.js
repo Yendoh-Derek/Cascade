@@ -1,5 +1,64 @@
 import { STATE } from "./state.js?v=2.1.0";
 
+function renderMathSpans(escapedText) {
+  if (typeof escapedText !== "string" || escapedText.length === 0) {
+    return escapedText;
+  }
+
+  let result = "";
+  let i = 0;
+
+  while (i < escapedText.length) {
+    const ch = escapedText[i];
+
+    // Keep escaped dollars as literal text and do not treat them as delimiters.
+    if (ch === "\\" && i + 1 < escapedText.length && escapedText[i + 1] === "$") {
+      result += "\\$";
+      i += 2;
+      continue;
+    }
+
+    if (ch !== "$") {
+      result += ch;
+      i += 1;
+      continue;
+    }
+
+    // Find the next unescaped dollar to close this math span.
+    let j = i + 1;
+    while (j < escapedText.length) {
+      if (escapedText[j] === "\\" && j + 1 < escapedText.length && escapedText[j + 1] === "$") {
+        j += 2;
+        continue;
+      }
+      if (escapedText[j] === "$") {
+        break;
+      }
+      j += 1;
+    }
+
+    if (j >= escapedText.length) {
+      // Unclosed math delimiter; keep the rest as-is.
+      result += escapedText.slice(i);
+      break;
+    }
+
+    const expr = escapedText.slice(i + 1, j);
+    try {
+      if (typeof katex === "undefined" || !katex?.renderToString) {
+        result += `$${expr}$`;
+      } else {
+        result += katex.renderToString(expr, { throwOnError: false, output: "html" });
+      }
+    } catch (_) {
+      result += `$${expr}$`;
+    }
+    i = j + 1;
+  }
+
+  return result;
+}
+
 export class UIController {
   constructor(client) {
     this.client = client;
@@ -373,7 +432,7 @@ export class UIController {
       msg.innerHTML = `<p>${this._escapeHTML(text)}</p><span class="message-timestamp">just now</span>`;
     } else if (type === "tutor") {
       msg.className = "message message-tutor";
-      msg.innerHTML = `<p>${this._escapeHTML(text)}</p><span class="message-timestamp">just now</span>`;
+      msg.innerHTML = `<p>${this.renderTutorHTML(text)}</p><span class="message-timestamp">just now</span>`;
     } else {
       return;
     }
@@ -411,6 +470,10 @@ export class UIController {
     const d = document.createElement("div");
     d.appendChild(document.createTextNode(str));
     return d.innerHTML;
+  }
+
+  renderTutorHTML(text) {
+    return renderMathSpans(this._escapeHTML(text));
   }
 
   showToast(message, duration = 4000, variant = "error") {

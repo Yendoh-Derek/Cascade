@@ -49,6 +49,7 @@ def test_system_prompt():
     assert "Cascade" in prompt
     assert "Voice Rules" in prompt
     assert "spoken conversation" in prompt
+    assert "Wrap every math expression in single dollar signs" in prompt
     print("✓")
 
 

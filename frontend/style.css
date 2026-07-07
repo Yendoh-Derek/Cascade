@@ -1051,6 +1051,10 @@ body {
   word-wrap: break-word;
 }
 
+.message-tutor .katex {
+  font-size: 1em;
+}
+
 .message-tutor.streaming p::after {
   content: "▋";
   animation: cursorBlink 1s step-end infinite;
