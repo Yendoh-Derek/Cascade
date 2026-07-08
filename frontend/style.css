@@ -1062,8 +1062,9 @@ body {
   margin-left: 4px;
 }
 
-.message-user.streaming p {
-  color: rgba(255, 255, 255, 0.5);
+.message-user .tentative {
+  color: rgba(255, 255, 255, 0.4);
+  font-style: italic;
 }
 
 .message-user.streaming p::after {

@@ -2,10 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Install PyTorch CPU-only first in its own layer for better caching.
+# Using --index-url (not --extra-index-url) ensures only the CPU wheel is
+# resolved, preventing accidental download of the large CUDA bundle.
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.12.1+cpu
+
+# Install remaining dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download Silero VAD model so runtime does not depend on GitHub reachability
 ENV TORCH_HOME=/app/.cache/torch

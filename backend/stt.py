@@ -37,10 +37,10 @@ class STTHandler:
         on_error: Optional[Callable[[str], None]] = None,
         on_status: Optional[Callable[[str, dict], None]] = None,
         on_speech_interrupted: Optional[Callable[[str], None]] = None,
-        on_transcript_update: Optional[Callable[[str], None]] = None,
+        on_transcript_update: Optional[Callable[[str, str], None]] = None,
         on_speculative_transcript: Optional[Callable[[str], None]] = None,
         is_ai_speaking: Optional[Callable[[], bool]] = None,
-        model: str = "nova-2",
+        model: str = "nova-3",
         language: str = "en-US",
         endpointing_ms: int = 300,
         vad_threshold: float = 0.5,
@@ -69,6 +69,7 @@ class STTHandler:
         self._vad_min_speech_frames = vad_min_speech_frames
         self._latest_interim: str = ""
         self._recent_interims: list[str] = []
+        self._last_interim_words: list[str] = []
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.is_open = False
@@ -277,6 +278,27 @@ class STTHandler:
         except Exception as e:
             logger.debug(f"[STT] KeepAlive task error: {e}")
 
+    def _compute_display_text(self, transcript: str) -> tuple[str, str]:
+        words = transcript.split()
+        if not words:
+            return "", ""
+        
+        if not self._last_interim_words:
+            self._last_interim_words = words
+            return " ".join(words[:-1]), words[-1]
+            
+        stable_words = []
+        for i, word in enumerate(words):
+            if i < len(self._last_interim_words) and word == self._last_interim_words[i]:
+                stable_words.append(word)
+            else:
+                break
+                
+        self._last_interim_words = words
+        stable_part = " ".join(stable_words)
+        tentative_part = " ".join(words[len(stable_words):])
+        return stable_part, tentative_part
+
     async def _handle_message(self, data: dict):
         """Handle a message from Deepgram."""
         try:
@@ -300,12 +322,12 @@ class STTHandler:
                             # EXCEPT the one bundled with speech_final.
                             self._last_speech_time = time.perf_counter()
 
-                        # Stream live interim words to the UI (not is_final to avoid
-                        # showing words twice — once as interim, once committed to buffer).
+                        # Stream live interim words to the UI
                         if self.on_transcript_update and not is_final:
-                            live_text = (self.transcript_buffer + " " + transcript).strip()
-                            if live_text:
-                                self.on_transcript_update(live_text)
+                            stable, tentative = self._compute_display_text(transcript)
+                            live_stable = (self.transcript_buffer + " " + stable).strip()
+                            if live_stable or tentative:
+                                self.on_transcript_update(live_stable, tentative)
 
                     if transcript and not is_final:
                         self._latest_interim = transcript
@@ -320,8 +342,9 @@ class STTHandler:
                             else transcript
                         )
                         self._latest_interim = ""
+                        self._last_interim_words = []
                         if self.on_transcript_update and self.transcript_buffer.strip():
-                            self.on_transcript_update(self.transcript_buffer.strip())
+                            self.on_transcript_update(self.transcript_buffer.strip(), "")
                         logger.debug(f"[STT] is_final: '{transcript}'")
 
                     if speech_final:
@@ -460,6 +483,7 @@ class STTHandler:
         self.transcript_buffer = ""
         self._latest_interim = ""
         self._recent_interims.clear()
+        self._last_interim_words = []
         self._utterance_start_time = None
         if self._vad is not None:
             self._vad.reset()
@@ -511,6 +535,7 @@ class STTHandler:
         self.transcript_buffer = ""
         self._latest_interim = ""
         self._recent_interims.clear()
+        self._last_interim_words.clear()
 
         now = time.perf_counter()
         if self._last_speech_time is not None:

@@ -97,20 +97,33 @@ def _has_unclosed_markdown(text: str) -> bool:
 class MarkdownStripper:
     """Stateful markdown stripper safe across streaming LLM chunk boundaries."""
 
-    def __init__(self) -> None:
+    def __init__(self, stall_timeout: float = 0.5) -> None:
         self._buffer = ""
+        self._unbalanced_since: Optional[float] = None
+        self._stall_timeout = stall_timeout
 
     def feed(self, chunk: str) -> str:
         self._buffer += chunk
         if _has_unclosed_markdown(self._buffer):
+            if self._unbalanced_since is None:
+                self._unbalanced_since = time.perf_counter()
+            elif time.perf_counter() - self._unbalanced_since > self._stall_timeout:
+                logger.warning("[Pipeline] Markdown Stripper stall timeout: forcing flush")
+                result = strip_markdown(self._buffer)
+                self._buffer = ""
+                self._unbalanced_since = None
+                return result
             return ""
+            
         result = strip_markdown(self._buffer)
         self._buffer = ""
+        self._unbalanced_since = None
         return result
 
     def flush(self) -> str:
         result = strip_markdown(self._buffer)
         self._buffer = ""
+        self._unbalanced_since = None
         return result
 
 
@@ -132,20 +145,32 @@ def _count_unescaped_dollars(text: str) -> int:
 class MathAwareChunkBuffer:
     """Buffers LLM chunks until math delimiters are balanced for safe conversion."""
 
-    def __init__(self) -> None:
+    def __init__(self, stall_timeout: float = 0.5) -> None:
         self._pending = ""
+        self._unbalanced_since: Optional[float] = None
+        self._stall_timeout = stall_timeout
 
     def feed(self, chunk: str) -> str:
         self._pending += chunk
         if _count_unescaped_dollars(self._pending) % 2 == 1:
+            if self._unbalanced_since is None:
+                self._unbalanced_since = time.perf_counter()
+            elif time.perf_counter() - self._unbalanced_since > self._stall_timeout:
+                logger.warning("[Pipeline] Math Buffer stall timeout: forcing flush")
+                ready, self._pending = self._pending, ""
+                self._unbalanced_since = None
+                return ready
             return ""
+            
         ready, self._pending = self._pending, ""
+        self._unbalanced_since = None
         return math_to_speech(ready)
 
     def flush(self) -> str:
         if not self._pending:
             return ""
         leftover, self._pending = self._pending, ""
+        self._unbalanced_since = None
         if _count_unescaped_dollars(leftover) % 2 == 0:
             return math_to_speech(leftover)
         return leftover.replace("$", "")
@@ -214,7 +239,7 @@ class PipelineSession:
         api_keys: Dict[str, str],
         model_config: Dict[str, Any],
         outbound_queue: asyncio.Queue[dict[str, Any] | None],
-        tts_engine: str = "edge",
+        tts_engine: str = "deepgram",
         llm_client: Optional[AsyncGroq] = None,
     ):
         self.api_keys = api_keys
@@ -391,12 +416,12 @@ class PipelineSession:
         self._clear_pending_merge()
         return new_text
 
-    def _on_stt_update(self, transcript: str):
+    def _on_stt_update(self, stable: str, tentative: str):
         """
         Live word-by-word streaming of the user's speech to the UI.
         Does NOT trigger the LLM.
         """
-        self.send_message({"type": "transcript_update", "text": transcript})
+        self.send_message({"type": "transcript_update", "stable": stable, "tentative": tentative})
 
     def _on_vad_interrupted(self, transcript: str):
         """
@@ -566,6 +591,8 @@ class PipelineSession:
             self._send_for_turn(turn_id, {"type": "transcript", "text": transcript})
 
             grace_ms = 0 if was_speculative else self.model_config.get("speculative_grace_ms", 180)
+            if transcript.strip() and transcript.strip()[-1] in ".?!":
+                grace_ms = 0
             if grace_ms > 0:
                 try:
                     await asyncio.wait_for(
@@ -614,8 +641,9 @@ class PipelineSession:
 
             async def produce_chunks() -> None:
                 nonlocal first_token_received, batch_timer_task
-                markdown_stripper = MarkdownStripper()
-                math_buffer = MathAwareChunkBuffer()
+                stall_timeout = self.model_config.get("buffer_stall_ms", 500) / 1000.0
+                markdown_stripper = MarkdownStripper(stall_timeout=stall_timeout)
+                math_buffer = MathAwareChunkBuffer(stall_timeout=stall_timeout)
                 gen = llm_generator.generate(
                     messages=messages,
                     timeout_sec=30,

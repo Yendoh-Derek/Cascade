@@ -284,14 +284,21 @@ class CascadeClient {
     this.currentResponse = "";
   }
 
-  _updateStudentTranscript(text, { final = false } = {}) {
+  _updateStudentTranscript(stableText, tentativeText = "", { final = false } = {}) {
+    let htmlContent = stableText;
+    if (tentativeText) {
+      htmlContent += (htmlContent ? " " : "") + `<span class="tentative">${tentativeText}</span>`;
+    }
+
     if (!this.currentStudentBubble) {
-      this.currentStudentBubble = this.ui.addTranscriptItem("student", text);
+      this.currentStudentBubble = this.ui.addTranscriptItem("student", "");
+      const p = this.currentStudentBubble.querySelector("p");
+      if (p) p.innerHTML = htmlContent;
       if (!final && this.currentStudentBubble)
         this.currentStudentBubble.classList.add("streaming");
     } else {
       const p = this.currentStudentBubble.querySelector("p");
-      if (p) p.textContent = text;
+      if (p) p.innerHTML = htmlContent;
       if (final) {
         this.currentStudentBubble.classList.remove("streaming");
       } else {
@@ -359,7 +366,7 @@ class CascadeClient {
         );
         break;
       case "transcript_update":
-        if (msg.text) {
+        if (msg.stable !== undefined || msg.tentative !== undefined) {
           if (
             this.audioOutput.activeSourceNodes.length > 0 ||
             this.audioOutput.isPlaying
@@ -377,10 +384,10 @@ class CascadeClient {
           if (!this.currentStudentBubble) {
             this._resetTurnState();
             this._finalizeTutorBubble();
-            this._updateStudentTranscript(msg.text);
+            this._updateStudentTranscript(msg.stable || "", msg.tentative || "");
             this.currentResponse = "";
           } else {
-            this._updateStudentTranscript(msg.text);
+            this._updateStudentTranscript(msg.stable || "", msg.tentative || "");
           }
         }
         break;
@@ -423,12 +430,12 @@ class CascadeClient {
           if (!is_update && !this.currentStudentBubble) {
             this._resetTurnState();
             this._finalizeTutorBubble();
-            this._updateStudentTranscript(msg.text, { final: true });
+            this._updateStudentTranscript(msg.text, "", { final: true });
             this.currentResponse = "";
             this.totalTurns++;
             this.ui._updateStatsBar();
           } else {
-            this._updateStudentTranscript(msg.text, { final: true });
+            this._updateStudentTranscript(msg.text, "", { final: true });
             this.currentResponse = "";
             this._finalizeTutorBubble();
             if (!is_update) {
@@ -776,10 +783,9 @@ document.addEventListener("DOMContentLoaded", () => {
   window.cascadeClient.ui._updateStatsBar();
   window.cascadeClient.ui._showEmptyStateIfNeeded();
 
-  // Add spacebar shortcut to toggle microphone
   document.addEventListener("keydown", (e) => {
-    // Ignore if user is typing in an input field (like the secret modal)
-    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") {
+    // Ignore if user is typing in an input field (like the secret modal) or contenteditable
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) {
       return;
     }
 
