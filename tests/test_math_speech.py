@@ -27,3 +27,19 @@ def test_no_math_passthrough():
 def test_pi_and_times():
     assert math_to_speech("$2 \\times \\pi \\times r$") == "2 times pi times r"
 
+
+def test_negative_exponent_unbraced():
+    """Regression: $x^-2$ was silently skipped; '-' is now included in the exponent char class."""
+    result = math_to_speech("$x^-2$")
+    assert "to the power of" in result
+    # The '-' in the exponent is correctly converted to "minus" by the subtraction rule
+    assert "minus" in result
+
+
+def test_escaped_dollar_passthrough():
+    """Regression: \\$ used to trigger math-mode detection incorrectly."""
+    text = r"The price is \$5 today."
+    result = math_to_speech(text)
+    # The escaped dollar should NOT be converted as math.
+    assert "price" in result
+    assert "to the power of" not in result

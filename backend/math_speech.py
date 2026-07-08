@@ -20,7 +20,7 @@ def _convert_expression(expr: str) -> str:
     expr = re.sub(r"([A-Za-z0-9_]+)\^\{([^{}]+)\}", r"\1 to the power of \2", expr)
     expr = re.sub(r"([A-Za-z0-9_]+)\^2\b", r"\1 squared", expr)
     expr = re.sub(r"([A-Za-z0-9_]+)\^3\b", r"\1 cubed", expr)
-    expr = re.sub(r"([A-Za-z0-9_]+)\^([A-Za-z0-9_]+)", r"\1 to the power of \2", expr)
+    expr = re.sub(r"([A-Za-z0-9_]+)\^([-]?[A-Za-z0-9_]+)", r"\1 to the power of \2", expr)
     expr = re.sub(r"\\times", " times ", expr)
     expr = re.sub(r"\\div", " divided by ", expr)
     expr = re.sub(r"\\pi", "pi", expr)
@@ -43,5 +43,5 @@ def math_to_speech(text: str) -> str:
     def _replace(match: re.Match[str]) -> str:
         return _convert_expression(match.group(1))
 
-    return re.sub(r"\$([^$]+)\$", _replace, text)
+    return re.sub(r"(?<!\\)\$([^$]+?)(?<!\\)\$", _replace, text)
 

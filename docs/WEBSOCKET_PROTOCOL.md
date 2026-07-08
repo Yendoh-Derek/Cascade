@@ -66,7 +66,7 @@ server forwards these bytes to Deepgram STT and the local Silero VAD.
 | Type | Fields | Description |
 |------|--------|-------------|
 | `tts_config` | `format`, `sample_rate`, `sampleRate` | Sent once after pipeline init; tells client how to decode TTS audio. |
-| `transcript_update` | `text` | Live interim transcript (not turn-final). |
+| `transcript_update` | `stable`, `tentative` | Live interim transcript. `stable` is confirmed word prefix; `tentative` is the fluid trailing words (rendered in dimmed italics). |
 | `transcript` | `text`, `turn_id` | Final transcript for a turn; triggers LLM processing. |
 | `response_chunk` | `text`, `turn_id` | Incremental streaming text chunk from the LLM. |
 | `response_end` | `turn_id` (optional) | End of assistant response for the turn. |
@@ -91,9 +91,14 @@ server forwards these bytes to Deepgram STT and the local Silero VAD.
 
 ### Binary audio
 
-Synthesized TTS audio chunks. Format and sample rate are defined in the initial
-`tts_config` message. Each chunk is associated with the active `turn_id` via
-the outbound message gate.
+Synthesized TTS audio chunks. Each binary frame is prefixed with a **4-byte big-endian `turn_id`** so the client can associate audio with the active turn and discard frames from cancelled turns:
+
+```
+[0..3]  uint32 big-endian  turn_id
+[4..]   audio bytes        PCM16 / MP3 depending on TTS engine (see tts_config)
+```
+
+Format and sample rate are defined in the initial `tts_config` message.
 
 ---
 

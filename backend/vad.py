@@ -43,7 +43,7 @@ class SileroVAD:
         """
         self.threshold = threshold
         self.silence_ms = silence_ms
-        self._silence_frames_needed = silence_ms // self.CHUNK_MS
+        self._silence_frames_needed = max(1, round(silence_ms / self.CHUNK_MS))
         self.min_speech_frames = min_speech_frames
 
         # Each instance needs a separate model copy because Silero VAD contains
@@ -53,7 +53,10 @@ class SileroVAD:
         self._speech_active = False
         self._silence_frame_count = 0
         self._speech_frame_count = 0
-        self._buffer = np.array([], dtype=np.int16)
+        # Pre-allocated rolling buffer avoids repeated np.concatenate allocations.
+        _MAX_BUFFER_SAMPLES = self.SAMPLES_PER_CHUNK * 8  # 256ms headroom
+        self._ring = np.zeros(_MAX_BUFFER_SAMPLES, dtype=np.int16)
+        self._ring_write = 0  # number of valid samples in ring
         self._lock = threading.Lock()
 
     def feed(self, pcm16_bytes: bytes, require_extra_frames: bool = False) -> list[str]:
@@ -70,11 +73,27 @@ class SileroVAD:
     def _feed_unlocked(self, pcm16_bytes: bytes, require_extra_frames: bool) -> list[str]:
         events: list[str] = []
         samples = np.frombuffer(pcm16_bytes, dtype=np.int16)
-        self._buffer = np.concatenate([self._buffer, samples])
 
-        while len(self._buffer) >= self.SAMPLES_PER_CHUNK:
-            chunk = self._buffer[:self.SAMPLES_PER_CHUNK]
-            self._buffer = self._buffer[self.SAMPLES_PER_CHUNK:]
+        # Append into pre-allocated ring buffer.  If the incoming batch is
+        # larger than the remaining headroom, fall back to a fresh allocation
+        # so we never silently lose samples (very rare: >8 frames at once).
+        new_count = len(samples)
+        available = len(self._ring) - self._ring_write
+        if new_count > available:
+            # Compact: move valid data to a fresh array and grow if needed.
+            needed = self._ring_write + new_count
+            fresh = np.empty(max(needed, len(self._ring) * 2), dtype=np.int16)
+            fresh[:self._ring_write] = self._ring[:self._ring_write]
+            self._ring = fresh
+        self._ring[self._ring_write : self._ring_write + new_count] = samples
+        self._ring_write += new_count
+
+        while self._ring_write >= self.SAMPLES_PER_CHUNK:
+            chunk = self._ring[:self.SAMPLES_PER_CHUNK].copy()
+            # Shift remaining samples to the front.
+            remaining = self._ring_write - self.SAMPLES_PER_CHUNK
+            self._ring[:remaining] = self._ring[self.SAMPLES_PER_CHUNK : self._ring_write]
+            self._ring_write = remaining
 
             audio_f32 = chunk.astype(np.float32) / 32768.0
             with torch.no_grad():
@@ -108,4 +127,4 @@ class SileroVAD:
             self._speech_active = False
             self._silence_frame_count = 0
             self._speech_frame_count = 0
-            self._buffer = np.array([], dtype=np.int16)
+            self._ring_write = 0

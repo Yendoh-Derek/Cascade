@@ -231,11 +231,14 @@ export class AudioInputController {
           downsampled[i] = sum / Math.max(1, end - start);
         }
         const pcm16 = new Int16Array(downsampled.length);
+        let sumOfSquares = 0;
         for (let i = 0; i < downsampled.length; i++) {
           const s = Math.max(-1, Math.min(1, downsampled[i]));
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          sumOfSquares += s * s;
         }
-        this._onAudioData({ type: "audio", data: pcm16.buffer });
+        const rms = downsampled.length > 0 ? Math.sqrt(sumOfSquares / downsampled.length) : 0;
+        this._onAudioData({ type: "audio", data: pcm16.buffer, rms: rms });
       };
       source.connect(this.processor);
       this.processor.connect(sink);
@@ -252,6 +255,7 @@ export class AudioInputController {
             this.bufferSize = 160; // 10ms of audio at 16kHz
             this.buffer = new Int16Array(this.bufferSize);
             this.bufferWriteIndex = 0;
+            this.sumOfSquares = 0;
         }
 
         process(inputs) {
@@ -270,12 +274,15 @@ export class AudioInputController {
             for (let i = 0; i < downsampled.length; i++) {
               const s = Math.max(-1, Math.min(1, downsampled[i]));
               this.buffer[this.bufferWriteIndex++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+              this.sumOfSquares += s * s;
               
               if (this.bufferWriteIndex >= this.bufferSize) {
                 const outBuffer = this.buffer;
-                this.port.postMessage({ type: "audio", data: outBuffer.buffer }, [outBuffer.buffer]);
+                const rms = Math.sqrt(this.sumOfSquares / this.bufferSize);
+                this.port.postMessage({ type: "audio", data: outBuffer.buffer, rms: rms }, [outBuffer.buffer]);
                 this.buffer = new Int16Array(this.bufferSize);
                 this.bufferWriteIndex = 0;
+                this.sumOfSquares = 0;
               }
             }
           }
@@ -289,8 +296,10 @@ export class AudioInputController {
   _onAudioData(data) {
     if (!this.isRecording) return;
     let bytes;
+    let rms;
     if (data && data.type === "audio" && data.data) {
       bytes = new Uint8Array(data.data);
+      rms = data.rms;
     } else if (ArrayBuffer.isView(data)) {
       bytes = new Uint8Array(data.buffer);
     } else {
@@ -306,23 +315,25 @@ export class AudioInputController {
       this.client.state === STATE.SPEAKING ||
       this.client.state === STATE.PROCESSING
     ) {
-      this._detectSilence(bytes);
+      this._detectSilence(bytes, rms);
     }
   }
 
-  _detectSilence(bytes) {
+  _detectSilence(bytes, rms) {
     if (!bytes || bytes.length < 4) return;
     // WINDING_DOWN is UI-only; client VAD must not run during playback tail.
     if (this.client.state === STATE.WINDING_DOWN) return;
 
-    let sum = 0;
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const numSamples = Math.floor(bytes.byteLength / 2);
-    for (let i = 0; i < numSamples; i++) {
-      const s = view.getInt16(i * 2, true) / 32768;
-      sum += s * s;
+    if (rms === undefined) {
+      let sum = 0;
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const numSamples = Math.floor(bytes.byteLength / 2);
+      for (let i = 0; i < numSamples; i++) {
+        const s = view.getInt16(i * 2, true) / 32768;
+        sum += s * s;
+      }
+      rms = numSamples > 0 ? Math.sqrt(sum / numSamples) : 0;
     }
-    const rms = numSamples > 0 ? Math.sqrt(sum / numSamples) : 0;
 
     // Leaky peak detector
     this.maxAudioLevel = Math.max(0.05, this.maxAudioLevel * 0.995);

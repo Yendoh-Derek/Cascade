@@ -224,7 +224,7 @@ class LLMGenerator:
                             else SUBSEQUENT_FLUSH_TOKENS
                         )
 
-                        ends_with_space_or_punct = sentence_buffer[-1] in " \n\t\r.,!?;:—-"
+                        ends_with_space_or_punct = sentence_buffer[-1] in " \n\t\r.,!?;:—"
                         has_enough_tokens = token_count_in_buffer >= token_cap
 
                         if (ends_with_space_or_punct and has_enough_tokens) or time_based_flush:
@@ -254,6 +254,13 @@ class LLMGenerator:
 
                 logger.info(f"[LLM] Stream complete: {token_count} tokens total")
 
+                choices = getattr(chunk, "choices", None)
+                if choices:
+                    finish_reason = choices[0].finish_reason
+                    if finish_reason == "length":
+                        logger.warning("[LLM] Finish reason was 'length' — response may be truncated")
+                        sentence_buffer = sentence_buffer.rstrip() + "..."
+
         except asyncio.CancelledError:
             logger.info("[LLM] Generation cancelled")
             # pending_task may still be running inside asyncio.shield() — cancel it
@@ -265,12 +272,9 @@ class LLMGenerator:
                 except (asyncio.CancelledError, Exception):
                     pass
             if sentence_buffer:
-                # Yielding here after catching CancelledError is a subtle async-generator
-                # trick that safely flushes the partial LLM response up the pipeline 
-                # (saving it into history) before re-raising the cancellation.
-                if self.t_first_sentence_emitted is None:
-                    self.t_first_sentence_emitted = time.perf_counter()
-                yield sentence_buffer
+                # Partial buffer is intentionally NOT yielded on cancellation —
+                # it would appear as an incomplete response in history.
+                pass
             raise
         except asyncio.TimeoutError:
             logger.error(f"[LLM] Generation timed out after {timeout_sec}s")

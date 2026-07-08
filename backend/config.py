@@ -46,6 +46,7 @@ class ModelConfig:
     speculative_grace_ms: int = int(os.getenv("CASCADE_SPECULATIVE_GRACE_MS", "180"))
     speculative_stability_matches: int = int(os.getenv("CASCADE_SPECULATIVE_STABILITY_MATCHES", "2"))
     enable_speculative_llm: bool = os.getenv("CASCADE_ENABLE_SPECULATIVE_LLM", "false").lower() == "true"
+    buffer_stall_ms: int = int(os.getenv("CASCADE_BUFFER_STALL_MS", "500"))
 
     # LLM
     groq_model: str = "llama-3.1-8b-instant"
