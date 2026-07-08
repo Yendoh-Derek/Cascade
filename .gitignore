@@ -63,6 +63,3 @@ yarn.lock
 *.pyc
 *.pyo
 
-/review.md
-ci-cd-skill.md
-latency_audit.md
