@@ -78,6 +78,11 @@ export class UIController {
   }
 
   _restoreTTSSelection() {
+    /*
+     * ADR-005: TTS selector is hidden from the UI. This method is kept intact
+     * so it can be re-enabled by un-commenting the TTS selector in index.html.
+     * While hidden, querySelectorAll returns an empty NodeList — no-op.
+     */
     const activeBtn = document.querySelector(
       `.tts-toggle-btn[data-engine="${this.client.selectedTTSEngine}"]`,
     );
@@ -208,6 +213,16 @@ export class UIController {
       },
     );
 
+    /*
+     * ADR-005: TTS Engine Selector Toggles — DISABLED (selector hidden from UI).
+     * Deepgram Aura 2 is the hardcoded default (set in app.js via localStorage fallback).
+     *
+     * To re-enable:
+     *   1. Un-comment the TTS selector markup in frontend/index.html (.menu-bar-left block).
+     *   2. Remove the .menu-bar--centered class from the <footer> in index.html.
+     *   3. Un-comment the block below.
+     *   4. See docs/adr/ADR-005-tts-selector-removed.md for the full guide.
+     *
     // Custom TTS Engine Selector Toggles
     document.querySelectorAll(".tts-toggle-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -228,7 +243,7 @@ export class UIController {
         console.log(`[Client] TTS Engine changed to: ${engine}`);
         if (this.client.state !== STATE.IDLE) {
           this.showToast(
-            "Switching voice engine — restarting session…",
+            "Switching voice engine \u2014 restarting session\u2026",
             3000,
             "info",
           );
@@ -241,6 +256,7 @@ export class UIController {
         }
       });
     });
+    */
 
     // Close stats panel listeners
     const btnCloseStats = document.getElementById("btn-close-stats");

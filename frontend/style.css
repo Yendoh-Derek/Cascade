@@ -389,20 +389,36 @@ body {
   padding: 16px 24px;
 }
 
+/*
+  ADR-005: TTS selector hidden — buttons are now centered.
+  When the TTS selector is re-enabled, remove this class from <footer>
+  and the menu bar will revert to space-between layout.
+*/
+.menu-bar--centered {
+  justify-content: center;
+}
+
 /* Layered Glass Blur: Menu Bar */
 .menu-bar {
   backdrop-filter: blur(36px) saturate(180%);
   -webkit-backdrop-filter: blur(36px) saturate(180%);
 }
 
-/* Left section: TTS engine selector */
+/* Left section: TTS engine selector (disabled — see ADR-005) */
 .menu-bar-left {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-/* Right section: action buttons */
+/* Center section: action buttons (active layout) */
+.menu-bar-center {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Right section: action buttons (original layout — unused while TTS selector is hidden) */
 .menu-bar-right {
   display: flex;
   align-items: center;
