@@ -115,8 +115,20 @@
       </div>
 
       <!-- Bottom Menu Bar -->
-      <footer class="menu-bar glass">
-        <!-- Left: TTS Engine Selector -->
+      <!--
+        UI DECISION (ADR-005): TTS Voice Selector removed from menu bar.
+        Deepgram Aura 2 is the hardcoded default TTS engine.
+        To re-enable the TTS selector, see docs/adr/ADR-005-tts-selector-removed.md
+        and un-comment the .menu-bar-left block below, then un-comment the
+        corresponding code in frontend/ui.js (_restoreTTSSelection, TTS toggle listeners).
+      -->
+      <footer class="menu-bar menu-bar--centered glass">
+        <!--
+        [TTS SELECTOR — DISABLED]
+        To re-enable: remove these comment tags and restore the menu-bar layout
+        to use justify-content: space-between (remove .menu-bar--centered class).
+        Also un-comment the TTS listener block in frontend/ui.js.
+
         <div class="menu-bar-left">
           <span class="tts-label">Voice</span>
           <div class="tts-toggle-group">
@@ -126,9 +138,10 @@
             <button class="tts-toggle-btn" id="tts-btn-edge" data-engine="edge" aria-pressed="false" title="Edge TTS — free fallback (higher latency)">Edge (fallback)</button>
           </div>
         </div>
+        -->
 
-        <!-- Right: Action Buttons -->
-        <div class="menu-bar-right">
+        <!-- Action Buttons (centered) -->
+        <div class="menu-bar-center">
           <button
             class="menu-btn menu-btn-primary"
             id="btn-toggle-session"
