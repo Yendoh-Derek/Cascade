@@ -10,4 +10,4 @@ httpx==0.28.1
 # PyTorch index. For local dev, install manually:
 #   pip install torch==2.12.1+cpu --index-url https://download.pytorch.org/whl/cpu
 torch==2.12.1
-numpy==2.4.4
+numpy==2.5.1
