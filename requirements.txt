@@ -6,8 +6,8 @@ groq==1.4.0
 edge-tts==7.2.8
 python-dotenv==1.2.2
 httpx==0.28.1
-# torch: Docker installs the CPU-only wheel (torch==2.12.1+cpu) via the
+# torch: Docker installs the CPU-only wheel (torch==2.13.0+cpu) via the
 # PyTorch index. For local dev, install manually:
-#   pip install torch==2.12.1+cpu --index-url https://download.pytorch.org/whl/cpu
-torch==2.12.1
+#   pip install torch==2.13.0+cpu --index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0
 numpy==2.4.4
