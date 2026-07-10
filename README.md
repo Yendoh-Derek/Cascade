@@ -13,6 +13,9 @@ between finishing speaking and hearing the first word of the response.
 - [Architecture overview](docs/ARCHITECTURE.md)
 - [Testing guide](docs/TESTING_GUIDE.md)
 - [Latency tuning guide](docs/LATENCY.md)
+- [Deployment guide](docs/DEPLOYMENT.md)
+- [WebSocket Protocol](docs/WEBSOCKET_PROTOCOL.md)
+- [Documentation Hub](docs/README.md)
 - [ADR history](docs/adr/)
 - [Contributor guide](CONTRIBUTING.md)
 
@@ -23,7 +26,8 @@ between finishing speaking and hearing the first word of the response.
 - **Barge-in / Interruption Gating**: High-fidelity interruption model utilizing turn-id and audio epoch tracking to atomically suppress stale text/audio from interrupted turns at the network boundary.
 - **Live Latency Dashboard**: Interactive, real-time stacked chart displaying STT, LLM (queue, TTFT, stream), and TTS latency breakdowns so you can analyze pipeline performance.
 - **Dual TTS Engines**: Toggle between high-speed **Deepgram Aura** (default, requires API key) and **Microsoft edge-tts** (free fallback, no key required). The UI selector is hidden by default.
-- **Robust STT Reconnection**: Deepgram client connection automatically recovers on unexpected socket drops with capped exponential backoff and toast notifications.
+- **Robust Client & Server Reconnection**: Deepgram STT recovers gracefully on the server, while the browser client implements an exponential backoff (1s/2s/4s) WebSocket reconnect system to maintain the session.
+- **Dual-Representation Math**: Math spans (`$...$`) emitted by the LLM are spoken fluently by the TTS ("x squared") while simultaneously rendered visually via KaTeX on the frontend.
 
 ---
 
@@ -67,8 +71,8 @@ To minimize audio delay to absolute baseline hardware latency, Cascade no longer
 Latency in Cascade is measured server-side and client-side as follows:
 
 1. **STT Processing**: The interval between the last audio frame sent and Deepgram returning the confirmed transcript (`speech_final`).
-2. **LLM Generation**: Segmented into Queue Time, Time to First Token (TTFT), and Streaming Delay (time to emit the first complete sentence).
-3. **TTS Synthesis**: Time to synthesize the first sentence.
+2. **LLM Generation**: Segmented into Queue Time, Time to First Token (TTFT), and Streaming Delay (time to emit the first chunk).
+3. **TTS Synthesis**: Time to synthesize the first audio chunk.
 4. **End-to-End Latency**: Measured from the instant the STT confirms the utterance to the time the first byte of TTS audio is received. This is visualized live in the frontend chart.
 
 ![Latency Metrics](docs/images/latency-metrics.png)
@@ -80,11 +84,11 @@ Latency in Cascade is measured server-side and client-side as follows:
 | Layer     | Service                                               | Role                        |
 | --------- | ----------------------------------------------------- | --------------------------- |
 | STT       | Deepgram Nova-3                                       | Streaming speech-to-text    |
-| LLM       | Groq + Llama 3.1 8B (Default) / 3.3 70B               | High-speed token generation |
+| LLM       | Groq + Llama 3.3 70B (Default) / Llama 3.1 8B         | High-speed token generation |
 | TTS       | **Deepgram Aura** (Default) / **edge-tts** (Fallback) | Streaming TTS options       |
 | Transport | WebSockets                                            | Low-latency full-duplex     |
 | Backend   | FastAPI                                               | Async pipeline server       |
-| Frontend  | HTML + CSS + JS (Vanilla)                             | UI + Audio processing       |
+| Frontend  | HTML + CSS + JS (Vanilla) + KaTeX                     | UI + Audio + Math rendering |
 
 ---
 
@@ -109,20 +113,27 @@ cascade/
 │   ├── transport.js    # WebSocket client glue
 │   ├── ui.js           # UI state and interaction handlers
 │   ├── state.js        # Shared frontend constants
+│   ├── playback-state.js # Playback coordination
 │   └── index.html      # Main entry page
 ├── tests/
 │   ├── benchmark.py            # TTFA benchmark harness
-│   ├── diagnose_ws.py          # WebSocket diagnostic helper
 │   ├── verify_all.py           # API verification runner
 │   ├── test_stt.py             # STT tests and checks
+│   ├── test_stt_interim.py     # Interim transcript stability tests
 │   ├── test_llm.py             # LLM verification tests
 │   ├── test_tts.py             # TTS verification tests
+│   ├── test_tts_cancel.py      # TTS cancellation tests
 │   ├── test_tutor.py           # Tutor integration checks
+│   ├── test_math_buffer.py     # Math buffer tests
+│   ├── test_math_speech.py     # Math to speech tests
+│   ├── test_strip_markdown.py  # Markdown stripper tests
+│   ├── test_utterance_merge.py # Utterance merging tests
 │   ├── test_latency_metrics.py # Latency and interruption tests
 │   ├── test_mock_integrations.py
 │   ├── test_ws_security.py     # WebSocket security tests
 │   └── frontend/
-│       └── test_chart.js       # Frontend chart logic smoke test
+│       ├── test_chart.js       # Frontend chart logic smoke test
+│       └── test_playback_state.js # Playback state logic test
 ├── docs/                # Architecture, testing, ADRs, and protocol docs
 ├── .env.example
 ├── requirements.txt

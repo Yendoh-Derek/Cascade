@@ -4,16 +4,19 @@ cascade/backend/llm.py
 LLM module using Groq for high-speed token generation.
 
 Responsibility: Accept a transcript string and conversation history,
-stream tokens from Groq, and emit complete sentence chunks as they form.
+stream tokens from Groq, and yield small text chunks at word boundaries
+for immediate consumption by the TTS layer.
 
-The chunker bridges LLM streaming and TTS — TTS needs complete sentences
-for natural-sounding speech; yielding word-by-word would produce choppy audio.
+Chunking strategy: tokens are buffered and flushed as soon as a whitespace
+or punctuation boundary is detected and a minimum token count is reached.
+A time-based fallback (TIME_BASED_FLUSH_SEC) flushes any remaining buffer
+after a fixed wall-clock interval to prevent stalls on slow generation.
 
 Latency Measurement:
   - t_request_created: time when generate() is called
   - t_request_sent: time when API request is actually sent to Groq
   - t_first_token: time when first token is received from Groq (TTFT start)
-  - t_first_sentence_emitted: time when first complete sentence is yielded
+  - t_first_sentence_emitted: time when first chunk is yielded
 """
 
 import logging
@@ -36,24 +39,27 @@ SUBSEQUENT_FLUSH_TOKENS: int = 12
 
 class LLMGenerator:
     """
-    Manages Groq LLM streaming with sentence-level chunking.
+    Streams tokens from Groq and yields word-boundary-flushed text chunks.
 
     Flow:
-    1. Accept transcript and conversation history
-    2. Stream tokens from Groq
-    3. Buffer tokens until word boundaries (spaces/punctuation)
-    4. Yield small text chunks directly
-    5. Yield any remaining buffer after stream ends
+    1. Accept messages (full conversation history + system prompt)
+    2. Open a streaming request to Groq
+    3. Buffer tokens until a word boundary (whitespace or punctuation)
+       and a minimum token count are both reached
+    4. Yield the buffered chunk; repeat until the stream is exhausted
+    5. Yield any remaining buffer after the stream ends
     """
 
-    def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant", client: Optional[AsyncGroq] = None):
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", client: Optional[AsyncGroq] = None):
         """
         Initialise the LLM generator.
 
         Args:
             api_key: Groq API key
-            model: Model to use (default: llama-3.1-8b-instant)
-            client: Optional existing AsyncGroq client to use (for sharing across sessions)
+            model: Groq model name. Defaults to llama-3.3-70b-versatile; override
+                   via the CASCADE_GROQ_MODEL environment variable or by passing
+                   the value from ModelConfig directly.
+            client: Optional existing AsyncGroq client to reuse across sessions.
         """
         self.api_key = api_key
         self.model = model
@@ -80,7 +86,7 @@ class LLMGenerator:
         timeout_sec: int = 30,
     ) -> AsyncGenerator[str, None]:
         """
-        Stream tokens from Groq and yield complete sentences.
+        Stream tokens from Groq and yield word-boundary-flushed chunks.
 
         Args:
             messages: Full conversation history (list of {"role": "...", "content": "..."})
@@ -89,7 +95,8 @@ class LLMGenerator:
             timeout_sec: Timeout for entire generation in seconds
 
         Yields:
-            Small string chunks containing words and whitespace
+            Small string chunks containing one or more words with trailing
+            whitespace or punctuation, ready for immediate TTS consumption.
         """
         # Validate inputs
         if not messages or not isinstance(messages, list):

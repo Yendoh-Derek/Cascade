@@ -52,8 +52,9 @@ class ModelConfig:
     enable_speculative_llm: bool = os.getenv("CASCADE_ENABLE_SPECULATIVE_LLM", "false").lower() == "true"
     buffer_stall_ms: int = int(os.getenv("CASCADE_BUFFER_STALL_MS", "500"))
 
-    # LLM
-    groq_model: str = "llama-3.1-8b-instant"
+    # LLM — model name used for Groq inference. Tune via CASCADE_GROQ_MODEL env var.
+    # Default matches the model used for published latency benchmarks.
+    groq_model: str = os.getenv("CASCADE_GROQ_MODEL", "llama-3.3-70b-versatile")
 
     # Conversation history: max turn-pairs to retain. Tune via CASCADE_MAX_HISTORY_TURNS.
     max_history_turns: int = int(os.getenv("CASCADE_MAX_HISTORY_TURNS", "10"))
