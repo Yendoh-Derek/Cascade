@@ -8,6 +8,21 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      # Bundle routine patch/minor bumps into one PR instead of one-per-package.
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # torch/numpy sit on the latency-critical VAD/audio path (see vad.py) and
+      # were previously pinned to work around a CI install issue — require a
+      # manual review + major-version bump rather than letting dependabot
+      # open a PR that could shift numeric behavior unnoticed.
+      - dependency-name: "torch"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions pinned versions (e.g. actions/checkout@v4)
   - package-ecosystem: "github-actions"
@@ -17,6 +32,11 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # Frontend, if/when package.json is introduced
   - package-ecosystem: "npm"
