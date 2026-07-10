@@ -391,16 +391,16 @@ class TestSTTLatencyMeasurement:
             "last_stt_tail_ms must vary with real silence duration, not return a constant"
         )
 
-    def test_stt_tail_zero_when_no_speech_anchor(self):
-        """When no _last_speech_time is available, tail latency defaults to 0."""
+    def test_stt_tail_minus_one_when_no_speech_anchor(self):
+        """When no _last_speech_time is available, tail latency defaults to -1."""
         from backend.stt import STTHandler
-
+    
         handler = STTHandler(api_key="x", on_transcript=lambda t: None)
         handler._last_speech_time = None
         handler.transcript_buffer = "hello"
         handler._flush_buffer("utterance_end")
-
-        assert handler.last_stt_tail_ms == 0
+    
+        assert handler.last_stt_tail_ms == -1
 
 
 class TestDashboardMetrics:

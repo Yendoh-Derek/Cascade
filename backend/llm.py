@@ -260,7 +260,7 @@ class LLMGenerator:
 
                 choices = getattr(last_stream_chunk, "choices", None)
                 if choices:
-                    finish_reason = choices[0].finish_reason
+                    finish_reason = getattr(choices[0], "finish_reason", None)
                     if finish_reason == "length":
                         logger.warning("[LLM] Finish reason was 'length' — response may be truncated")
                         sentence_buffer = sentence_buffer.rstrip() + "..."
