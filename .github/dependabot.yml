@@ -15,14 +15,15 @@ updates:
           - "minor"
           - "patch"
     ignore:
-      # torch/numpy sit on the latency-critical VAD/audio path (see vad.py) and
-      # were previously pinned to work around a CI install issue — require a
-      # manual review + major-version bump rather than letting dependabot
-      # open a PR that could shift numeric behavior unnoticed.
+      # torch sits on the latency-critical VAD/audio path (see vad.py) and was
+      # previously pinned to work around a CI install issue — require a
+      # manual review + major-version bump rather than an automatic PR.
       - dependency-name: "torch"
         update-types: ["version-update:semver-major"]
+      # numpy 2.5.0+ requires Python >=3.12; ci.yml currently pins 3.11.
+      # Bump this ignore (or drop it) once CI moves to 3.12+.
       - dependency-name: "numpy"
-        update-types: ["version-update:semver-major"]
+        versions: [">=2.5.0"]
 
   # GitHub Actions pinned versions (e.g. actions/checkout@v4)
   - package-ecosystem: "github-actions"
@@ -37,12 +38,3 @@ updates:
         update-types:
           - "minor"
           - "patch"
-
-  # Frontend, if/when package.json is introduced
-  - package-ecosystem: "npm"
-    directory: "/frontend"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
