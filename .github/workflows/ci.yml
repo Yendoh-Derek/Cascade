@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege default: workflow only needs to read the repo to run
+# lint/type-check/tests. Override per-job if a future job needs to write
+# (e.g. publishing a release or commenting on a PR).
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest

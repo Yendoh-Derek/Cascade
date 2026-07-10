@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an improvement to Cascade
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What's missing or awkward today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: If you have a specific design or implementation in mind, describe it. Reference specific files/modules if relevant (e.g. backend/pipeline.py, frontend/app.js).
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This is a well-scoped, single-purpose change (see CONTRIBUTING.md)
+          required: false
