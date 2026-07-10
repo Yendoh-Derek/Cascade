@@ -68,6 +68,8 @@ p90 for tail latency. When speculative LLM is enabled, the harness reports
 | `CASCADE_ENABLE_SPECULATIVE_LLM` | `false` | Start LLM on VAD + stable interim transcript before `speech_final`. Saves up to ~300 ms when accurate. Grace window does **not** apply to speculative turns. |
 | `CASCADE_SPECULATIVE_GRACE_MS` | `180` | Wait after a **confirmed** (`speech_final`) transcript before starting LLM. Not applied to speculative triggers. |
 | `CASCADE_SPECULATIVE_STABILITY_MATCHES` | `2` | Identical consecutive interim results required before speculative start. |
+| `CASCADE_GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model used for LLM inference. Published benchmark numbers were measured against `llama-3.3-70b-versatile`. Swap for a smaller model (e.g. `llama-3.1-8b-instant`) to trade quality for lower latency. |
+| `CASCADE_BUFFER_STALL_MS` | `500` | Maximum time (ms) the markdown/math post-processing buffers will hold output waiting for a closing delimiter before force-flushing. Prevents dead-air stalls when the LLM emits an unmatched `$` or `*`. |
 | `CASCADE_MAX_HISTORY_TURNS` | `10` | Max turn-pairs retained in conversation history. |
 | `CASCADE_IDLE_TIMEOUT_SEC` | `300` | WebSocket idle timeout before server closes the session. |
 

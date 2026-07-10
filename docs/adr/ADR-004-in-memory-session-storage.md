@@ -23,8 +23,7 @@ History is trimmed on every turn using a dual-pass strategy:
 ## Consequences
 
 - Zero infrastructure dependencies for a single-server deployment.
-- History is lost if the server restarts or the WebSocket drops — acceptable for a
-  tutoring session where the student reconnects and starts fresh.
+- Server-side history is lost if the server restarts or the WebSocket drops. However, the client caches history and replays it via a `load_history` WebSocket message on reconnect, allowing the conversation context to survive transient drops.
 - Does not scale horizontally (two server instances cannot share a session).
   For multi-instance deployments, replace `TutorSession.history` with a Redis-backed
   store keyed on a session token.
