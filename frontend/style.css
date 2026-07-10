@@ -1081,6 +1081,7 @@ body {
 .message-user .tentative {
   color: rgba(255, 255, 255, 0.4);
   font-style: italic;
+  transition: color 0.15s ease, opacity 0.15s ease;
 }
 
 .message-user.streaming p::after {

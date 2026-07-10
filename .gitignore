@@ -63,3 +63,4 @@ yarn.lock
 *.pyc
 *.pyo
 
+/review.md

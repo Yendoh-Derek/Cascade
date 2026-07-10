@@ -278,26 +278,38 @@ class STTHandler:
         except Exception as e:
             logger.debug(f"[STT] KeepAlive task error: {e}")
 
-    def _compute_display_text(self, transcript: str) -> tuple[str, str]:
-        words = transcript.split()
-        if not words:
+    def _compute_display_text(self, words_data: list[dict] | str) -> tuple[str, str]:
+        """Compute stable vs tentative text using word-level confidence and punctuation invariance."""
+        if isinstance(words_data, str):
+            words_data = [{"word": w, "punctuated_word": w} for w in words_data.split()]
+            
+        if not words_data:
             return "", ""
+            
+        current_base_words = [w.get("word", "").lower() for w in words_data]
         
         if not self._last_interim_words:
-            self._last_interim_words = words
-            return " ".join(words[:-1]), words[-1]
+            self._last_interim_words = current_base_words
+            stable_parts = [w.get("punctuated_word", w.get("word", "")) for w in words_data[:-1]]
+            tentative_parts = [words_data[-1].get("punctuated_word", words_data[-1].get("word", ""))]
+            return " ".join(stable_parts), " ".join(tentative_parts)
             
-        stable_words = []
-        for i, word in enumerate(words):
-            if i < len(self._last_interim_words) and word == self._last_interim_words[i]:
-                stable_words.append(word)
+        common = 0
+        for a, b in zip(self._last_interim_words, current_base_words):
+            if a == b:
+                common += 1
             else:
                 break
                 
-        self._last_interim_words = words
-        stable_part = " ".join(stable_words)
-        tentative_part = " ".join(words[len(stable_words):])
-        return stable_part, tentative_part
+        self._last_interim_words = current_base_words
+        
+        # Always hold back the very last word unless it's the only word
+        stable_len = min(common, len(words_data) - 1) if len(words_data) > 1 else common
+        
+        stable_parts = [w.get("punctuated_word", w.get("word", "")) for w in words_data[:stable_len]]
+        tentative_parts = [w.get("punctuated_word", w.get("word", "")) for w in words_data[stable_len:]]
+        
+        return " ".join(stable_parts), " ".join(tentative_parts)
 
     async def _handle_message(self, data: dict):
         """Handle a message from Deepgram."""
@@ -324,7 +336,12 @@ class STTHandler:
 
                         # Stream live interim words to the UI
                         if self.on_transcript_update and not is_final:
-                            stable, tentative = self._compute_display_text(transcript)
+                            words_data = alt.get("words", [])
+                            # Fallback to string split if Deepgram didn't send words[]
+                            if not words_data and transcript:
+                                words_data = [{"word": w, "punctuated_word": w} for w in transcript.split()]
+                                
+                            stable, tentative = self._compute_display_text(words_data)
                             live_stable = (self.transcript_buffer + " " + stable).strip()
                             if live_stable or tentative:
                                 self.on_transcript_update(live_stable, tentative)

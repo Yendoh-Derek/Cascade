@@ -285,25 +285,35 @@ class CascadeClient {
   }
 
   _updateStudentTranscript(stableText, tentativeText = "", { final = false } = {}) {
-    let htmlContent = stableText;
-    if (tentativeText) {
-      htmlContent += (htmlContent ? " " : "") + `<span class="tentative">${tentativeText}</span>`;
-    }
-
     if (!this.currentStudentBubble) {
       this.currentStudentBubble = this.ui.addTranscriptItem("student", "");
-      const p = this.currentStudentBubble.querySelector("p");
-      if (p) p.innerHTML = htmlContent;
-      if (!final && this.currentStudentBubble)
-        this.currentStudentBubble.classList.add("streaming");
-    } else {
-      const p = this.currentStudentBubble.querySelector("p");
-      if (p) p.innerHTML = htmlContent;
-      if (final) {
-        this.currentStudentBubble.classList.remove("streaming");
-      } else {
-        this.currentStudentBubble.classList.add("streaming");
+    }
+    
+    const p = this.currentStudentBubble.querySelector("p");
+    if (p) {
+      let stableNode = p.querySelector(".stable-text");
+      let tentativeNode = p.querySelector(".tentative");
+
+      if (!stableNode) {
+        p.innerHTML = '<span class="stable-text"></span><span class="tentative"></span>';
+        stableNode = p.querySelector(".stable-text");
+        tentativeNode = p.querySelector(".tentative");
       }
+
+      if (stableNode.textContent !== stableText) {
+        stableNode.textContent = stableText;
+      }
+
+      const tentativeWithSpace = tentativeText ? (stableText ? " " : "") + tentativeText : "";
+      if (tentativeNode.textContent !== tentativeWithSpace) {
+        tentativeNode.textContent = tentativeWithSpace;
+      }
+    }
+
+    if (final && this.currentStudentBubble) {
+      this.currentStudentBubble.classList.remove("streaming");
+    } else if (this.currentStudentBubble) {
+      this.currentStudentBubble.classList.add("streaming");
     }
   }
 
