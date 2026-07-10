@@ -1,0 +1,15 @@
+# Each line is a file pattern followed by one or more owners.
+# These owners are auto-requested for review when a PR touches matching files.
+# Replace @Yendoh-Derek below if ownership changes.
+
+*                       @Yendoh-Derek
+
+# Core pipeline and latency-critical paths — flag for careful review
+/backend/pipeline.py    @Yendoh-Derek
+/backend/stt.py         @Yendoh-Derek
+/backend/vad.py         @Yendoh-Derek
+/backend/tts.py         @Yendoh-Derek
+
+# CI/CD and security-relevant config
+/.github/               @Yendoh-Derek
+/SECURITY.md            @Yendoh-Derek
