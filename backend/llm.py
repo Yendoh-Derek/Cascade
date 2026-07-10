@@ -151,6 +151,7 @@ class LLMGenerator:
                 t_buffer_start: Optional[float] = None  # per-buffer wall-clock timer
                 stream_iterator = stream.__aiter__()
                 stream_exhausted = False
+                last_stream_chunk = None
 
                 while not stream_exhausted:
                     # Function to get next chunk or raise StopAsyncIteration
@@ -164,28 +165,31 @@ class LLMGenerator:
                         pending_task = asyncio.create_task(get_next_chunk())
 
                     # If we have content in buffer, race between next token and time-based flush
-                    chunk = None
+                    raw_chunk = None
                     timeout_hit = False
                     if sentence_buffer and t_buffer_start:
                         remaining_time = max(0, TIME_BASED_FLUSH_SEC - (time.perf_counter() - t_buffer_start))
                         try:
-                            chunk = await asyncio.wait_for(asyncio.shield(pending_task), timeout=remaining_time)
+                            raw_chunk = await asyncio.wait_for(asyncio.shield(pending_task), timeout=remaining_time)
                             pending_task = None
                         except asyncio.TimeoutError:
                             timeout_hit = True  # Buffer flushes; pending_task remains alive and untouched
                     else:
                         # No buffer, just wait for next chunk
-                        chunk = await pending_task
+                        raw_chunk = await pending_task
                         pending_task = None
 
-                    if chunk is None and not timeout_hit:
+                    if raw_chunk is not None:
+                        last_stream_chunk = raw_chunk
+
+                    if raw_chunk is None and not timeout_hit:
                         stream_exhausted = True
                         continue
 
-                    if chunk is None:
+                    if raw_chunk is None:
                         continue
 
-                    choices = getattr(chunk, "choices", None)
+                    choices = getattr(raw_chunk, "choices", None)
                     if not choices:
                         continue
 
@@ -229,7 +233,7 @@ class LLMGenerator:
 
                         if (ends_with_space_or_punct and has_enough_tokens) or time_based_flush:
                             # Yield exact chunk (including punctuation/spaces)
-                            chunk = sentence_buffer
+                            chunk_to_yield = sentence_buffer
                             sentence_buffer = ""
                             token_count_in_buffer = 0
                             t_buffer_start = None
@@ -241,20 +245,20 @@ class LLMGenerator:
                                 logger.info(
                                     f"[LLM] First chunk emitted in {chunk_lat:.0f}ms (TTFT: {ttft:.0f}ms)"
                                 )
-                            yield chunk
+                            yield chunk_to_yield
 
                 # Yield any remaining buffer
                 if sentence_buffer:
-                    chunk = sentence_buffer
+                    chunk_to_yield = sentence_buffer
                     # Ensure t_first_sentence_emitted is set for final buffer (edge case: no boundaries)
                     if self.t_first_sentence_emitted is None:
                         self.t_first_sentence_emitted = time.perf_counter()
-                    logger.info(f"[LLM] Final buffer yielded: {chunk[:60]}...")
-                    yield chunk
+                    logger.info(f"[LLM] Final buffer yielded: {chunk_to_yield[:60]}...")
+                    yield chunk_to_yield
 
                 logger.info(f"[LLM] Stream complete: {token_count} tokens total")
 
-                choices = getattr(chunk, "choices", None)
+                choices = getattr(last_stream_chunk, "choices", None)
                 if choices:
                     finish_reason = choices[0].finish_reason
                     if finish_reason == "length":

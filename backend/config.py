@@ -11,9 +11,13 @@ TTS provider: Deepgram Aura (Default) / Edge-TTS (Fallback)
 """
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
+
+if sys.version_info < (3, 11): 
+    sys.exit("Cascade requires Python 3.11+ to run.")
 
 # Prefer the repo's `.env` over stale process-level exports during local runs
 # and reloads, which otherwise can cause valid project credentials to be

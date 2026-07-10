@@ -20,10 +20,9 @@ Welcome to Cascade! We are building a low-latency streaming voice tutor and welc
 Run the core regression suite before opening a PR:
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v && node tests/frontend/test_chart.js && node tests/frontend/test_playback_state.js
 ruff check .
 mypy backend/ --ignore-missing-imports
-node tests/frontend/test_chart.js
 ```
 
 - Core pipeline paths should be covered by integration tests under [tests](tests).

@@ -22,7 +22,7 @@ between finishing speaking and hearing the first word of the response.
 
 - **Barge-in / Interruption Gating**: High-fidelity interruption model utilizing turn-id and audio epoch tracking to atomically suppress stale text/audio from interrupted turns at the network boundary.
 - **Live Latency Dashboard**: Interactive, real-time stacked chart displaying STT, LLM (queue, TTFT, stream), and TTS latency breakdowns so you can analyze pipeline performance.
-- **Dual TTS Engines**: Live toggle in the UI between high-speed **Deepgram Aura** (default, requires API key) and **Microsoft edge-tts** (free fallback, no key required).
+- **Dual TTS Engines**: Toggle between high-speed **Deepgram Aura** (default, requires API key) and **Microsoft edge-tts** (free fallback, no key required). The UI selector is hidden by default.
 - **Robust STT Reconnection**: Deepgram client connection automatically recovers on unexpected socket drops with capped exponential backoff and toast notifications.
 
 ---
@@ -136,6 +136,8 @@ cascade/
 
 ### 1. Clone and create a virtual environment
 
+Requires: Python 3.11+
+
 ```bash
 git clone <your-repo-url> cascade
 cd cascade
@@ -182,10 +184,9 @@ Open: [http://localhost:8000](http://localhost:8000)
 ## Development
 
 ```bash
-pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py tests/test_mock_integrations.py -v
+pytest tests/ -v && node tests/frontend/test_chart.js && node tests/frontend/test_playback_state.js
 ruff check .
 mypy backend/ --ignore-missing-imports
-node tests/frontend/test_chart.js
 ```
 
 ## Docker / Deployment

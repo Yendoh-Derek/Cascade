@@ -87,7 +87,7 @@ class STTHandler:
         # Used to measure endpointing latency (last recognized speech → speech_final)
         # rather than speaking duration. Typically ≈ 300ms (the endpointing window).
         self._last_speech_time: Optional[float] = None
-        self.last_stt_tail_ms: int = 0
+        self.last_stt_tail_ms: int = -1
 
     async def prepare_vad(self):
         """Load per-session Silero state off the event loop (deepcopy is sync)."""
@@ -560,7 +560,7 @@ class STTHandler:
             self.last_stt_tail_ms = max(0, int(tail))
         else:
             # UtteranceEnd fired without prior interim content — no reliable anchor.
-            self.last_stt_tail_ms = 0
+            self.last_stt_tail_ms = -1
 
         self._utterance_start_time = None
         self._last_speech_time = None

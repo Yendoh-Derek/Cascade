@@ -438,7 +438,7 @@ class PipelineSession:
             logger.info("[Pipeline] VAD barge-in - interrupting AI playback")
             if self.stt_handler:
                 self.stt_handler.clear_buffer()
-                self.stt_handler.last_stt_tail_ms = 0
+                self.stt_handler.last_stt_tail_ms = -1
         else:
             logger.info(
                 "[Pipeline] VAD speech during turn processing - "

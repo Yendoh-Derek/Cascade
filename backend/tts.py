@@ -323,6 +323,7 @@ class DeepgramTTSEngine(BaseTTSEngine):
                         if not chunk:
                             continue
                         if len(chunk) > 2000:
+                            logger.warning(f"[TTS] Text too long ({len(chunk)} chars), truncating to 2000")
                             chunk = chunk[:2000]
                         if not first_sentence_text:
                             first_sentence_text = chunk[:60]

@@ -24,10 +24,9 @@ This guide captures the current verification workflow for the repository. It is 
 Run the following before opening a pull request:
 
 ```bash
-pytest tests/test_tutor.py tests/test_latency_metrics.py tests/test_ws_security.py tests/test_stt.py tests/test_mock_integrations.py -v
+pytest tests/ -v && node tests/frontend/test_chart.js && node tests/frontend/test_playback_state.js
 ruff check .
 mypy backend/ --ignore-missing-imports
-node tests/frontend/test_chart.js
 ```
 
 ## Manual verification flow
@@ -92,7 +91,7 @@ After long session (10-15 turns):
 
 ---
 
-### Phase 8: Reconnection Test (5 min)
+### Reconnection Test
 
 **Objective:** Test WebSocket reconnection with network interruption
 
@@ -133,7 +132,7 @@ After long session (10-15 turns):
 
 ---
 
-### Phase 9: Error Handling (5 min)
+### Error Handling
 
 **Objective:** Test error messages for various failure modes
 
@@ -168,7 +167,7 @@ After long session (10-15 turns):
 
 ---
 
-### Phase 10: Extended Session (15 min)
+### Extended Session
 
 **Objective:** Test stability over longer duration
 

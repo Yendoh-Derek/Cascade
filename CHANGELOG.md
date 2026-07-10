@@ -4,7 +4,7 @@ All notable changes to Cascade are documented here. Follows [Keep a Changelog](h
 
 ---
 
-## Unreleased
+## [v0.1.0] - 2026-07-10
 
 ### Added
 
