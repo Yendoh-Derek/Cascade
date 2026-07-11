@@ -316,7 +316,7 @@ async def websocket_endpoint(
                     except (asyncio.TimeoutError, WebSocketDisconnect):
                         break
                         
-                if not identified:
+                if not identified or not tester_id:
                     await websocket.send_json({"type": "error", "message": "Missing identify message"})
                     await websocket.close(code=4000)
                     return
