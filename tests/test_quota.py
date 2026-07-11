@@ -1,10 +1,11 @@
 import os
 import tempfile
 import pytest
+import pytest_asyncio
 
 from backend.quota import QuotaManager, RegistrationResult
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def quota_manager():
     # Use an in-memory SQLite database for testing
     fd, path = tempfile.mkstemp()
