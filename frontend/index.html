@@ -214,22 +214,42 @@
           <span class="modal-title" id="survey-modal-title">Thanks for testing Cascade!</span>
         </div>
         <div class="modal-body" id="survey-body">
-          <p id="survey-message">Your testing time has concluded. We'd love your quick feedback.</p>
-          <div class="survey-form">
-            <label for="survey-rating">How natural did the voice feel? (1-5)</label>
-            <div class="rating-group" id="survey-rating">
-              <button class="rating-btn" data-value="1">1</button>
-              <button class="rating-btn" data-value="2">2</button>
-              <button class="rating-btn" data-value="3">3</button>
-              <button class="rating-btn" data-value="4">4</button>
-              <button class="rating-btn" data-value="5">5</button>
+          <!-- <p id="survey-message">Your testing time has concluded. We'd love your quick feedback.</p> -->
+          <div class="survey-form" id="survey-form-content">
+            <label for="survey-rating">How natural did the voice feel? <span id="rating-val-display" style="color: var(--orb-proc-a); font-weight: bold;">3</span>/5</label>
+            <div class="slider-wrapper">
+              <div class="slider-label-row" style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
+                <span>Low</span>
+                <span>High</span>
+              </div>
+              <input type="range" id="survey-rating" min="1" max="5" step="1" value="3" class="premium-slider">
+              <div class="slider-ticks">
+                <span>1</span>
+                <span>2</span>
+                <span>3</span>
+                <span>4</span>
+                <span>5</span>
+              </div>
             </div>
+            
             <label for="survey-comment">Any other thoughts?</label>
             <textarea id="survey-comment" class="modal-input survey-textarea" placeholder="Latency was good, but..."></textarea>
           </div>
+          
+          <div id="survey-success" class="survey-success" style="display: none;">
+            <div class="success-checkmark">
+              <svg viewBox="0 0 52 52">
+                <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
+                <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+              </svg>
+            </div>
+            <h3>Feedback Sent</h3>
+            <p>Thanks for helping improve Cascade!</p>
+            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-survey">Close & Reload</button>
+          </div>
         </div>
         <div class="modal-footer" id="survey-footer">
-          <button class="menu-btn menu-btn-primary" id="btn-submit-survey" disabled>Submit Feedback</button>
+          <button class="menu-btn menu-btn-primary" id="btn-submit-survey">Submit Feedback</button>
         </div>
       </div>
     </div>

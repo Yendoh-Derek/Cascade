@@ -285,7 +285,10 @@ class PipelineSession:
         self._last_rate_limit_notify: float = 0.0
         self._rate_limit_notify_interval_sec: float = 5.0
 
+        # Intentionally tracks elapsed time since first speech, not gated active time — idle time after speaking counts against budget.
         self.has_spoken: bool = False
+        
+        self.quota_locked: bool = False
 
         logger.info(f"[Pipeline] Session initialized (tts_engine={tts_engine})")
 
@@ -489,11 +492,20 @@ class PipelineSession:
             return True
         return False
 
+    def is_turn_active(self) -> bool:
+        return self._active_turn_id is not None or self.is_processing_transcript or self.is_ai_speaking()
+
     def _on_transcript_received(self, transcript: str, was_speculative: bool = False):
         """
         Called by STT when a complete utterance is confirmed.
         Schedules the pipeline processing on the event loop.
         """
+        if self.quota_locked:
+            logger.info("[Pipeline] Quota exhausted, ignoring transcript to wrap up session.")
+            if not self.is_processing_transcript:
+                self.send_message({"type": "response_end"})
+            return
+
         if not isinstance(transcript, str):
             return
 

@@ -146,7 +146,8 @@ export class UIController {
       });
     }
 
-    [this.btnToggleSession, this.btnClearTranscript, this.btnStats].forEach(
+    const animatedBtns = document.querySelectorAll("button, .menu-btn");
+    animatedBtns.forEach(
       (btn) => {
         if (!btn) return;
 
@@ -273,17 +274,19 @@ export class UIController {
     // Survey Modal Listeners
     const surveyBackdrop = document.getElementById("survey-modal-backdrop");
     const surveySubmit = document.getElementById("btn-submit-survey");
-    const surveyRatingBtns = document.querySelectorAll(".rating-btn");
-    let selectedRating = null;
+    const surveySlider = document.getElementById("survey-rating");
+    const ratingValDisplay = document.getElementById("rating-val-display");
+    const btnCloseSurvey = document.getElementById("btn-close-survey");
+    
+    if (surveySlider && ratingValDisplay) {
+      surveySlider.addEventListener("input", (e) => {
+        ratingValDisplay.textContent = e.target.value;
+      });
+    }
 
-    if (surveyRatingBtns) {
-      surveyRatingBtns.forEach((btn) => {
-        btn.addEventListener("click", () => {
-          surveyRatingBtns.forEach((b) => b.classList.remove("selected"));
-          btn.classList.add("selected");
-          selectedRating = parseInt(btn.getAttribute("data-value"), 10);
-          if (surveySubmit) surveySubmit.disabled = false;
-        });
+    if (btnCloseSurvey) {
+      btnCloseSurvey.addEventListener("click", () => {
+        window.location.reload();
       });
     }
 
@@ -291,7 +294,9 @@ export class UIController {
       surveySubmit.addEventListener("click", async () => {
         const comment = document.getElementById("survey-comment")?.value || "";
         const testerId = localStorage.getItem("cascade_tester_id");
-        if (!testerId || !selectedRating) return;
+        const selectedRating = surveySlider ? parseInt(surveySlider.value, 10) : 3;
+        
+        if (!testerId) return;
 
         surveySubmit.disabled = true;
         surveySubmit.textContent = "Submitting...";
@@ -308,11 +313,20 @@ export class UIController {
           });
           if (!res.ok) throw new Error("Submission failed");
           
-          this.showToast("Thank you for your feedback!", 3000, "info");
+          // Show success state
+          const formContent = document.getElementById("survey-form-content");
+          const surveyFooter = document.getElementById("survey-footer");
+          const surveySuccess = document.getElementById("survey-success");
+          const modalHeader = document.querySelector("#survey-modal .modal-header");
+          
+          if (formContent) formContent.style.display = "none";
+          if (surveyFooter) surveyFooter.style.display = "none";
+          if (modalHeader) modalHeader.style.display = "none";
+          if (surveySuccess) surveySuccess.style.display = "flex";
+          
         } catch (e) {
           console.error("Survey submission error:", e);
           this.showToast("Failed to submit feedback. Thank you anyway!", 3000, "error");
-        } finally {
           if (surveyBackdrop) surveyBackdrop.setAttribute("aria-hidden", "true");
         }
       });
