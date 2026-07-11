@@ -197,6 +197,8 @@ async def websocket_endpoint(
         session: Optional[PipelineSession] = None
         sender_task: Optional[asyncio.Task] = None
         ping_task: Optional[asyncio.Task] = None
+        quota_task: Optional[asyncio.Task] = None
+        session_unsaved_quota = 0.0
         sender_running = False
 
         try:
@@ -421,47 +423,48 @@ async def websocket_endpoint(
 
             ping_task = asyncio.create_task(ping_coroutine())
 
-            quota_task: Optional[asyncio.Task] = None
-            session_unsaved_quota = 0.0
             if server_config.quota_enabled and tester_id:
                 async def quota_coroutine():
                     nonlocal session_unsaved_quota
                     budget = server_config.tester_budget_sec
                     used = seconds_used
                     last_tick = time.time()
-                    warned_60 = False
-                    warned_10 = False
-                    
+                    grace_period_started = False
+
                     while sender_running:
                         await asyncio.sleep(1.0)
                         if not sender_running:
                             break
-                            
+
                         now = time.time()
                         delta = now - last_tick
                         last_tick = now
-                        
+
                         if session and session.has_spoken:
                             used += delta
                             session_unsaved_quota += delta
                             remaining = budget - used
-                            
+
                             if session_unsaved_quota >= 30.0:
                                 await quota_manager.record_usage(tester_id, session_unsaved_quota)
                                 session_unsaved_quota = 0.0
-                                
-                            if remaining <= 60 and not warned_60:
-                                warned_60 = True
+
+                            if remaining <= 60 and remaining > 0:
                                 await websocket.send_json({"type": "quota_warning", "seconds_remaining": int(remaining)})
-                            elif remaining <= 10 and not warned_10:
-                                warned_10 = True
-                                await websocket.send_json({"type": "quota_warning", "seconds_remaining": int(remaining)})
-                            elif remaining <= 0:
-                                await websocket.send_json({"type": "quota_exceeded"})
-                                # Send cancel to the pipeline to stop TTS if speaking
+                            elif remaining <= 0 and not grace_period_started:
+                                grace_period_started = True
+                                # Lock out new turns — current in-flight turn is allowed to finish.
                                 if session:
-                                    await session.cancel()
-                                await asyncio.sleep(0.5) # Let message flush
+                                    session.quota_locked = True
+                                # Signal frontend: budget exhausted, but wrapping up gracefully.
+                                await websocket.send_json({"type": "quota_exceeded", "grace_period": True})
+                                # Wait for the active turn to complete, with a 15s safety cap.
+                                deadline = time.time() + 15.0
+                                while time.time() < deadline:
+                                    if session is None or not session.is_turn_active():
+                                        break
+                                    await asyncio.sleep(0.2)
+                                await asyncio.sleep(0.3)  # Let final messages flush
                                 await websocket.close(code=1000)
                                 break
 
