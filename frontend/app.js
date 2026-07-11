@@ -712,6 +712,18 @@ class CascadeClient {
       case "stt_reconnected":
         this.ui.showToast("Speech recognition reconnected.", 2500, "info");
         break;
+        break;
+      case "capacity_reached":
+        this.ui.showError(msg.message || "All testing spots are currently claimed. Please try again later.");
+        await this.stopSession();
+        break;
+      case "quota_warning":
+        this.ui.updateQuotaWarning(msg.seconds_remaining);
+        break;
+      case "quota_exceeded":
+        await this.stopSession({ force: true });
+        this.ui.showSurvey("quota");
+        break;
       case "error":
         this.ui.showError(msg.message || "Unknown server error");
         if (

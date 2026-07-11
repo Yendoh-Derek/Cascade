@@ -65,3 +65,6 @@ yarn.lock
 
 /review.md
 /fix_latency.py
+
+# Quota DB
+data/

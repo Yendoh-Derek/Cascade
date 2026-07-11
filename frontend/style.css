@@ -1446,3 +1446,76 @@ body {
     font-size: 12px;
   }
 }
+
+/* ======================
+   QUOTA TIMER
+   ====================== */
+.quota-timer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: color 0.3s ease, border-color 0.3s ease;
+}
+.quota-timer[aria-hidden="true"] {
+  display: none;
+}
+.quota-timer.danger {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.5);
+  animation: pulse-danger 1s infinite;
+}
+@keyframes pulse-danger {
+  0%, 100% { background: rgba(239, 68, 68, 0.1); }
+  50% { background: rgba(239, 68, 68, 0.2); }
+}
+
+/* ======================
+   SURVEY MODAL
+   ====================== */
+.survey-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+.survey-form label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.rating-group {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.rating-btn {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 12px 0;
+  color: var(--text-primary);
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 200ms ease;
+}
+.rating-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.rating-btn.selected {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: #fff;
+}
+.survey-textarea {
+  min-height: 80px;
+  resize: vertical;
+}

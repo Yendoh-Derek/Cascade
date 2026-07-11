@@ -285,6 +285,8 @@ class PipelineSession:
         self._last_rate_limit_notify: float = 0.0
         self._rate_limit_notify_interval_sec: float = 5.0
 
+        self.has_spoken: bool = False
+
         logger.info(f"[Pipeline] Session initialized (tts_engine={tts_engine})")
 
     async def initialize(self):
@@ -422,6 +424,7 @@ class PipelineSession:
         Does NOT trigger the LLM.
         """
         self.send_message({"type": "transcript_update", "stable": stable, "tentative": tentative})
+        self.has_spoken = True
 
     def _on_vad_interrupted(self, transcript: str):
         """
@@ -432,6 +435,8 @@ class PipelineSession:
         """
         if self._active_turn_id is None and not self.is_processing_transcript:
             return
+
+        self.has_spoken = True
 
         is_barge_in = self.is_ai_speaking()
         if is_barge_in:
