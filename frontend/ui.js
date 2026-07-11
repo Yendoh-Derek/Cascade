@@ -290,6 +290,13 @@ export class UIController {
       });
     }
 
+    const btnCloseExpired = document.getElementById("btn-close-expired");
+    if (btnCloseExpired) {
+      btnCloseExpired.addEventListener("click", () => {
+        window.location.reload();
+      });
+    }
+
     if (surveySubmit) {
       surveySubmit.addEventListener("click", async () => {
         const comment = document.getElementById("survey-comment")?.value || "";
@@ -600,10 +607,32 @@ export class UIController {
   updateQuotaWarning(secondsRemaining) {
     if (this.quotaTimer && this.quotaTimerText) {
       this.quotaTimer.setAttribute("aria-hidden", "false");
-      const m = Math.floor(secondsRemaining / 60);
-      const s = Math.floor(secondsRemaining % 60);
-      this.quotaTimerText.textContent = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-      
+      this._quotaSecondsRemaining = secondsRemaining;
+
+      // BUG-1 fix: restart the client-side countdown so the display ticks smoothly
+      // each second rather than jumping only when the server sends a message.
+      if (this._quotaCountdownInterval) {
+        clearInterval(this._quotaCountdownInterval);
+      }
+      this._renderQuotaTime(secondsRemaining);
+      this._quotaCountdownInterval = setInterval(() => {
+        if (this._quotaSecondsRemaining === null || this._quotaSecondsRemaining <= 0) {
+          clearInterval(this._quotaCountdownInterval);
+          this._quotaCountdownInterval = null;
+          return;
+        }
+        this._quotaSecondsRemaining -= 1;
+        this._renderQuotaTime(this._quotaSecondsRemaining);
+      }, 1000);
+    }
+  }
+
+  _renderQuotaTime(secondsRemaining) {
+    if (!this.quotaTimerText) return;
+    const m = Math.floor(secondsRemaining / 60);
+    const s = Math.floor(secondsRemaining % 60);
+    this.quotaTimerText.textContent = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    if (this.quotaTimer) {
       if (secondsRemaining <= 10) {
         this.quotaTimer.classList.add("danger");
       } else {
@@ -612,8 +641,29 @@ export class UIController {
     }
   }
 
+  // BUG-2 fix: hide the quota timer and stop any running countdown when the
+  // session ends so it doesn't linger across stops/resets/new sessions.
+  hideQuotaTimer() {
+    if (this._quotaCountdownInterval) {
+      clearInterval(this._quotaCountdownInterval);
+      this._quotaCountdownInterval = null;
+    }
+    this._quotaSecondsRemaining = null;
+    if (this.quotaTimer) {
+      this.quotaTimer.setAttribute("aria-hidden", "true");
+      this.quotaTimer.classList.remove("danger");
+    }
+  }
+
   showSurvey(reason) {
     const backdrop = document.getElementById("survey-modal-backdrop");
+    if (backdrop) {
+      backdrop.setAttribute("aria-hidden", "false");
+    }
+  }
+
+  showSessionExpired() {
+    const backdrop = document.getElementById("expired-modal-backdrop");
     if (backdrop) {
       backdrop.setAttribute("aria-hidden", "false");
     }

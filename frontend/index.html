@@ -254,6 +254,25 @@
       </div>
     </div>
 
+    <!-- Session Expired Modal -->
+    <div class="modal-backdrop" id="expired-modal-backdrop" aria-hidden="true">
+      <div class="modal glass" id="expired-modal" role="dialog" aria-labelledby="expired-modal-title">
+        <div class="modal-body">
+          <div class="survey-success" style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+            <div class="success-checkmark">
+              <svg viewBox="0 0 52 52">
+                <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
+                <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+              </svg>
+            </div>
+            <h3 id="expired-modal-title">Your testing session has ended</h3>
+            <p style="margin-bottom: 20px;">Thanks for taking the time to test Cascade!</p>
+            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-expired" style="align-self: stretch; width: 100%;">Return Home</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="app.js?v=2.1.1"></script>
   </body>
 </html>

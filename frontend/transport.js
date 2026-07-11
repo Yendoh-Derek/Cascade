@@ -184,6 +184,22 @@ export class WebSocketTransport {
       this.ws.onclose = () => {
         clearTimeout(connectTimeout);
         clearTimeout(authGraceTimeout);
+
+        // Check _pendingSurvey BEFORE the settled guard — the server closes the
+        // socket after the grace period finishes, at which point the connection IS
+        // settled (finishConnect ran earlier). Without this ordering the survey
+        // would never appear because `if (settled) return` fires first.
+        if (this.client._pendingSurvey) {
+          const surveyType = this.client._pendingSurvey;
+          this.client._pendingSurvey = null;
+          console.log("[Transport] Triggering survey:", surveyType);
+          this.client.ui.showSurvey(surveyType);
+          void this.client.stopSession({ force: true }).catch(err => {
+            console.error("[Transport] stopSession failed after survey trigger:", err);
+          });
+          return;
+        }
+
         if (settled) return;
 
         if (
