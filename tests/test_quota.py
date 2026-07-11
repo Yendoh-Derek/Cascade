@@ -1,5 +1,3 @@
-import asyncio
-import hashlib
 import os
 import tempfile
 import pytest

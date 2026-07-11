@@ -1,10 +1,8 @@
-import asyncio
 import logging
 from enum import Enum
 from pathlib import Path
 from datetime import datetime, timezone
 import aiosqlite
-import os
 
 from backend.config import server_config
 
