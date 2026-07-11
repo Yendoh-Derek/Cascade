@@ -69,6 +69,8 @@ export class UIController {
     this.btnClearTranscript = document.getElementById("btn-clear-transcript");
     this.btnStats = document.getElementById("btn-stats");
     this.transcriptEmpty = document.getElementById("transcript-empty");
+    this.quotaTimer = document.getElementById("quota-timer");
+    this.quotaTimerText = document.getElementById("quota-timer-text");
 
     this._initUIListeners();
     this._restoreTTSSelection();
@@ -266,6 +268,54 @@ export class UIController {
     const statsBackdrop = document.getElementById("stats-backdrop");
     if (statsBackdrop) {
       statsBackdrop.addEventListener("click", () => this._closeStatsPanel());
+    }
+
+    // Survey Modal Listeners
+    const surveyBackdrop = document.getElementById("survey-modal-backdrop");
+    const surveySubmit = document.getElementById("btn-submit-survey");
+    const surveyRatingBtns = document.querySelectorAll(".rating-btn");
+    let selectedRating = null;
+
+    if (surveyRatingBtns) {
+      surveyRatingBtns.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          surveyRatingBtns.forEach((b) => b.classList.remove("selected"));
+          btn.classList.add("selected");
+          selectedRating = parseInt(btn.getAttribute("data-value"), 10);
+          if (surveySubmit) surveySubmit.disabled = false;
+        });
+      });
+    }
+
+    if (surveySubmit) {
+      surveySubmit.addEventListener("click", async () => {
+        const comment = document.getElementById("survey-comment")?.value || "";
+        const testerId = localStorage.getItem("cascade_tester_id");
+        if (!testerId || !selectedRating) return;
+
+        surveySubmit.disabled = true;
+        surveySubmit.textContent = "Submitting...";
+
+        try {
+          const res = await fetch("/quota/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tester_id: testerId,
+              rating: selectedRating,
+              comment: comment,
+            })
+          });
+          if (!res.ok) throw new Error("Submission failed");
+          
+          this.showToast("Thank you for your feedback!", 3000, "info");
+        } catch (e) {
+          console.error("Survey submission error:", e);
+          this.showToast("Failed to submit feedback. Thank you anyway!", 3000, "error");
+        } finally {
+          if (surveyBackdrop) surveyBackdrop.setAttribute("aria-hidden", "true");
+        }
+      });
     }
   }
 
@@ -530,6 +580,28 @@ export class UIController {
     const backdrop = document.getElementById("secret-modal-backdrop");
     if (backdrop) {
       backdrop.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  updateQuotaWarning(secondsRemaining) {
+    if (this.quotaTimer && this.quotaTimerText) {
+      this.quotaTimer.setAttribute("aria-hidden", "false");
+      const m = Math.floor(secondsRemaining / 60);
+      const s = Math.floor(secondsRemaining % 60);
+      this.quotaTimerText.textContent = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+      
+      if (secondsRemaining <= 10) {
+        this.quotaTimer.classList.add("danger");
+      } else {
+        this.quotaTimer.classList.remove("danger");
+      }
+    }
+  }
+
+  showSurvey(reason) {
+    const backdrop = document.getElementById("survey-modal-backdrop");
+    if (backdrop) {
+      backdrop.setAttribute("aria-hidden", "false");
     }
   }
 }

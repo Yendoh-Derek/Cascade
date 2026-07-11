@@ -34,6 +34,9 @@
       <!-- Header -->
       <header class="app-header">
         <span class="wordmark">cascade</span>
+        <div class="quota-timer" id="quota-timer" aria-hidden="true">
+          <span id="quota-timer-text">05:00</span>
+        </div>
       </header>
 
       <!-- Main layout grid -->
@@ -200,6 +203,33 @@
         <div class="modal-footer">
           <button class="menu-btn" id="btn-cancel-secret">Cancel</button>
           <button class="menu-btn menu-btn-primary" id="btn-submit-secret">Submit</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feedback Survey Modal -->
+    <div class="modal-backdrop" id="survey-modal-backdrop" aria-hidden="true">
+      <div class="modal glass" id="survey-modal" role="dialog" aria-labelledby="survey-modal-title">
+        <div class="modal-header">
+          <span class="modal-title" id="survey-modal-title">Thanks for testing Cascade!</span>
+        </div>
+        <div class="modal-body" id="survey-body">
+          <p id="survey-message">Your testing time has concluded. We'd love your quick feedback.</p>
+          <div class="survey-form">
+            <label for="survey-rating">How natural did the voice feel? (1-5)</label>
+            <div class="rating-group" id="survey-rating">
+              <button class="rating-btn" data-value="1">1</button>
+              <button class="rating-btn" data-value="2">2</button>
+              <button class="rating-btn" data-value="3">3</button>
+              <button class="rating-btn" data-value="4">4</button>
+              <button class="rating-btn" data-value="5">5</button>
+            </div>
+            <label for="survey-comment">Any other thoughts?</label>
+            <textarea id="survey-comment" class="modal-input survey-textarea" placeholder="Latency was good, but..."></textarea>
+          </div>
+        </div>
+        <div class="modal-footer" id="survey-footer">
+          <button class="menu-btn menu-btn-primary" id="btn-submit-survey" disabled>Submit Feedback</button>
         </div>
       </div>
     </div>

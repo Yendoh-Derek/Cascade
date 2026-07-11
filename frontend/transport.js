@@ -64,8 +64,18 @@ export class WebSocketTransport {
         }
       }, 5000);
 
-      const finishConnect = () => {
-        if (!settled) settle(resolve);
+          const finishConnect = () => {
+        if (!settled) {
+          // Send identify message for quota system
+          let testerId = localStorage.getItem("cascade_tester_id");
+          if (!testerId) {
+            testerId = crypto.randomUUID();
+            localStorage.setItem("cascade_tester_id", testerId);
+          }
+          this.send(JSON.stringify({ type: "identify", tester_id: testerId }));
+          
+          settle(resolve);
+        }
       };
 
       const scheduleAuthGrace = () => {

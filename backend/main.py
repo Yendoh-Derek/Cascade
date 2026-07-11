@@ -16,19 +16,31 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_api_keys, get_model_config, server_config
 from backend.pipeline import PipelineSession
 from backend.vad import get_shared_vad_model
+from backend.quota import quota_manager, RegistrationResult
 from groq import AsyncGroq
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 LOCAL_WS_HOSTS = frozenset({"localhost", "127.0.0.1"})
+
+def get_client_ip(request: Request | WebSocket) -> str:
+    """Extract client IP, prioritizing CF-Connecting-IP for Cloudflare."""
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip.strip()
+    x_forwarded = request.headers.get("X-Forwarded-For")
+    if x_forwarded:
+        return x_forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
 
 
 def is_websocket_origin_allowed(origin: Optional[str], host_header: str) -> bool:
@@ -58,6 +70,10 @@ async def lifespan(app: FastAPI):
     # Initialize shared VAD model to prevent event-loop blocking on first session
     await asyncio.to_thread(get_shared_vad_model)
     logger.info("[App] Shared VAD model initialized")
+    
+    # Initialize quota DB
+    await quota_manager.initialize()
+    logger.info("[App] Quota manager initialized")
     
     yield
     # Clean up on shutdown
@@ -125,6 +141,24 @@ def health():
         }
     except EnvironmentError as e:
         return {"status": "unhealthy", "error": str(e)}
+
+
+@app.get("/quota/status", tags=["Quota"])
+async def quota_status():
+    """Returns available slots and budget."""
+    return await quota_manager.get_status()
+
+
+@app.post("/quota/feedback", tags=["Quota"])
+async def quota_feedback(request: Request):
+    """Saves end-of-session feedback."""
+    data = await request.json()
+    tester_id = data.get("tester_id")
+    rating = data.get("rating")
+    if tester_id and rating:
+        await quota_manager.save_feedback(tester_id, rating)
+    return {"status": "ok"}
+
 
 
 @app.websocket("/ws")
@@ -250,6 +284,61 @@ async def websocket_endpoint(
                     await websocket.close(code=4001)
                     return
 
+            tester_id = None
+            if server_config.quota_enabled:
+                identified = False
+                start_time = time.time()
+                while time.time() - start_time < 5.0 and not identified:
+                    try:
+                        message = await asyncio.wait_for(
+                            websocket.receive(),
+                            timeout=5.0 - (time.time() - start_time)
+                        )
+                        msg_type = message.get("type", "")
+                        if msg_type == "websocket.disconnect":
+                            break
+                        
+                        raw_text = message.get("text", "")
+                        if raw_text:
+                            try:
+                                id_msg = json.loads(raw_text.strip())
+                                if id_msg.get("type") == "identify":
+                                    tester_id = id_msg.get("tester_id")
+                                    if tester_id:
+                                        identified = True
+                                        break
+                            except json.JSONDecodeError:
+                                pass
+                        
+                        raw_bytes = message.get("bytes")
+                        if raw_bytes:
+                            pre_auth_audio.append(raw_bytes)
+                    except (asyncio.TimeoutError, WebSocketDisconnect):
+                        break
+                        
+                if not identified or not tester_id:
+                    await websocket.send_json({"type": "error", "message": "Missing identify message"})
+                    await websocket.close(code=4000)
+                    return
+                    
+                ip_hash = hashlib.sha256(get_client_ip(websocket).encode()).hexdigest()
+                reg_result = await quota_manager.get_or_register(tester_id, ip_hash)
+                
+                if reg_result == RegistrationResult.CAP_REACHED:
+                    await websocket.send_json({"type": "capacity_reached", "message": "All 100 testing spots are currently claimed."})
+                    await websocket.close()
+                    return
+                elif reg_result == RegistrationResult.IP_RATE_LIMITED:
+                    await websocket.send_json({"type": "error", "message": "Too many new sessions from this network — please try again later."})
+                    await websocket.close()
+                    return
+                    
+                seconds_used = await quota_manager.get_seconds_used(tester_id)
+                if seconds_used >= server_config.tester_budget_sec:
+                    await websocket.send_json({"type": "quota_exceeded", "seconds_used": seconds_used})
+                    await websocket.close()
+                    return
+
             try:
                 keys = get_api_keys()
                 config = get_model_config()
@@ -331,6 +420,52 @@ async def websocket_endpoint(
                         break
 
             ping_task = asyncio.create_task(ping_coroutine())
+
+            quota_task: Optional[asyncio.Task] = None
+            session_unsaved_quota = 0.0
+            if server_config.quota_enabled and tester_id:
+                async def quota_coroutine():
+                    nonlocal session_unsaved_quota
+                    budget = server_config.tester_budget_sec
+                    used = seconds_used
+                    last_tick = time.time()
+                    warned_60 = False
+                    warned_10 = False
+                    
+                    while sender_running:
+                        await asyncio.sleep(1.0)
+                        if not sender_running:
+                            break
+                            
+                        now = time.time()
+                        delta = now - last_tick
+                        last_tick = now
+                        
+                        if session and session.has_spoken:
+                            used += delta
+                            session_unsaved_quota += delta
+                            remaining = budget - used
+                            
+                            if session_unsaved_quota >= 30.0:
+                                await quota_manager.record_usage(tester_id, session_unsaved_quota)
+                                session_unsaved_quota = 0.0
+                                
+                            if remaining <= 60 and not warned_60:
+                                warned_60 = True
+                                await websocket.send_json({"type": "quota_warning", "seconds_remaining": int(remaining)})
+                            elif remaining <= 10 and not warned_10:
+                                warned_10 = True
+                                await websocket.send_json({"type": "quota_warning", "seconds_remaining": int(remaining)})
+                            elif remaining <= 0:
+                                await websocket.send_json({"type": "quota_exceeded"})
+                                # Send cancel to the pipeline to stop TTS if speaking
+                                if session:
+                                    await session.cancel()
+                                await asyncio.sleep(0.5) # Let message flush
+                                await websocket.close(code=1000)
+                                break
+
+                quota_task = asyncio.create_task(quota_coroutine())
 
             try:
                 await asyncio.wait_for(session.initialize(), timeout=10)
@@ -484,6 +619,21 @@ async def websocket_endpoint(
                         await asyncio.wait_for(sender_task, timeout=1.0)
                     except (asyncio.CancelledError, asyncio.TimeoutError):
                         pass
+                # Cancel quota_task
+                if quota_task is not None and not quota_task.done():
+                    quota_task.cancel()
+                    try:
+                        await asyncio.wait_for(quota_task, timeout=0.5)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+                
+                # Save any remaining unsaved quota
+                if server_config.quota_enabled and tester_id and session_unsaved_quota > 0:
+                    try:
+                        await quota_manager.record_usage(tester_id, session_unsaved_quota)
+                    except Exception as eq:
+                        logger.error(f"[WS] Error saving final quota: {eq}")
+
             except Exception as e:
                 logger.error(f"[WS] Error cleaning up sender: {e}")
 
