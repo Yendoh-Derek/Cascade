@@ -9,6 +9,7 @@ import json
 import logging
 import asyncio
 import hmac
+import re as _re
 import time
 import secrets
 from typing import Any, Callable, Dict, Optional
@@ -111,7 +112,6 @@ MAX_TESTER_CONNECTIONS = 2
 _active_tester_connections: dict[str, int] = {}
 
 # UUID-shape regex for tester_id validation
-import re as _re
 _UUID_RE = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
 # HMAC key for IP hashing. Derived from CASCADE_IP_HASH_SECRET env var.
@@ -243,6 +243,8 @@ async def websocket_endpoint(
         quota_task: Optional[asyncio.Task] = None
         session_unsaved_quota = 0.0
         sender_running = False
+        tester_id: Optional[str] = None
+        seconds_used = 0.0
         identified_tester_id: Optional[str] = None  # track for per-tester concurrency cleanup
 
         try:
@@ -315,7 +317,6 @@ async def websocket_endpoint(
                     await websocket.close(code=4001)
                     return
 
-            tester_id = None
             if server_config.quota_enabled:
                 identified = False
                 start_time = time.time()
@@ -482,7 +483,7 @@ async def websocket_endpoint(
                     used = seconds_used
                     last_tick = time.time()
                     grace_period_started = False
-                    last_warning_sent: float = 0.0  # BUG-1 fix: throttle quota_warning to ≤1/10s
+                    last_warning_sent: float = 0.0  
 
                     while sender_running:
                         await asyncio.sleep(1.0)
