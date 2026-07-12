@@ -9,6 +9,7 @@ import json
 import logging
 import asyncio
 import hmac
+import re as _re
 import time
 import secrets
 from typing import Any, Callable, Dict, Optional
@@ -111,7 +112,6 @@ MAX_TESTER_CONNECTIONS = 2
 _active_tester_connections: dict[str, int] = {}
 
 # UUID-shape regex for tester_id validation
-import re as _re
 _UUID_RE = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
 # HMAC key for IP hashing. Derived from CASCADE_IP_HASH_SECRET env var.
