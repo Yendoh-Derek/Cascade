@@ -155,8 +155,9 @@ async def quota_feedback(request: Request):
     data = await request.json()
     tester_id = data.get("tester_id")
     rating = data.get("rating")
+    comment = data.get("comment")
     if tester_id and rating:
-        await quota_manager.save_feedback(tester_id, rating)
+        await quota_manager.save_feedback(tester_id, rating, comment)
     return {"status": "ok"}
 
 
@@ -423,6 +424,7 @@ async def websocket_endpoint(
 
             ping_task = asyncio.create_task(ping_coroutine())
 
+
             if server_config.quota_enabled and tester_id:
                 async def quota_coroutine():
                     nonlocal session_unsaved_quota
@@ -430,6 +432,7 @@ async def websocket_endpoint(
                     used = seconds_used
                     last_tick = time.time()
                     grace_period_started = False
+                    last_warning_sent: float = 0.0  # BUG-1 fix: throttle quota_warning to ≤1/10s
 
                     while sender_running:
                         await asyncio.sleep(1.0)
@@ -440,7 +443,10 @@ async def websocket_endpoint(
                         delta = now - last_tick
                         last_tick = now
 
-                        if session and session.has_spoken:
+                        # BUG-4 fix: stop charging time once the grace period has started —
+                        # the user can't start new turns, so billing them for wrap-up time
+                        # is unfair and would cause the timer to overshoot the budget.
+                        if session and session.has_spoken and not grace_period_started:
                             used += delta
                             session_unsaved_quota += delta
                             remaining = budget - used
@@ -449,8 +455,12 @@ async def websocket_endpoint(
                                 await quota_manager.record_usage(tester_id, session_unsaved_quota)
                                 session_unsaved_quota = 0.0
 
+                            # BUG-1 fix: only send quota_warning at most once every 10 seconds
+                            # to avoid flooding the wire with up to 60 identical messages.
                             if remaining <= 60 and remaining > 0:
-                                await websocket.send_json({"type": "quota_warning", "seconds_remaining": int(remaining)})
+                                if now - last_warning_sent >= 10.0:
+                                    last_warning_sent = now
+                                    await websocket.send_json({"type": "quota_warning", "seconds_remaining": int(remaining)})
                             elif remaining <= 0 and not grace_period_started:
                                 grace_period_started = True
                                 # Lock out new turns — current in-flight turn is allowed to finish.
@@ -469,6 +479,7 @@ async def websocket_endpoint(
                                 break
 
                 quota_task = asyncio.create_task(quota_coroutine())
+
 
             try:
                 await asyncio.wait_for(session.initialize(), timeout=10)

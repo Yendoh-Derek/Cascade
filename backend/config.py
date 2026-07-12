@@ -74,11 +74,11 @@ class ServerConfig:
     idle_timeout_sec: int = int(os.getenv("CASCADE_IDLE_TIMEOUT_SEC", "300"))
     
     # Quota / Testing limits
-    quota_enabled: bool = os.getenv("CASCADE_QUOTA_ENABLED", "false").lower() == "true"
-    max_testers: int = int(os.getenv("CASCADE_MAX_TESTERS", "100"))
-    tester_budget_sec: int = int(os.getenv("CASCADE_TESTER_BUDGET_SEC", "300"))
+    quota_enabled: bool = os.getenv("CASCADE_QUOTA_ENABLED", "true").lower() == "true"
+    max_testers: int = int(os.getenv("CASCADE_MAX_TESTERS", "1"))
+    tester_budget_sec: int = int(os.getenv("CASCADE_TESTER_BUDGET_SEC", "600"))
     quota_db_path: str = os.getenv("CASCADE_QUOTA_DB_PATH", "./data/quota.db")
-    ip_registration_limit: int = int(os.getenv("CASCADE_IP_REGISTRATION_LIMIT", "3"))
+    ip_registration_limit: int = int(os.getenv("CASCADE_IP_REGISTRATION_LIMIT", "1"))
 
 
 def _require_env(key: str) -> str:

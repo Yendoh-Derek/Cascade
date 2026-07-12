@@ -34,7 +34,8 @@ def mock_server_config():
         max_concurrent_sessions=3,
         cors_origins=orig.cors_origins,
         auth_secret="test-secret",
-        idle_timeout_sec=orig.idle_timeout_sec
+        idle_timeout_sec=orig.idle_timeout_sec,
+        quota_enabled=False,
     )
     with patch("backend.main.server_config", new_config):
         with patch("backend.main.MAX_CONCURRENT_SESSIONS", 3):

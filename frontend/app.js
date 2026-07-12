@@ -27,6 +27,7 @@ class CascadeClient {
     this._interrupting = false;
     this._pendingCancelTurnId = null;
     this._interruptTimeout = null;
+    this._pendingSurvey = null;  // BUG-5 fix: always initialise so onclose handler has a clean value
 
     // Perceived-latency tracking
     this._turnStartMs = null; // stamped at transcript receipt (fallback anchor)
@@ -167,6 +168,8 @@ class CascadeClient {
 
   async _teardownSession() {
     this._cancelUiTimers();
+    // BUG-2 fix: hide the quota countdown so it doesn't linger after session ends
+    this.ui.hideQuotaTimer();
     this.transport.intentionalDisconnect = true;
     if (this.transport.isOpen()) {
       try {
@@ -712,17 +715,32 @@ class CascadeClient {
       case "stt_reconnected":
         this.ui.showToast("Speech recognition reconnected.", 2500, "info");
         break;
-        break;
+      // BUG-8 fix: removed duplicate 'break' that was here
       case "capacity_reached":
         this.ui.showError(msg.message || "All testing spots are currently claimed. Please try again later.");
-        await this.stopSession();
+        // BUG-7 fix: server already closed the socket, use force:true to skip the
+        // pointless 100ms send("stop") delay against an already-closed connection.
+        await this.stopSession({ force: true });
         break;
       case "quota_warning":
         this.ui.updateQuotaWarning(msg.seconds_remaining);
         break;
       case "quota_exceeded":
-        await this.stopSession({ force: true });
-        this.ui.showSurvey("quota");
+        if (msg.grace_period) {
+          // Mic off, lock the session — the server will close the socket
+          // once the current turn finishes. No toast: the user is mid-sentence
+          // and doesn't need a pop-up interrupting the audio they're hearing.
+          if (this.audioInput.isRecording) {
+            this.audioInput.stop();
+          }
+          this.transport.intentionalDisconnect = true;
+          this._pendingSurvey = "quota";
+        } else {
+          // Returning user whose budget is already exhausted — show a dedicated
+          // overlay instead of a transient toast.
+          await this.stopSession({ force: true });
+          this.ui.showSessionExpired();
+        }
         break;
       case "error":
         this.ui.showError(msg.message || "Unknown server error");
