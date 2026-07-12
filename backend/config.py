@@ -74,11 +74,20 @@ class ServerConfig:
     idle_timeout_sec: int = int(os.getenv("CASCADE_IDLE_TIMEOUT_SEC", "300"))
     
     # Quota / Testing limits
-    quota_enabled: bool = os.getenv("CASCADE_QUOTA_ENABLED", "true").lower() == "true"
-    max_testers: int = int(os.getenv("CASCADE_MAX_TESTERS", "1"))
-    tester_budget_sec: int = int(os.getenv("CASCADE_TESTER_BUDGET_SEC", "600"))
+    quota_enabled: bool = os.getenv("CASCADE_QUOTA_ENABLED", "false").lower() == "true"
+    max_testers: int = int(os.getenv("CASCADE_MAX_TESTERS", "100"))
+    tester_budget_sec: int = int(os.getenv("CASCADE_TESTER_BUDGET_SEC", "300"))
     quota_db_path: str = os.getenv("CASCADE_QUOTA_DB_PATH", "./data/quota.db")
-    ip_registration_limit: int = int(os.getenv("CASCADE_IP_REGISTRATION_LIMIT", "1"))
+    ip_registration_limit: int = int(os.getenv("CASCADE_IP_REGISTRATION_LIMIT", "5"))
+
+    # Security: proxy trust and IP hashing
+    # Set CASCADE_TRUST_PROXY_HEADERS=true ONLY when deployed behind Cloudflare or
+    # a trusted reverse proxy that overwrites CF-Connecting-IP / X-Forwarded-For.
+    # Never set on a direct-exposed origin — it enables IP spoofing via headers.
+    trust_proxy_headers: bool = os.getenv("CASCADE_TRUST_PROXY_HEADERS", "false").lower() == "true"
+    # HMAC secret for IP hashing. Auto-generated ephemerally if unset (changes on restart).
+    # Set a stable value in production so ip_hash is consistent across restarts.
+    ip_hash_secret: str = os.getenv("CASCADE_IP_HASH_SECRET", "")
 
 
 def _require_env(key: str) -> str:

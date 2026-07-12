@@ -9,6 +9,7 @@ import json
 import logging
 import asyncio
 import hmac
+import re as _re
 import time
 import secrets
 from typing import Any, Callable, Dict, Optional
@@ -32,13 +33,20 @@ logging.basicConfig(level=logging.INFO)
 LOCAL_WS_HOSTS = frozenset({"localhost", "127.0.0.1"})
 
 def get_client_ip(request: Request | WebSocket) -> str:
-    """Extract client IP, prioritizing CF-Connecting-IP for Cloudflare."""
-    cf_ip = request.headers.get("CF-Connecting-IP")
-    if cf_ip:
-        return cf_ip.strip()
-    x_forwarded = request.headers.get("X-Forwarded-For")
-    if x_forwarded:
-        return x_forwarded.split(",")[0].strip()
+    """Extract client IP.
+    
+    Proxy headers (CF-Connecting-IP, X-Forwarded-For) are only trusted when
+    CASCADE_TRUST_PROXY_HEADERS=true — set this ONLY when actually deployed
+    behind Cloudflare or a trusted reverse proxy. Ignoring these headers on
+    a direct-exposed origin prevents IP spoofing via crafted headers.
+    """
+    if server_config.trust_proxy_headers:
+        cf_ip = request.headers.get("CF-Connecting-IP")
+        if cf_ip:
+            return cf_ip.strip()
+        x_forwarded = request.headers.get("X-Forwarded-For")
+        if x_forwarded:
+            return x_forwarded.split(",")[0].strip()
     return request.client.host if request.client else "127.0.0.1"
 
 
@@ -97,6 +105,26 @@ session_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SESSIONS)
 
 # Shared AsyncGroq client (initialized on app startup)
 shared_groq_client: Optional[AsyncGroq] = None
+
+# Per-tester active connection counter — prevents a single tester_id from
+# holding more than MAX_TESTER_CONNECTIONS simultaneous WebSocket sessions.
+MAX_TESTER_CONNECTIONS = 2
+_active_tester_connections: dict[str, int] = {}
+
+# UUID-shape regex for tester_id validation
+_UUID_RE = _re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+
+# HMAC key for IP hashing. Derived from CASCADE_IP_HASH_SECRET env var.
+# Auto-generated ephemerally if unset — log a warning so operators notice.
+_ip_hash_key: bytes
+if server_config.ip_hash_secret:
+    _ip_hash_key = server_config.ip_hash_secret.encode()
+else:
+    _ip_hash_key = secrets.token_bytes(32)
+    logger.warning(
+        "[Security] CASCADE_IP_HASH_SECRET is not set. Using an ephemeral random key. "
+        "IP hashes will change on every restart. Set a stable secret in production."
+    )
 
 # Allow operators to tighten CORS in production via CASCADE_CORS_ORIGINS env var.
 # Default is "*" for local development only — restrict this before public deployment.
@@ -181,11 +209,25 @@ async def websocket_endpoint(
                         "latency"|"error"|"busy"}
     """
 
+    # Origin validation runs BEFORE the semaphore acquire so we don't
+    # spend a concurrency slot on a connection that's about to be rejected.
+    await websocket.accept()
+    logger.info("[WS] Client connected")
+
+    origin = websocket.headers.get("origin")
+    host_header = websocket.headers.get("host") or ""
+    if not is_websocket_origin_allowed(origin, host_header):
+        logger.warning(
+            f"[WS] Rejecting connection from origin {origin!r} "
+            f"(host={host_header!r})"
+        )
+        await websocket.close(code=4003)
+        return
+
     # 2. Concurrency Capacity Cap Check / Acquire
     try:
         await asyncio.wait_for(session_semaphore.acquire(), timeout=0.1)
     except asyncio.TimeoutError:
-        await websocket.accept()
         await websocket.send_json({
             "type": "busy",
             "reason": "capacity",
@@ -201,24 +243,10 @@ async def websocket_endpoint(
         quota_task: Optional[asyncio.Task] = None
         session_unsaved_quota = 0.0
         sender_running = False
+        identified_tester_id: Optional[str] = None  # track for per-tester concurrency cleanup
 
         try:
-            await websocket.accept()
-            logger.info("[WS] Client connected")
-
-            # Explicit Origin validation (SEC-02)
-            # Use hostname equality, not substring containment, to prevent
-            # bypass via origins like "https://evila.com" when host="a.com".
-            # Missing Origin is allowed only on localhost (dev/test clients).
-            origin = websocket.headers.get("origin")
-            host_header = websocket.headers.get("host") or ""
-            if not is_websocket_origin_allowed(origin, host_header):
-                logger.warning(
-                    f"[WS] Rejecting connection from origin {origin!r} "
-                    f"(host={host_header!r})"
-                )
-                await websocket.close(code=4003)
-                return
+            # Origin check already done and accepted above; skip the redundant block.
 
             # 1. Auth Secret Verification (HMAC challenge-response)
             auth_secret = server_config.auth_secret
@@ -306,7 +334,14 @@ async def websocket_endpoint(
                             try:
                                 id_msg = json.loads(raw_text.strip())
                                 if id_msg.get("type") == "identify":
-                                    tester_id = id_msg.get("tester_id")
+                                    candidate_id = id_msg.get("tester_id", "")
+                                    # Sec: reject non-UUID tester_ids to prevent
+                                    # arbitrarily large keys written to TEXT PRIMARY KEY.
+                                    if not isinstance(candidate_id, str) or not _UUID_RE.match(candidate_id):
+                                        await websocket.send_json({"type": "error", "message": "Invalid tester_id format"})
+                                        await websocket.close(code=4000)
+                                        return
+                                    tester_id = candidate_id
                                     if tester_id:
                                         identified = True
                                         break
@@ -323,16 +358,31 @@ async def websocket_endpoint(
                     await websocket.send_json({"type": "error", "message": "Missing identify message"})
                     await websocket.close(code=4000)
                     return
+
+                # Per-tester concurrency cap: at most MAX_TESTER_CONNECTIONS simultaneous
+                # sessions per tester_id. Prevents tab-duplication abuse.
+                current_count = _active_tester_connections.get(tester_id, 0)
+                if current_count >= MAX_TESTER_CONNECTIONS:
+                    await websocket.send_json({
+                        "type": "busy",
+                        "reason": "duplicate_session",
+                        "message": "You already have an active session open in another tab."
+                    })
+                    await websocket.close()
+                    return
+                _active_tester_connections[tester_id] = current_count + 1
+                identified_tester_id = tester_id
                     
-                ip_hash = hashlib.sha256(get_client_ip(websocket).encode()).hexdigest()
+                # HMAC-salt the IP so quota.db leaks don’t expose raw IP hashes.
+                ip_hash = hmac.new(_ip_hash_key, get_client_ip(websocket).encode(), hashlib.sha256).hexdigest()
                 reg_result = await quota_manager.get_or_register(tester_id, ip_hash)
                 
                 if reg_result == RegistrationResult.CAP_REACHED:
-                    await websocket.send_json({"type": "capacity_reached", "message": "All 100 testing spots are currently claimed."})
+                    await websocket.send_json({"type": "capacity_reached", "message": f"All {server_config.max_testers} testing spots are currently claimed."})
                     await websocket.close()
                     return
                 elif reg_result == RegistrationResult.IP_RATE_LIMITED:
-                    await websocket.send_json({"type": "error", "message": "Too many new sessions from this network — please try again later."})
+                    await websocket.send_json({"type": "ip_rate_limited", "message": "Too many new sessions from this network — please try again later."})
                     await websocket.close()
                     return
                     
@@ -443,10 +493,11 @@ async def websocket_endpoint(
                         delta = now - last_tick
                         last_tick = now
 
-                        # BUG-4 fix: stop charging time once the grace period has started —
-                        # the user can't start new turns, so billing them for wrap-up time
-                        # is unfair and would cause the timer to overshoot the budget.
-                        if session and session.has_spoken and not grace_period_started:
+                        # Billing: only accumulate time while the user is actively
+                        # speaking (VAD-detected) OR the AI is playing back audio.
+                        # This ensures testers are billed fairly for engaged time,
+                        # not for idle silence or thinking pauses between turns.
+                        if session and (session.user_speaking or session.is_ai_speaking()) and not grace_period_started:
                             used += delta
                             session_unsaved_quota += delta
                             remaining = budget - used
@@ -455,10 +506,11 @@ async def websocket_endpoint(
                                 await quota_manager.record_usage(tester_id, session_unsaved_quota)
                                 session_unsaved_quota = 0.0
 
-                            # BUG-1 fix: only send quota_warning at most once every 10 seconds
-                            # to avoid flooding the wire with up to 60 identical messages.
-                            if remaining <= 60 and remaining > 0:
-                                if now - last_warning_sent >= 10.0:
+                            # Send quota update every 1 second of active time.
+                            # Since the client no longer interpolates, we stream the exact value
+                            # at 1Hz so the UI strictly reflects billing ticks.
+                            if remaining > 0:
+                                if now - last_warning_sent >= 1.0:
                                     last_warning_sent = now
                                     await websocket.send_json({"type": "quota_warning", "seconds_remaining": int(remaining)})
                             elif remaining <= 0 and not grace_period_started:
@@ -468,8 +520,9 @@ async def websocket_endpoint(
                                     session.quota_locked = True
                                 # Signal frontend: budget exhausted, but wrapping up gracefully.
                                 await websocket.send_json({"type": "quota_exceeded", "grace_period": True})
-                                # Wait for the active turn to complete, with a 15s safety cap.
-                                deadline = time.time() + 15.0
+                                # Wait for the active turn to complete, with a 25s safety cap
+                                # (tutoring explanations can run longer than 15s of TTS).
+                                deadline = time.time() + 25.0
                                 while time.time() < deadline:
                                     if session is None or not session.is_turn_active():
                                         break
@@ -482,7 +535,7 @@ async def websocket_endpoint(
 
 
             try:
-                await asyncio.wait_for(session.initialize(), timeout=10)
+                await asyncio.wait_for(session.initialize(), timeout=30)
             except asyncio.TimeoutError:
                 await websocket.send_json(
                     {"type": "error", "message": "Pipeline initialization timed out"}
@@ -647,6 +700,14 @@ async def websocket_endpoint(
                         await quota_manager.record_usage(tester_id, session_unsaved_quota)
                     except Exception as eq:
                         logger.error(f"[WS] Error saving final quota: {eq}")
+
+                # Decrement per-tester connection count
+                if identified_tester_id:
+                    count = _active_tester_connections.get(identified_tester_id, 1)
+                    if count <= 1:
+                        _active_tester_connections.pop(identified_tester_id, None)
+                    else:
+                        _active_tester_connections[identified_tester_id] = count - 1
 
             except Exception as e:
                 logger.error(f"[WS] Error cleaning up sender: {e}")

@@ -257,6 +257,14 @@ class LLMGenerator:
                 # Yield any remaining buffer
                 if sentence_buffer:
                     chunk_to_yield = sentence_buffer
+                    
+                    choices = getattr(last_stream_chunk, "choices", None)
+                    if choices:
+                        finish_reason = getattr(choices[0], "finish_reason", None)
+                        if finish_reason == "length":
+                            logger.warning("[LLM] Finish reason was 'length' — response may be truncated")
+                            chunk_to_yield = chunk_to_yield.rstrip() + "..."
+                            
                     # Ensure t_first_sentence_emitted is set for final buffer (edge case: no boundaries)
                     if self.t_first_sentence_emitted is None:
                         self.t_first_sentence_emitted = time.perf_counter()
@@ -264,13 +272,6 @@ class LLMGenerator:
                     yield chunk_to_yield
 
                 logger.info(f"[LLM] Stream complete: {token_count} tokens total")
-
-                choices = getattr(last_stream_chunk, "choices", None)
-                if choices:
-                    finish_reason = getattr(choices[0], "finish_reason", None)
-                    if finish_reason == "length":
-                        logger.warning("[LLM] Finish reason was 'length' — response may be truncated")
-                        sentence_buffer = sentence_buffer.rstrip() + "..."
 
         except asyncio.CancelledError:
             logger.info("[LLM] Generation cancelled")
