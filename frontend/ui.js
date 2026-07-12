@@ -271,30 +271,63 @@ export class UIController {
       statsBackdrop.addEventListener("click", () => this._closeStatsPanel());
     }
 
-    // Survey Modal Listeners
+    // ── Survey / Rating slider ──
     const surveyBackdrop = document.getElementById("survey-modal-backdrop");
     const surveySubmit = document.getElementById("btn-submit-survey");
+    const btnSkipSurvey = document.getElementById("btn-skip-survey");
     const surveySlider = document.getElementById("survey-rating");
     const ratingValDisplay = document.getElementById("rating-val-display");
+    const ratingTrackFill = document.getElementById("rating-track-fill");
     const btnCloseSurvey = document.getElementById("btn-close-survey");
-    
-    if (surveySlider && ratingValDisplay) {
+
+    const _updateRatingUI = (value) => {
+      const pct = ((value - 1) / 4) * 100;
+      if (ratingTrackFill) ratingTrackFill.style.width = `${pct}%`;
+      if (ratingValDisplay) ratingValDisplay.textContent = `${value} / 5`;
+      if (surveySlider) {
+        surveySlider.value = value;
+        surveySlider.setAttribute("aria-valuenow", value);
+      }
+      document.querySelectorAll(".rating-pip").forEach((pip) => {
+        pip.classList.toggle("active", parseInt(pip.dataset.value, 10) === value);
+      });
+    };
+
+    // Initial render
+    _updateRatingUI(3);
+
+    if (surveySlider) {
       surveySlider.addEventListener("input", (e) => {
-        ratingValDisplay.textContent = e.target.value;
+        _updateRatingUI(parseInt(e.target.value, 10));
       });
     }
 
-    if (btnCloseSurvey) {
-      btnCloseSurvey.addEventListener("click", () => {
-        window.location.reload();
+    document.querySelectorAll(".rating-pip").forEach((pip) => {
+      pip.addEventListener("click", () => {
+        _updateRatingUI(parseInt(pip.dataset.value, 10));
       });
+    });
+
+    if (btnCloseSurvey) {
+      btnCloseSurvey.addEventListener("click", () => window.location.reload());
+    }
+    if (btnSkipSurvey) {
+      btnSkipSurvey.addEventListener("click", () => window.location.reload());
     }
 
     const btnCloseExpired = document.getElementById("btn-close-expired");
     if (btnCloseExpired) {
-      btnCloseExpired.addEventListener("click", () => {
-        window.location.reload();
-      });
+      btnCloseExpired.addEventListener("click", () => window.location.reload());
+    }
+
+    const btnCloseCapacity = document.getElementById("btn-close-capacity");
+    if (btnCloseCapacity) {
+      btnCloseCapacity.addEventListener("click", () => window.location.reload());
+    }
+
+    const btnCloseIpLimit = document.getElementById("btn-close-ip-limit");
+    if (btnCloseIpLimit) {
+      btnCloseIpLimit.addEventListener("click", () => window.location.reload());
     }
 
     if (surveySubmit) {
@@ -302,39 +335,37 @@ export class UIController {
         const comment = document.getElementById("survey-comment")?.value || "";
         const testerId = localStorage.getItem("cascade_tester_id");
         const selectedRating = surveySlider ? parseInt(surveySlider.value, 10) : 3;
-        
+
         if (!testerId) return;
 
         surveySubmit.disabled = true;
-        surveySubmit.textContent = "Submitting...";
+        const origLabel = surveySubmit.querySelector(".btn-label");
+        if (origLabel) origLabel.textContent = "Submitting...";
+        else surveySubmit.textContent = "Submitting...";
 
         try {
           const res = await fetch("/quota/feedback", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              tester_id: testerId,
-              rating: selectedRating,
-              comment: comment,
-            })
+            body: JSON.stringify({ tester_id: testerId, rating: selectedRating, comment }),
           });
           if (!res.ok) throw new Error("Submission failed");
-          
+
           // Show success state
           const formContent = document.getElementById("survey-form-content");
           const surveyFooter = document.getElementById("survey-footer");
           const surveySuccess = document.getElementById("survey-success");
-          const modalHeader = document.querySelector("#survey-modal .modal-header");
-          
+          const modalHeader = document.getElementById("survey-modal-header");
+
           if (formContent) formContent.style.display = "none";
           if (surveyFooter) surveyFooter.style.display = "none";
           if (modalHeader) modalHeader.style.display = "none";
           if (surveySuccess) surveySuccess.style.display = "flex";
-          
         } catch (e) {
           console.error("Survey submission error:", e);
-          this.showToast("Failed to submit feedback. Thank you anyway!", 3000, "error");
-          if (surveyBackdrop) surveyBackdrop.setAttribute("aria-hidden", "true");
+          this.showToast("Couldn't send feedback right now — thanks anyway!", 3500, "warning");
+          surveySubmit.disabled = false;
+          if (origLabel) origLabel.textContent = "Submit Feedback";
         }
       });
     }
@@ -609,21 +640,11 @@ export class UIController {
       this.quotaTimer.setAttribute("aria-hidden", "false");
       this._quotaSecondsRemaining = secondsRemaining;
 
-      // BUG-1 fix: restart the client-side countdown so the display ticks smoothly
-      // each second rather than jumping only when the server sends a message.
       if (this._quotaCountdownInterval) {
         clearInterval(this._quotaCountdownInterval);
+        this._quotaCountdownInterval = null;
       }
       this._renderQuotaTime(secondsRemaining);
-      this._quotaCountdownInterval = setInterval(() => {
-        if (this._quotaSecondsRemaining === null || this._quotaSecondsRemaining <= 0) {
-          clearInterval(this._quotaCountdownInterval);
-          this._quotaCountdownInterval = null;
-          return;
-        }
-        this._quotaSecondsRemaining -= 1;
-        this._renderQuotaTime(this._quotaSecondsRemaining);
-      }, 1000);
     }
   }
 
@@ -641,6 +662,14 @@ export class UIController {
     }
   }
 
+  showGracePeriod() {
+    if (this.quotaTimer && this.quotaTimerText) {
+      this.quotaTimer.classList.remove("danger");
+      this.quotaTimer.classList.add("grace-period");
+      this.quotaTimerText.innerHTML = `<span style="font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;">Wrapping up...</span>`;
+    }
+  }
+
   // BUG-2 fix: hide the quota timer and stop any running countdown when the
   // session ends so it doesn't linger across stops/resets/new sessions.
   hideQuotaTimer() {
@@ -651,7 +680,9 @@ export class UIController {
     this._quotaSecondsRemaining = null;
     if (this.quotaTimer) {
       this.quotaTimer.setAttribute("aria-hidden", "true");
-      this.quotaTimer.classList.remove("danger");
+      this.quotaTimer.classList.remove("danger", "grace-period");
+      // Restore timer text for next session
+      if (this.quotaTimerText) this.quotaTimerText.textContent = "00:00";
     }
   }
 
@@ -664,6 +695,28 @@ export class UIController {
 
   showSessionExpired() {
     const backdrop = document.getElementById("expired-modal-backdrop");
+    if (backdrop) {
+      backdrop.setAttribute("aria-hidden", "false");
+    }
+  }
+
+  showCapacityReached(message) {
+    const backdrop = document.getElementById("capacity-modal-backdrop");
+    const msgElement = document.getElementById("capacity-modal-message");
+    if (msgElement && message) {
+      msgElement.textContent = message;
+    }
+    if (backdrop) {
+      backdrop.setAttribute("aria-hidden", "false");
+    }
+  }
+
+  showIpRateLimited(message) {
+    const backdrop = document.getElementById("ip-limit-modal-backdrop");
+    const msgElement = document.getElementById("ip-limit-modal-message");
+    if (msgElement && message) {
+      msgElement.textContent = message;
+    }
     if (backdrop) {
       backdrop.setAttribute("aria-hidden", "false");
     }

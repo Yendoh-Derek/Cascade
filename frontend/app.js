@@ -2,13 +2,13 @@
  * Cascade — AI Voice Tutor Frontend
  */
 
-import { UIController } from "./ui.js?v=2.1.1";
-import { AudioInputController } from "./audio-input.js?v=2.1.1";
-import { AudioOutputController } from "./audio-output.js?v=2.1.1";
-import { WebSocketTransport } from "./transport.js?v=2.1.1";
-import { ChartRenderer } from "./chart.js?v=2.1.1";
+import { UIController } from "./ui.js?v=2.2.0";
+import { AudioInputController } from "./audio-input.js?v=2.2.0";
+import { AudioOutputController } from "./audio-output.js?v=2.2.0";
+import { WebSocketTransport } from "./transport.js?v=2.2.0";
+import { ChartRenderer } from "./chart.js?v=2.2.0";
 
-import { STATE } from "./state.js?v=2.1.1";
+import { STATE } from "./state.js?v=2.2.0";
 
 class CascadeClient {
   constructor() {
@@ -717,9 +717,13 @@ class CascadeClient {
         break;
       // BUG-8 fix: removed duplicate 'break' that was here
       case "capacity_reached":
-        this.ui.showError(msg.message || "All testing spots are currently claimed. Please try again later.");
+        this.ui.showCapacityReached(msg.message || "All testing spots are currently claimed. Please try again later.");
         // BUG-7 fix: server already closed the socket, use force:true to skip the
         // pointless 100ms send("stop") delay against an already-closed connection.
+        await this.stopSession({ force: true });
+        break;
+      case "ip_rate_limited":
+        this.ui.showIpRateLimited(msg.message || "Too many new sessions from this network — please try again later.");
         await this.stopSession({ force: true });
         break;
       case "quota_warning":
@@ -735,6 +739,7 @@ class CascadeClient {
           }
           this.transport.intentionalDisconnect = true;
           this._pendingSurvey = "quota";
+          this.ui.showGracePeriod();
         } else {
           // Returning user whose budget is already exhausted — show a dedicated
           // overlay instead of a transient toast.

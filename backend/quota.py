@@ -153,9 +153,11 @@ class QuotaManager:
         if not self.enabled or self._conn is None:
             return True
         now = datetime.now(timezone.utc).timestamp()
+        # Cap comment length at 1000 characters to prevent DB bloat
+        safe_comment = (comment or "")[:1000]
         await self._conn.execute(
             "INSERT INTO feedback (tester_id, rating, comment, submitted_at) VALUES (?, ?, ?, ?)",
-            (tester_id, str(rating), comment or "", now),
+            (tester_id, str(rating), safe_comment, now),
         )
         await self._conn.commit()
         return True

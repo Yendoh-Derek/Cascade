@@ -39,6 +39,7 @@ class STTHandler:
         on_speech_interrupted: Optional[Callable[[str], None]] = None,
         on_transcript_update: Optional[Callable[[str, str], None]] = None,
         on_speculative_transcript: Optional[Callable[[str], None]] = None,
+        on_vad_speech_state_change: Optional[Callable[[bool], None]] = None,
         is_ai_speaking: Optional[Callable[[], bool]] = None,
         model: str = "nova-3",
         language: str = "en-US",
@@ -56,6 +57,7 @@ class STTHandler:
         self.on_speech_interrupted = on_speech_interrupted
         self.on_transcript_update = on_transcript_update
         self.on_speculative_transcript = on_speculative_transcript
+        self.on_vad_speech_state_change = on_vad_speech_state_change
         self.is_ai_speaking = is_ai_speaking or (lambda: False)
         self.model = model
         self.language = language
@@ -434,8 +436,16 @@ class STTHandler:
                     continue
                 if "speech_started" in events:
                     self._on_vad_speech_started()
-                if "speech_stopped" in events and self.enable_speculative_llm:
-                    self._on_vad_speech_stopped_speculative()
+                    # Fire unconditionally — not gated behind enable_speculative_llm.
+                    # This drives the billing user_speaking flag in pipeline.
+                    if self.on_vad_speech_state_change:
+                        self.on_vad_speech_state_change(True)
+                if "speech_stopped" in events:
+                    if self.enable_speculative_llm:
+                        self._on_vad_speech_stopped_speculative()
+                    # Fire unconditionally — signals billing that user went silent.
+                    if self.on_vad_speech_state_change:
+                        self.on_vad_speech_state_change(False)
             except Exception as e:
                 logger.debug(f"[STT] VAD processing error: {e}")
             finally:

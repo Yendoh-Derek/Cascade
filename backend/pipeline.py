@@ -285,8 +285,11 @@ class PipelineSession:
         self._last_rate_limit_notify: float = 0.0
         self._rate_limit_notify_interval_sec: float = 5.0
 
-        # Intentionally tracks elapsed time since first speech, not gated active time — idle time after speaking counts against budget.
-        self.has_spoken: bool = False
+        # Live-toggle: True while Silero VAD detects user is speaking, False when silent.
+        # Driven by on_vad_speech_state_change callback wired in STTHandler.
+        # Used by the quota coroutine to bill only active time (speech + AI response),
+        # not idle / silence / thinking pauses.
+        self.user_speaking: bool = False
         
         self.quota_locked: bool = False
 
@@ -302,6 +305,7 @@ class PipelineSession:
             on_speech_interrupted=self._on_vad_interrupted,
             on_transcript_update=self._on_stt_update,
             on_speculative_transcript=self._on_speculative_transcript,
+            on_vad_speech_state_change=self._on_vad_speaking_changed,
             is_ai_speaking=self.is_ai_speaking,
             model=self.model_config.get("deepgram_model", "nova-3"),
             language=self.model_config.get("deepgram_language", "en-US"),
@@ -427,7 +431,6 @@ class PipelineSession:
         Does NOT trigger the LLM.
         """
         self.send_message({"type": "transcript_update", "stable": stable, "tentative": tentative})
-        self.has_spoken = True
 
     def _on_vad_interrupted(self, transcript: str):
         """
@@ -438,8 +441,6 @@ class PipelineSession:
         """
         if self._active_turn_id is None and not self.is_processing_transcript:
             return
-
-        self.has_spoken = True
 
         is_barge_in = self.is_ai_speaking()
         if is_barge_in:
@@ -493,7 +494,16 @@ class PipelineSession:
         return False
 
     def is_turn_active(self) -> bool:
-        return self._active_turn_id is not None or self.is_processing_transcript or self.is_ai_speaking()
+        return self._active_turn_id is not None or self.is_processing_transcript or self.is_ai_speaking() or self.user_speaking
+
+    def _on_vad_speaking_changed(self, is_speaking: bool) -> None:
+        """Toggle user_speaking for the billing coroutine.
+        
+        Called by STTHandler's VAD worker on speech_started (True) and
+        speech_stopped (False). Updates are unconditional — not gated behind
+        any turn state — so billing starts the instant the mic picks up speech.
+        """
+        self.user_speaking = is_speaking
 
     def _on_transcript_received(self, transcript: str, was_speculative: bool = False):
         """

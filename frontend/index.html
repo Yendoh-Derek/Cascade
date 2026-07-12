@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cascade — AI Voice Tutor</title>
-    <meta name="description" content="Cascade is a premium AI voice tutor assistant. Speak naturally and get instant, intelligent responses." />
+    <meta name="description" content="Cascade is a low-latency AI voice tutor. Speak naturally and get instant, intelligent responses powered by real-time voice AI." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -26,7 +26,7 @@
       crossorigin="anonymous"
     />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
-    <link rel="stylesheet" href="style.css?v=2.1.1" />
+    <link rel="stylesheet" href="style.css?v=2.2.0" />
   </head>
   <body>
     <!-- App shell -->
@@ -34,7 +34,7 @@
       <!-- Header -->
       <header class="app-header">
         <span class="wordmark">cascade</span>
-        <div class="quota-timer" id="quota-timer" aria-hidden="true">
+        <div class="quota-timer" id="quota-timer" aria-hidden="true" aria-label="Time remaining">
           <span id="quota-timer-text">05:00</span>
         </div>
       </header>
@@ -118,31 +118,7 @@
       </div>
 
       <!-- Bottom Menu Bar -->
-      <!--
-        UI DECISION (ADR-005): TTS Voice Selector removed from menu bar.
-        Deepgram Aura 2 is the hardcoded default TTS engine.
-        To re-enable the TTS selector, see docs/adr/ADR-005-tts-selector-removed.md
-        and un-comment the .menu-bar-left block below, then un-comment the
-        corresponding code in frontend/ui.js (_restoreTTSSelection, TTS toggle listeners).
-      -->
       <footer class="menu-bar menu-bar--centered glass">
-        <!--
-        [TTS SELECTOR — DISABLED]
-        To re-enable: remove these comment tags and restore the menu-bar layout
-        to use justify-content: space-between (remove .menu-bar--centered class).
-        Also un-comment the TTS listener block in frontend/ui.js.
-
-        <div class="menu-bar-left">
-          <span class="tts-label">Voice</span>
-          <div class="tts-toggle-group">
-            <button class="tts-toggle-btn active" id="tts-btn-deepgram" data-engine="deepgram" aria-pressed="true" title="Deepgram Aura 2 — low latency (recommended)">
-              Aura 2
-            </button>
-            <button class="tts-toggle-btn" id="tts-btn-edge" data-engine="edge" aria-pressed="false" title="Edge TTS — free fallback (higher latency)">Edge (fallback)</button>
-          </div>
-        </div>
-        -->
-
         <!-- Action Buttons (centered) -->
         <div class="menu-bar-center">
           <button
@@ -169,7 +145,7 @@
       <div class="stats-panel glass" id="stats-panel" aria-hidden="true">
         <div class="stats-panel-header">
           <span class="stats-panel-title">Latency Breakdown</span>
-          <button class="stats-close-btn" id="btn-close-stats">✕</button>
+          <button class="stats-close-btn" id="btn-close-stats" aria-label="Close chart">✕</button>
         </div>
         <div class="stats-legend stats-legend--chart" aria-hidden="false">
           <span><span class="legend-dot" style="background:#60a5fa"></span>Endpointing</span>
@@ -190,89 +166,165 @@
       aria-live="assertive"
     ></div>
 
-    <!-- Secret Modal -->
+    <!-- ══════════════════════════════════════════════
+         SECRET / ACCESS MODAL
+         ══════════════════════════════════════════════ -->
     <div class="modal-backdrop" id="secret-modal-backdrop" aria-hidden="true">
-      <div class="modal glass" id="secret-modal" role="dialog" aria-labelledby="secret-modal-title">
+      <div class="modal glass" id="secret-modal" role="dialog" aria-labelledby="secret-modal-title" aria-modal="true">
         <div class="modal-header">
           <span class="modal-title" id="secret-modal-title">Access Required</span>
         </div>
         <div class="modal-body">
-          <p>Please enter the Cascade access secret to continue:</p>
-          <input type="password" id="secret-input" class="modal-input" placeholder="Enter secret..." />
+          <p>Enter the Cascade beta access code to continue.</p>
+          <input type="password" id="secret-input" class="modal-input" placeholder="Access code..." autocomplete="current-password" />
         </div>
         <div class="modal-footer">
           <button class="menu-btn" id="btn-cancel-secret">Cancel</button>
-          <button class="menu-btn menu-btn-primary" id="btn-submit-secret">Submit</button>
+          <button class="menu-btn menu-btn-primary" id="btn-submit-secret">Continue</button>
         </div>
       </div>
     </div>
 
-    <!-- Feedback Survey Modal -->
+    <!-- ══════════════════════════════════════════════
+         FEEDBACK SURVEY MODAL
+         ══════════════════════════════════════════════ -->
     <div class="modal-backdrop" id="survey-modal-backdrop" aria-hidden="true">
-      <div class="modal glass" id="survey-modal" role="dialog" aria-labelledby="survey-modal-title">
-        <div class="modal-header">
-          <span class="modal-title" id="survey-modal-title">Thanks for testing Cascade!</span>
+      <div class="modal glass modal--wide" id="survey-modal" role="dialog" aria-labelledby="survey-modal-title" aria-modal="true">
+        <div class="modal-header" id="survey-modal-header">
+          <div class="modal-icon-badge modal-icon-badge--green">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div>
+            <span class="modal-title" id="survey-modal-title">Session Complete</span>
+            <p class="modal-subtitle">Your testing time has concluded. Share your thoughts?</p>
+          </div>
         </div>
         <div class="modal-body" id="survey-body">
-          <!-- <p id="survey-message">Your testing time has concluded. We'd love your quick feedback.</p> -->
           <div class="survey-form" id="survey-form-content">
-            <label for="survey-rating">How natural did the voice feel? <span id="rating-val-display" style="color: var(--orb-proc-a); font-weight: bold;">3</span>/5</label>
-            <div class="slider-wrapper">
-              <div class="slider-label-row" style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
-                <span>Low</span>
-                <span>High</span>
-              </div>
-              <input type="range" id="survey-rating" min="1" max="5" step="1" value="3" class="premium-slider">
-              <div class="slider-ticks">
-                <span>1</span>
-                <span>2</span>
-                <span>3</span>
-                <span>4</span>
-                <span>5</span>
+            <!-- Custom star-track slider -->
+            <div class="survey-question">
+              <label class="survey-label" for="survey-rating">Rate your Experience</label>
+              <div class="rating-slider-container">
+                <div class="rating-track-wrapper">
+                  <div class="rating-track" id="rating-track">
+                    <div class="rating-track-fill" id="rating-track-fill"></div>
+                  </div>
+                  <input
+                    type="range"
+                    id="survey-rating"
+                    class="rating-range-input"
+                    min="1" max="5" step="1" value="3"
+                    aria-valuemin="1" aria-valuemax="5" aria-valuenow="3"
+                    aria-label="Voice naturalness rating"
+                  />
+                </div>
+                <div class="rating-labels">
+                  <span>Robotic</span>
+                  <span class="rating-value-display" id="rating-val-display" aria-live="polite" aria-atomic="true">3 / 5</span>
+                  <span>Very natural</span>
+                </div>
+                <div class="rating-pips" aria-hidden="true">
+                  <button type="button" class="rating-pip" data-value="1" tabindex="-1">1</button>
+                  <button type="button" class="rating-pip" data-value="2" tabindex="-1">2</button>
+                  <button type="button" class="rating-pip" data-value="3" tabindex="-1">3</button>
+                  <button type="button" class="rating-pip" data-value="4" tabindex="-1">4</button>
+                  <button type="button" class="rating-pip" data-value="5" tabindex="-1">5</button>
+                </div>
               </div>
             </div>
-            
-            <label for="survey-comment">Any other thoughts?</label>
-            <textarea id="survey-comment" class="modal-input survey-textarea" placeholder="Latency was good, but..."></textarea>
+
+            <div class="survey-question">
+              <label class="survey-label" for="survey-comment">Any other thoughts? <span class="survey-label-opt">(optional)</span></label>
+              <textarea id="survey-comment" class="modal-input survey-textarea" placeholder="e.g. Latency felt great, but the voice cut off once..."></textarea>
+            </div>
           </div>
-          
-          <div id="survey-success" class="survey-success" style="display: none;">
+
+          <!-- Success state (shown after submit) -->
+          <div id="survey-success" class="modal-success-state" style="display: none;">
             <div class="success-checkmark">
-              <svg viewBox="0 0 52 52">
+              <svg viewBox="0 0 52 52" aria-hidden="true">
                 <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
                 <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
               </svg>
             </div>
-            <h3>Feedback Sent</h3>
-            <p>Thanks for helping improve Cascade!</p>
-            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-survey">Close & Reload</button>
+            <h3>Feedback received!</h3>
+            <p>Thanks for helping make Cascade better. Your input means a lot.</p>
+            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-survey">Done</button>
           </div>
         </div>
         <div class="modal-footer" id="survey-footer">
+          <button class="menu-btn" id="btn-skip-survey">Skip</button>
           <button class="menu-btn menu-btn-primary" id="btn-submit-survey">Submit Feedback</button>
         </div>
       </div>
     </div>
 
-    <!-- Session Expired Modal -->
+    <!-- ══════════════════════════════════════════════
+         SESSION EXPIRED (quota used up, normal end)
+         ══════════════════════════════════════════════ -->
     <div class="modal-backdrop" id="expired-modal-backdrop" aria-hidden="true">
-      <div class="modal glass" id="expired-modal" role="dialog" aria-labelledby="expired-modal-title">
+      <div class="modal glass" id="expired-modal" role="dialog" aria-labelledby="expired-modal-title" aria-modal="true">
         <div class="modal-body">
-          <div class="survey-success" style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
+          <div class="modal-success-state">
             <div class="success-checkmark">
-              <svg viewBox="0 0 52 52">
+              <svg viewBox="0 0 52 52" aria-hidden="true">
                 <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
                 <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
               </svg>
             </div>
-            <h3 id="expired-modal-title">Your testing session has ended</h3>
-            <p style="margin-bottom: 20px;">Thanks for taking the time to test Cascade!</p>
-            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-expired" style="align-self: stretch; width: 100%;">Return Home</button>
+            <h3 id="expired-modal-title">That's a wrap!</h3>
+            <p>You've used your testing budget. Thanks for trying Cascade.</p>
+            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-expired">Back to Home</button>
           </div>
         </div>
       </div>
     </div>
 
-    <script type="module" src="app.js?v=2.1.1"></script>
+    <!-- ══════════════════════════════════════════════
+         CAPACITY REACHED (all tester slots filled)
+         ══════════════════════════════════════════════ -->
+    <div class="modal-backdrop" id="capacity-modal-backdrop" aria-hidden="true">
+      <div class="modal glass" id="capacity-modal" role="dialog" aria-labelledby="capacity-modal-title" aria-modal="true">
+        <div class="modal-body">
+          <div class="modal-alert-state">
+            <div class="alert-icon alert-icon--amber">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </div>
+            <h3 id="capacity-modal-title">Beta Spots Full</h3>
+            <p id="capacity-modal-message">All testing slots are currently claimed. We're accepting testers on a rolling basis — check back soon!</p>
+            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-capacity">Got It</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════
+         IP RATE LIMITED (too many registrations from IP)
+         ══════════════════════════════════════════════ -->
+    <div class="modal-backdrop" id="ip-limit-modal-backdrop" aria-hidden="true">
+      <div class="modal glass" id="ip-limit-modal" role="dialog" aria-labelledby="ip-limit-modal-title" aria-modal="true">
+        <div class="modal-body">
+          <div class="modal-alert-state">
+            <div class="alert-icon alert-icon--red">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+              </svg>
+            </div>
+            <h3 id="ip-limit-modal-title">Session Limit Reached</h3>
+            <p id="ip-limit-modal-message">Too many new sessions have been started from this network. Please wait a moment before trying again.</p>
+            <button class="menu-btn menu-btn-primary mt-4" id="btn-close-ip-limit">Back to Home</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="app.js?v=2.2.0"></script>
   </body>
 </html>
