@@ -77,6 +77,37 @@ def _test_streaming_completion(client: Groq, model: str) -> dict:
     return result
 
 
+def _test_reasoning_effort_kwargs() -> dict:
+    """Mock the Groq client to confirm reasoning_effort is omitted when None."""
+    import asyncio
+    from unittest.mock import AsyncMock
+    from backend.llm import LLMGenerator
+    result = {"success": False, "error": None}
+    try:
+        client_mock = AsyncMock()
+        mock_stream = AsyncMock()
+        mock_stream.__aiter__.return_value = []
+        client_mock.chat.completions.create.return_value = mock_stream
+        
+        generator = LLMGenerator(api_key="fake", model="fake", reasoning_effort=None, client=client_mock)
+        
+        async def run_gen():
+            async for _ in generator.generate([{"role": "user", "content": "hi"}]):
+                pass
+                
+        asyncio.run(run_gen())
+        
+        client_mock.chat.completions.create.assert_called_once()
+        kwargs = client_mock.chat.completions.create.call_args.kwargs
+        if "reasoning_effort" in kwargs:
+            result["error"] = "reasoning_effort was in kwargs even though it was None"
+        else:
+            result["success"] = True
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
 def run() -> bool:
     """
     Run all LLM verification checks.
@@ -121,6 +152,13 @@ def run() -> bool:
         return False
     print(f"        v First token in {stream['first_token_ms']}ms")
     print(f"        v {stream['token_count']} tokens received via stream")
+    print("  [5/5] Testing reasoning_effort kwarg handling...")
+    reasoning_test = _test_reasoning_effort_kwargs()
+    if not reasoning_test["success"]:
+        print(f"        x Kwarg test failed: {reasoning_test['error']}")
+        return False
+    print("        v reasoning_effort omitted correctly when None")
+    
     print("  v Groq LLM - ALL CHECKS PASSED\n")
     return True
 

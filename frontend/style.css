@@ -177,8 +177,13 @@ body {
 }
 
 @keyframes statusPulse {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* ==========================================
@@ -221,7 +226,9 @@ body {
   height: 6px;
   transform-origin: bottom center;
   /* Fast transition for responsive bounce */
-  transition: height 50ms ease-out, opacity 50ms ease-out;
+  transition:
+    height 50ms ease-out,
+    opacity 50ms ease-out;
 }
 
 /* Calculate distinct heights for each bar using per-bar vars (0 to 1) */
@@ -277,14 +284,31 @@ body {
   transform-origin: center;
 }
 
-.think-dot.dot-1 { animation-delay: 0s;     animation-duration: 1.4s; }
-.think-dot.dot-2 { animation-delay: -0.47s; animation-duration: 1.55s; }
-.think-dot.dot-3 { animation-delay: -0.93s; animation-duration: 1.7s; }
+.think-dot.dot-1 {
+  animation-delay: 0s;
+  animation-duration: 1.4s;
+}
+.think-dot.dot-2 {
+  animation-delay: -0.47s;
+  animation-duration: 1.55s;
+}
+.think-dot.dot-3 {
+  animation-delay: -0.93s;
+  animation-duration: 1.7s;
+}
 
 @keyframes thinkOrbit {
-  0%   { transform: rotate(0deg)   translateX(16px) translateY(-50%); opacity: 1;    }
-  50%  { opacity: 0.4; }
-  100% { transform: rotate(360deg) translateX(16px) translateY(-50%); opacity: 1; }
+  0% {
+    transform: rotate(0deg) translateX(16px) translateY(-50%);
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    transform: rotate(360deg) translateX(16px) translateY(-50%);
+    opacity: 1;
+  }
 }
 
 .orb-wrapper.state-processing .orb-icon-think {
@@ -304,7 +328,9 @@ body {
   border-radius: 6px;
   background-color: var(--text-primary);
   transform-origin: center;
-  transition: height 50ms ease-out, opacity 50ms ease-out;
+  transition:
+    height 50ms ease-out,
+    opacity 50ms ease-out;
 }
 
 /* Calculate distinct heights using per-bar speak vars (0 to 1) */
@@ -792,7 +818,9 @@ body {
     var(--orb-proc-a),
     var(--orb-proc-c) 70%
   );
-  animation: processingCorePulse 2s ease-in-out infinite, orbProcHue 4s ease-in-out infinite;
+  animation:
+    processingCorePulse 2s ease-in-out infinite,
+    orbProcHue 4s ease-in-out infinite;
 }
 .orb-wrapper.state-processing .orb-glow-ring {
   box-shadow: var(--orb-proc-glow);
@@ -866,17 +894,27 @@ body {
 
 /* Keyframes */
 @keyframes orbBreathShell {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-}
-
-@keyframes orbBreathGlow {
-  0%, 100% {
-    box-shadow: 0 0 40px rgba(99,102,241,0.2), 0 0 80px rgba(99,102,241,0.08);
+  0%,
+  100% {
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 60px rgba(99,102,241,0.35), 0 0 120px rgba(99,102,241,0.14);
+    transform: scale(1.05);
+  }
+}
+
+@keyframes orbBreathGlow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 40px rgba(99, 102, 241, 0.2),
+      0 0 80px rgba(99, 102, 241, 0.08);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow:
+      0 0 60px rgba(99, 102, 241, 0.35),
+      0 0 120px rgba(99, 102, 241, 0.14);
     transform: scale(1.08);
   }
 }
@@ -1081,7 +1119,9 @@ body {
 .message-user .tentative {
   color: rgba(255, 255, 255, 0.4);
   font-style: italic;
-  transition: color 0.15s ease, opacity 0.15s ease;
+  transition:
+    color 0.15s ease,
+    opacity 0.15s ease;
 }
 
 .message-user.streaming p::after {
@@ -1092,8 +1132,13 @@ body {
 }
 
 @keyframes cursorBlink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* User — right-aligned, indigo-tinted glass */
@@ -1334,7 +1379,9 @@ body {
   width: min(420px, 90vw);
   padding: 28px;
   transform: translateY(24px) scale(0.97);
-  transition: transform 350ms var(--spring), opacity 300ms ease;
+  transition:
+    transform 350ms var(--spring),
+    opacity 300ms ease;
   opacity: 0;
   display: flex;
   flex-direction: column;
@@ -1395,16 +1442,19 @@ body {
   width: 100%;
   padding: 12px 16px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-primary);
   font-family: inherit;
   font-size: 13px;
   outline: none;
-  transition: border-color 200ms ease, box-shadow 200ms ease;
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
 }
 .modal-input::placeholder {
   color: var(--text-dim);
+  opacity: 0.85;
 }
 .modal-input:focus {
   border-color: rgba(99, 102, 241, 0.5);
@@ -1417,6 +1467,9 @@ body {
   gap: 10px;
   padding-top: 4px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.modal-footer--center {
+  justify-content: center;
 }
 
 /* ── Shared centred success/alert state ── */
@@ -1468,6 +1521,12 @@ body {
   color: #ef4444;
   border: 1px solid rgba(239, 68, 68, 0.25);
   box-shadow: 0 0 24px rgba(239, 68, 68, 0.15);
+}
+.alert-icon--neutral {
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-shadow: 0 0 24px rgba(148, 163, 184, 0.15);
 }
 
 /* ======================
@@ -1537,14 +1596,16 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 13px;
   color: var(--text-secondary);
   background: rgba(255, 255, 255, 0.03);
   padding: 6px 14px;
   border-radius: 9999px;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 2px 8px rgba(0,0,0,0.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 2px 8px rgba(0, 0, 0, 0.2);
   width: max-content;
   flex: 0 0 auto;
   transition: all 0.3s var(--spring);
@@ -1556,23 +1617,41 @@ body {
   color: #ff5c5c;
   border-color: rgba(255, 92, 92, 0.4);
   background: rgba(255, 92, 92, 0.05);
-  box-shadow: 0 0 15px rgba(255, 92, 92, 0.2), inset 0 0 8px rgba(255, 92, 92, 0.1);
+  box-shadow:
+    0 0 15px rgba(255, 92, 92, 0.2),
+    inset 0 0 8px rgba(255, 92, 92, 0.1);
   animation: pulse-danger-elegant 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 .quota-timer.grace-period {
   color: #34d399;
   border-color: rgba(52, 211, 153, 0.4);
   background: rgba(52, 211, 153, 0.05);
-  box-shadow: 0 0 15px rgba(52, 211, 153, 0.2), inset 0 0 8px rgba(52, 211, 153, 0.1);
+  box-shadow:
+    0 0 15px rgba(52, 211, 153, 0.2),
+    inset 0 0 8px rgba(52, 211, 153, 0.1);
   animation: pulse-grace-elegant 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 @keyframes pulse-danger-elegant {
-  0%, 100% { opacity: 1; box-shadow: 0 0 15px rgba(255, 92, 92, 0.2); }
-  50% { opacity: 0.8; box-shadow: 0 0 25px rgba(255, 92, 92, 0.4); }
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 15px rgba(255, 92, 92, 0.2);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 25px rgba(255, 92, 92, 0.4);
+  }
 }
 @keyframes pulse-grace-elegant {
-  0%, 100% { opacity: 1; box-shadow: 0 0 15px rgba(52, 211, 153, 0.2); }
-  50% { opacity: 0.8; box-shadow: 0 0 25px rgba(52, 211, 153, 0.4); }
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 15px rgba(52, 211, 153, 0.2);
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow: 0 0 25px rgba(52, 211, 153, 0.4);
+  }
 }
 
 /* ======================
@@ -1585,7 +1664,7 @@ body {
 }
 
 #survey-footer {
-  justify-content: space-between;
+  justify-content: center;
 }
 
 .survey-question {
@@ -1662,7 +1741,7 @@ body {
   font-size: 14px;
   font-weight: 600;
   color: #a78bfa;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   letter-spacing: 0;
 }
 
@@ -1695,11 +1774,14 @@ body {
   transform: scale(1.08);
 }
 .rating-pip.active {
-  background: rgba(99, 102, 241, 0.25);
-  border-color: rgba(167, 139, 250, 0.5);
-  color: #a78bfa;
-  box-shadow: 0 0 14px rgba(99, 102, 241, 0.3);
-  transform: scale(1.12);
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  border-color: transparent;
+  color: #ffffff;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 10px 24px rgba(99, 102, 241, 0.32);
+  transform: scale(1.16);
+  font-weight: 600;
 }
 
 .survey-textarea {
@@ -1721,7 +1803,9 @@ body {
   stroke: var(--orb-speak-core-start);
   stroke-miterlimit: 10;
   box-shadow: inset 0px 0px 0px var(--orb-speak-core-start);
-  animation: fill .4s ease-in-out .4s forwards, scale .3s ease-in-out .9s both;
+  animation:
+    fill 0.4s ease-in-out 0.4s forwards,
+    scale 0.3s ease-in-out 0.9s both;
 }
 .checkmark-circle {
   stroke-dasharray: 166;
@@ -1739,19 +1823,36 @@ body {
   animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.8s forwards;
 }
 @keyframes stroke {
-  100% { stroke-dashoffset: 0; }
+  100% {
+    stroke-dashoffset: 0;
+  }
 }
 @keyframes scale {
-  0%, 100% { transform: none; }
-  50% { transform: scale3d(1.1, 1.1, 1); }
+  0%,
+  100% {
+    transform: none;
+  }
+  50% {
+    transform: scale3d(1.1, 1.1, 1);
+  }
 }
 @keyframes fill {
-  100% { box-shadow: inset 0px 0px 0px 30px rgba(16, 185, 129, 0.1); }
+  100% {
+    box-shadow: inset 0px 0px 0px 30px rgba(16, 185, 129, 0.1);
+  }
 }
 @keyframes error-fill {
-  100% { box-shadow: inset 0px 0px 0px 30px rgba(239, 68, 68, 0.1); }
+  100% {
+    box-shadow: inset 0px 0px 0px 30px rgba(239, 68, 68, 0.1);
+  }
 }
 @keyframes fadeInScale {
-  from { opacity: 0; transform: scale(0.95); }
-  to { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }

@@ -320,6 +320,7 @@ class PipelineSession:
         self.llm_generator = LLMGenerator(
             api_key=self.api_keys["groq"],
             model=self.model_config["groq_model"],
+            reasoning_effort=self.model_config.get("groq_reasoning_effort"),
             client=self._llm_client,
         )
         self.tts_engine = TTSEngine(

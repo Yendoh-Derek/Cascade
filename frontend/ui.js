@@ -12,7 +12,11 @@ function renderMathSpans(escapedText) {
     const ch = escapedText[i];
 
     // Keep escaped dollars as literal text and do not treat them as delimiters.
-    if (ch === "\\" && i + 1 < escapedText.length && escapedText[i + 1] === "$") {
+    if (
+      ch === "\\" &&
+      i + 1 < escapedText.length &&
+      escapedText[i + 1] === "$"
+    ) {
       result += "\\$";
       i += 2;
       continue;
@@ -27,7 +31,11 @@ function renderMathSpans(escapedText) {
     // Find the next unescaped dollar to close this math span.
     let j = i + 1;
     while (j < escapedText.length) {
-      if (escapedText[j] === "\\" && j + 1 < escapedText.length && escapedText[j + 1] === "$") {
+      if (
+        escapedText[j] === "\\" &&
+        j + 1 < escapedText.length &&
+        escapedText[j + 1] === "$"
+      ) {
         j += 2;
         continue;
       }
@@ -48,7 +56,10 @@ function renderMathSpans(escapedText) {
       if (typeof katex === "undefined" || !katex?.renderToString) {
         result += `$${expr}$`;
       } else {
-        result += katex.renderToString(expr, { throwOnError: false, output: "html" });
+        result += katex.renderToString(expr, {
+          throwOnError: false,
+          output: "html",
+        });
       }
     } catch (_) {
       result += `$${expr}$`;
@@ -147,74 +158,72 @@ export class UIController {
     }
 
     const animatedBtns = document.querySelectorAll("button, .menu-btn");
-    animatedBtns.forEach(
-      (btn) => {
-        if (!btn) return;
+    animatedBtns.forEach((btn) => {
+      if (!btn) return;
 
-        const createCircle = (x, y) => {
-          const buttonWidth = btn.offsetWidth || 0;
-          const xPos = x / buttonWidth;
-          const color = `linear-gradient(to right, rgba(160, 217, 248, 0.8) ${xPos * 100}%, rgba(58, 91, 191, 0.8) ${xPos * 100}%)`;
+      const createCircle = (x, y) => {
+        const buttonWidth = btn.offsetWidth || 0;
+        const xPos = x / buttonWidth;
+        const color = `linear-gradient(to right, rgba(160, 217, 248, 0.8) ${xPos * 100}%, rgba(58, 91, 191, 0.8) ${xPos * 100}%)`;
 
-          const circle = document.createElement("div");
-          circle.className = "menu-btn-circle";
-          circle.style.left = `${x}px`;
-          circle.style.top = `${y}px`;
-          circle.style.background = color;
+        const circle = document.createElement("div");
+        circle.className = "menu-btn-circle";
+        circle.style.left = `${x}px`;
+        circle.style.top = `${y}px`;
+        circle.style.background = color;
 
-          btn.appendChild(circle);
+        btn.appendChild(circle);
 
-          setTimeout(() => {
-            circle.classList.add("fade-in");
-          }, 0);
+        setTimeout(() => {
+          circle.classList.add("fade-in");
+        }, 0);
 
-          setTimeout(() => {
-            circle.classList.remove("fade-in");
-            circle.classList.add("fade-out");
-          }, 1000);
+        setTimeout(() => {
+          circle.classList.remove("fade-in");
+          circle.classList.add("fade-out");
+        }, 1000);
 
-          setTimeout(() => {
-            if (circle.parentNode) {
-              circle.parentNode.removeChild(circle);
-            }
-          }, 2200);
-        };
-
-        let isListening = false;
-        let lastAdded = 0;
-
-        btn.addEventListener("pointermove", (evt) => {
-          if (!isListening) return;
-
-          const currentTime = Date.now();
-          if (currentTime - lastAdded > 100) {
-            lastAdded = currentTime;
-            const rect = btn.getBoundingClientRect();
-            const x = evt.clientX - rect.left;
-            const y = evt.clientY - rect.top;
-            createCircle(x, y);
+        setTimeout(() => {
+          if (circle.parentNode) {
+            circle.parentNode.removeChild(circle);
           }
-        });
+        }, 2200);
+      };
 
-        btn.addEventListener("pointerenter", () => {
-          isListening = true;
-        });
+      let isListening = false;
+      let lastAdded = 0;
 
-        btn.addEventListener("pointerleave", () => {
-          isListening = false;
-        });
+      btn.addEventListener("pointermove", (evt) => {
+        if (!isListening) return;
 
-        if (btn.id === "btn-toggle-session") {
-          btn.addEventListener("click", () => this.client.toggleSession());
-        } else if (btn.id === "btn-clear-transcript") {
-          btn.addEventListener("click", async () => {
-            await this.client.resetConversation();
-          });
-        } else if (btn.id === "btn-stats") {
-          btn.addEventListener("click", () => this._openStatsPanel());
+        const currentTime = Date.now();
+        if (currentTime - lastAdded > 100) {
+          lastAdded = currentTime;
+          const rect = btn.getBoundingClientRect();
+          const x = evt.clientX - rect.left;
+          const y = evt.clientY - rect.top;
+          createCircle(x, y);
         }
-      },
-    );
+      });
+
+      btn.addEventListener("pointerenter", () => {
+        isListening = true;
+      });
+
+      btn.addEventListener("pointerleave", () => {
+        isListening = false;
+      });
+
+      if (btn.id === "btn-toggle-session") {
+        btn.addEventListener("click", () => this.client.toggleSession());
+      } else if (btn.id === "btn-clear-transcript") {
+        btn.addEventListener("click", async () => {
+          await this.client.resetConversation();
+        });
+      } else if (btn.id === "btn-stats") {
+        btn.addEventListener("click", () => this._openStatsPanel());
+      }
+    });
 
     /*
      * ADR-005: TTS Engine Selector Toggles — DISABLED (selector hidden from UI).
@@ -274,7 +283,6 @@ export class UIController {
     // ── Survey / Rating slider ──
     const surveyBackdrop = document.getElementById("survey-modal-backdrop");
     const surveySubmit = document.getElementById("btn-submit-survey");
-    const btnSkipSurvey = document.getElementById("btn-skip-survey");
     const surveySlider = document.getElementById("survey-rating");
     const ratingValDisplay = document.getElementById("rating-val-display");
     const ratingTrackFill = document.getElementById("rating-track-fill");
@@ -289,7 +297,10 @@ export class UIController {
         surveySlider.setAttribute("aria-valuenow", value);
       }
       document.querySelectorAll(".rating-pip").forEach((pip) => {
-        pip.classList.toggle("active", parseInt(pip.dataset.value, 10) === value);
+        pip.classList.toggle(
+          "active",
+          parseInt(pip.dataset.value, 10) === value,
+        );
       });
     };
 
@@ -311,9 +322,6 @@ export class UIController {
     if (btnCloseSurvey) {
       btnCloseSurvey.addEventListener("click", () => window.location.reload());
     }
-    if (btnSkipSurvey) {
-      btnSkipSurvey.addEventListener("click", () => window.location.reload());
-    }
 
     const btnCloseExpired = document.getElementById("btn-close-expired");
     if (btnCloseExpired) {
@@ -322,7 +330,9 @@ export class UIController {
 
     const btnCloseCapacity = document.getElementById("btn-close-capacity");
     if (btnCloseCapacity) {
-      btnCloseCapacity.addEventListener("click", () => window.location.reload());
+      btnCloseCapacity.addEventListener("click", () =>
+        window.location.reload(),
+      );
     }
 
     const btnCloseIpLimit = document.getElementById("btn-close-ip-limit");
@@ -334,7 +344,9 @@ export class UIController {
       surveySubmit.addEventListener("click", async () => {
         const comment = document.getElementById("survey-comment")?.value || "";
         const testerId = localStorage.getItem("cascade_tester_id");
-        const selectedRating = surveySlider ? parseInt(surveySlider.value, 10) : 3;
+        const selectedRating = surveySlider
+          ? parseInt(surveySlider.value, 10)
+          : 3;
 
         if (!testerId) return;
 
@@ -347,7 +359,11 @@ export class UIController {
           const res = await fetch("/quota/feedback", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tester_id: testerId, rating: selectedRating, comment }),
+            body: JSON.stringify({
+              tester_id: testerId,
+              rating: selectedRating,
+              comment,
+            }),
           });
           if (!res.ok) throw new Error("Submission failed");
 
@@ -363,7 +379,11 @@ export class UIController {
           if (surveySuccess) surveySuccess.style.display = "flex";
         } catch (e) {
           console.error("Survey submission error:", e);
-          this.showToast("Couldn't send feedback right now — thanks anyway!", 3500, "warning");
+          this.showToast(
+            "Couldn't send feedback right now — thanks anyway!",
+            3500,
+            "warning",
+          );
           surveySubmit.disabled = false;
           if (origLabel) origLabel.textContent = "Submit Feedback";
         }
@@ -403,10 +423,7 @@ export class UIController {
 
   setState(newState, prevState = this.client.state) {
     if (!this.orb) return;
-    if (
-      prevState === STATE.SPEAKING ||
-      prevState === STATE.WINDING_DOWN
-    ) {
+    if (prevState === STATE.SPEAKING || prevState === STATE.WINDING_DOWN) {
       if (newState !== STATE.SPEAKING) {
         this.resetOrbSpeakVars();
       }
@@ -474,7 +491,10 @@ export class UIController {
       }
       if (newState === STATE.IDLE) {
         this.btnToggleSession.classList.remove("active");
-        const hasHistory = !!(this.client.conversationHistory && this.client.conversationHistory.length > 0);
+        const hasHistory = !!(
+          this.client.conversationHistory &&
+          this.client.conversationHistory.length > 0
+        );
         if (label) label.textContent = hasHistory ? "Continue" : "Begin";
         // Restore play icon (same for both Begin and Continue)
         if (icon) {
@@ -494,7 +514,6 @@ export class UIController {
       }
     }
   }
-
 
   /** @deprecated stats-bar element removed — kept as no-op to avoid call-site errors */
   _updateStatsBar() {}
@@ -623,8 +642,12 @@ export class UIController {
       backdrop.setAttribute("aria-hidden", "false");
       if (input) {
         input.value = "";
-        input.focus();
       }
+      this._trapFocusAndEsc(
+        "secret-modal-backdrop",
+        "secret-input",
+        "btn-cancel-secret",
+      );
     }
   }
 
@@ -652,7 +675,7 @@ export class UIController {
     if (!this.quotaTimerText) return;
     const m = Math.floor(secondsRemaining / 60);
     const s = Math.floor(secondsRemaining % 60);
-    this.quotaTimerText.textContent = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    this.quotaTimerText.textContent = `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
     if (this.quotaTimer) {
       if (secondsRemaining <= 10) {
         this.quotaTimer.classList.add("danger");
@@ -686,10 +709,67 @@ export class UIController {
     }
   }
 
+  _trapFocusAndEsc(backdropId, primaryBtnId, closeBtnId = null) {
+    const backdrop = document.getElementById(backdropId);
+    if (!backdrop) return;
+
+    const focusableEls = backdrop.querySelectorAll(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([type="hidden"]):not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusableEls.length === 0) return;
+
+    const firstFocusableEl = focusableEls[0];
+    const lastFocusableEl = focusableEls[focusableEls.length - 1];
+
+    const primaryBtn = document.getElementById(primaryBtnId);
+    if (primaryBtn) {
+      setTimeout(() => primaryBtn.focus(), 50);
+    }
+
+    const keydownHandler = (e) => {
+      if (backdrop.getAttribute("aria-hidden") === "true") {
+        document.removeEventListener("keydown", keydownHandler);
+        return;
+      }
+
+      const isTabPressed = e.key === "Tab" || e.keyCode === 9;
+      const isEscPressed = e.key === "Escape" || e.keyCode === 27;
+
+      if (!isTabPressed && !isEscPressed) {
+        return;
+      }
+
+      if (isEscPressed) {
+        e.preventDefault();
+        const closeBtn = closeBtnId
+          ? document.getElementById(closeBtnId)
+          : primaryBtn;
+        if (closeBtn) closeBtn.click();
+      } else if (e.shiftKey) /* shift + tab */ {
+        if (document.activeElement === firstFocusableEl) {
+          lastFocusableEl.focus();
+          e.preventDefault();
+        }
+      } else /* tab */ {
+        if (document.activeElement === lastFocusableEl) {
+          firstFocusableEl.focus();
+          e.preventDefault();
+        }
+      }
+    };
+
+    document.addEventListener("keydown", keydownHandler);
+  }
+
   showSurvey(reason) {
     const backdrop = document.getElementById("survey-modal-backdrop");
     if (backdrop) {
       backdrop.setAttribute("aria-hidden", "false");
+      this._trapFocusAndEsc(
+        "survey-modal-backdrop",
+        "btn-submit-survey",
+        "btn-submit-survey",
+      );
     }
   }
 
@@ -697,17 +777,15 @@ export class UIController {
     const backdrop = document.getElementById("expired-modal-backdrop");
     if (backdrop) {
       backdrop.setAttribute("aria-hidden", "false");
+      this._trapFocusAndEsc("expired-modal-backdrop", "btn-close-expired");
     }
   }
 
   showCapacityReached(message) {
     const backdrop = document.getElementById("capacity-modal-backdrop");
-    const msgElement = document.getElementById("capacity-modal-message");
-    if (msgElement && message) {
-      msgElement.textContent = message;
-    }
     if (backdrop) {
       backdrop.setAttribute("aria-hidden", "false");
+      this._trapFocusAndEsc("capacity-modal-backdrop", "btn-close-capacity");
     }
   }
 
@@ -719,6 +797,7 @@ export class UIController {
     }
     if (backdrop) {
       backdrop.setAttribute("aria-hidden", "false");
+      this._trapFocusAndEsc("ip-limit-modal-backdrop", "btn-close-ip-limit");
     }
   }
 }

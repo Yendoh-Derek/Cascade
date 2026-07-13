@@ -55,6 +55,7 @@ class ModelConfig:
     # LLM — model name used for Groq inference. Tune via CASCADE_GROQ_MODEL env var.
     # Default matches the model used for published latency benchmarks.
     groq_model: str = os.getenv("CASCADE_GROQ_MODEL", "llama-3.3-70b-versatile")
+    groq_reasoning_effort: str | None = os.getenv("CASCADE_GROQ_REASONING_EFFORT")
 
     # Conversation history: max turn-pairs to retain. Tune via CASCADE_MAX_HISTORY_TURNS.
     max_history_turns: int = int(os.getenv("CASCADE_MAX_HISTORY_TURNS", "10"))
