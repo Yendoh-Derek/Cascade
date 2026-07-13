@@ -22,7 +22,8 @@ Latency Measurement:
 import logging
 import asyncio
 import time
-from typing import AsyncGenerator, List, Optional, cast
+import re
+from typing import Any, AsyncGenerator, List, Optional, cast
 from groq import AsyncGroq
 from groq.types.chat import ChatCompletionMessageParam
 
@@ -50,7 +51,7 @@ class LLMGenerator:
     5. Yield any remaining buffer after the stream ends
     """
 
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", client: Optional[AsyncGroq] = None):
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", reasoning_effort: Optional[str] = None, client: Optional[AsyncGroq] = None):
         """
         Initialise the LLM generator.
 
@@ -59,10 +60,12 @@ class LLMGenerator:
             model: Groq model name. Defaults to llama-3.3-70b-versatile; override
                    via the CASCADE_GROQ_MODEL environment variable or by passing
                    the value from ModelConfig directly.
+            reasoning_effort: Optional string (e.g. "none") to control reasoning in capable models.
             client: Optional existing AsyncGroq client to reuse across sessions.
         """
         self.api_key = api_key
         self.model = model
+        self.reasoning_effort = reasoning_effort
         if client:
             self.client = client
             self._owns_client = False
@@ -131,13 +134,18 @@ class LLMGenerator:
                         if self.t_first_attempt_sent is None:
                             self.t_first_attempt_sent = t_attempt_start
                         self.t_request_sent = t_attempt_start
-                        stream = await self.client.chat.completions.create(
-                            model=self.model,
-                            messages=request_messages,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            stream=True,
-                        )
+                        
+                        create_kwargs: dict[str, Any] = {
+                            "model": self.model,
+                            "messages": request_messages,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens,
+                            "stream": True,
+                        }
+                        if self.reasoning_effort is not None:
+                            create_kwargs["reasoning_effort"] = self.reasoning_effort
+
+                        stream = await self.client.chat.completions.create(**create_kwargs)
                         break
                     except Exception as e:
                         if getattr(e, "status_code", None) in {429, 503} and attempt < retries - 1:
@@ -203,6 +211,11 @@ class LLMGenerator:
                     delta = choices[0].delta
                     content = getattr(delta, "content", None)
                     if content:
+                        # Defense-in-depth: strip stray <think> tags before TTS
+                        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+                        if not content:
+                            continue
+
                         # Record the time of first token received (marks TTFT start point)
                         if not first_token_received:
                             first_token_received = True
