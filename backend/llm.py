@@ -23,7 +23,7 @@ import logging
 import asyncio
 import time
 import re
-from typing import AsyncGenerator, List, Optional, cast
+from typing import Any, AsyncGenerator, List, Optional, cast
 from groq import AsyncGroq
 from groq.types.chat import ChatCompletionMessageParam
 
@@ -135,23 +135,17 @@ class LLMGenerator:
                             self.t_first_attempt_sent = t_attempt_start
                         self.t_request_sent = t_attempt_start
                         
-                        if self.reasoning_effort is None:
-                            stream = await self.client.chat.completions.create(
-                                model=self.model,
-                                messages=request_messages,
-                                temperature=temperature,
-                                max_tokens=max_tokens,
-                                stream=True,
-                            )
-                        else:
-                            stream = await self.client.chat.completions.create(
-                                model=self.model,
-                                messages=request_messages,
-                                temperature=temperature,
-                                max_tokens=max_tokens,
-                                stream=True,
-                                reasoning_effort=self.reasoning_effort,
-                            )
+                        create_kwargs: dict[str, Any] = {
+                            "model": self.model,
+                            "messages": request_messages,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens,
+                            "stream": True,
+                        }
+                        if self.reasoning_effort is not None:
+                            create_kwargs["reasoning_effort"] = self.reasoning_effort
+
+                        stream = await self.client.chat.completions.create(**create_kwargs)
                         break
                     except Exception as e:
                         if getattr(e, "status_code", None) in {429, 503} and attempt < retries - 1:
