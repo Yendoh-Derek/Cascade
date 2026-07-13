@@ -135,17 +135,23 @@ class LLMGenerator:
                             self.t_first_attempt_sent = t_attempt_start
                         self.t_request_sent = t_attempt_start
                         
-                        request_kwargs = {
-                            "model": self.model,
-                            "messages": request_messages,
-                            "temperature": temperature,
-                            "max_tokens": max_tokens,
-                            "stream": True,
-                        }
-                        if self.reasoning_effort is not None:
-                            request_kwargs["reasoning_effort"] = self.reasoning_effort
-                            
-                        stream = await self.client.chat.completions.create(**request_kwargs)
+                        if self.reasoning_effort is None:
+                            stream = await self.client.chat.completions.create(
+                                model=self.model,
+                                messages=request_messages,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                stream=True,
+                            )
+                        else:
+                            stream = await self.client.chat.completions.create(
+                                model=self.model,
+                                messages=request_messages,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                stream=True,
+                                reasoning_effort=self.reasoning_effort,
+                            )
                         break
                     except Exception as e:
                         if getattr(e, "status_code", None) in {429, 503} and attempt < retries - 1:
