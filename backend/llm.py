@@ -51,13 +51,13 @@ class LLMGenerator:
     5. Yield any remaining buffer after the stream ends
     """
 
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", reasoning_effort: Optional[str] = None, client: Optional[AsyncGroq] = None):
+    def __init__(self, api_key: str, model: str = "openai/gpt-oss-20b", reasoning_effort: Optional[str] = None, client: Optional[AsyncGroq] = None):
         """
         Initialise the LLM generator.
 
         Args:
             api_key: Groq API key
-            model: Groq model name. Defaults to llama-3.3-70b-versatile; override
+            model: Groq model name. Defaults to openai/gpt-oss-20b; override
                    via the CASCADE_GROQ_MODEL environment variable or by passing
                    the value from ModelConfig directly.
             reasoning_effort: Optional string (e.g. "none") to control reasoning in capable models.
@@ -115,6 +115,7 @@ class LLMGenerator:
         self.retry_ms = 0
         self.t_first_token = None
         self.t_first_sentence_emitted = None
+        pending_task: Optional[asyncio.Task] = None
         
         try:
             # Build the messages list - messages already contains full history
@@ -126,7 +127,6 @@ class LLMGenerator:
             async with asyncio.timeout(timeout_sec):
                 # Retry loop for Groq 503s
                 stream = None
-                pending_task: Optional[asyncio.Task] = None
                 retries = 3
                 for attempt in range(retries):
                     try:
